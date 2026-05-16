@@ -1,0 +1,83 @@
+# config/watchlist.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Master ticker list for TradAlert.
+#
+# Conventions:
+#   .TO  — Toronto Stock Exchange (TSX)
+#   .V   — TSX Venture Exchange
+#   No suffix — US exchanges (NYSE / NASDAQ)
+# ─────────────────────────────────────────────────────────────────────────────
+
+tickers:
+  # ── Market context (used by FilterEngine regime check) ────────────────────
+  - SPY
+  - QQQ
+  - ^VIX   #   only for scanner (CBOE Volatility Index)
+
+  # ── Canadian (TSX) ──────────────────────────────────────────────────────────
+  - ZQQ.TO
+  - SHOP.TO
+  - ENB.TO
+  - RY.TO
+  - CNQ.TO
+  - SU.TO
+  - TD.TO
+
+  # ── US Sector ETFs ──────────────────────────────────────────────────────────
+  - XLE
+  - XLK
+  - SMH
+  - GLD
+
+  # ── Semiconductors ──────────────────────────────────────────────────────────
+  - NVDA
+  - AMD
+  - AVGO
+  - TSM
+  - SMCI
+  - MU
+
+  # ── Tech / Cloud ────────────────────────────────────────────────────────────
+  - PLTR
+  - CRWD
+  - NET
+  - SNOW
+  - MSFT
+  - GOOGL
+  - AAPL
+  - AMZN
+  - META
+
+  # ── Consumer / EV ───────────────────────────────────────────────────────────
+  - TSLA
+
+  # ── Energy ──────────────────────────────────────────────────────────────────
+  - XOM
+  - CVX
+  - SLB
+
+  # ── AI / Small-Cap ──────────────────────────────────────────────────────────
+  - SOUN
+  # ── AI Storage ──────────────────────────────────────────────────────────────
+  - SNDK
+  - WDC
+  - STX
+
+  # ── Semiconductors ──────────────────────────────────────────────────────────
+  - INTC
+  - MRVL
+  - ANET
+  - QCOM
+
+  # ── Chip Equipment ──────────────────────────────────────────────────────────
+  - ASML
+  - KLAC
+  - LRCX
+
+  # ── Gold ────────────────────────────────────────────────────────────────────
+  - GOLD
+  - NEM
+  - ABX.TO
+
+  # ── Finance ─────────────────────────────────────────────────────────────────
+  - JPM

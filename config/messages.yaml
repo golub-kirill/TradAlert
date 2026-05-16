@@ -1,0 +1,6 @@
+signal: "🚨 {direction} {ticker} | {signal_type} | Entry ~{entry:.2f} | SL {stop_price:.2f} | TP {target_price:.2f} | R:R 1:{min_rr} | Regime {market_regime}"
+earnings_pre: "EARNINGS SETUP: {ticker} reports in {days_until_earnings}d. Min R:R 1:{min_rr}. Size: {size_pct}% of normal. Exit before report."
+earnings_post: "POST-EARN DRIFT: {ticker} gapped {gap_pct}% on {report_date}. Setup forming. Min R:R 1:{min_rr}. Size: {size_pct}%."
+fomc: "FOMC BLACKOUT: rate decision today. No new entries until 24h after release."
+cpi: "CPI RELEASE TODAY: watch for gaps. Reduce or skip entries."
+custom: "{description} on {date}. Action: {action}."

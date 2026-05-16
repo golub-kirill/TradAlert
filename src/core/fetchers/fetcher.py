@@ -1,0 +1,220 @@
+"""
+Threaded watchlist runner.
+
+Loads the watchlist from config/watchlist.yaml, fetches and caches OHLCV
+for every ticker in parallel via ThreadPoolExecutor. A single failed
+ticker is skipped, logged as WARNING, and recorded in FetchSummary.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from functools import partial
+from pathlib import Path
+
+import yaml
+
+from core.cache import DEFAULT_STALENESS_H, get_or_fetch
+from core.fetchers import yfinance_fetcher
+from core.fetchers.yfinance_fetcher import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
+
+logger = logging.getLogger(__name__)
+
+# ── config paths ──────────────────────────────────────────────────────────────
+_CONFIG_DIR     = Path("config")
+_WATCHLIST_PATH = _CONFIG_DIR / "watchlist.yaml"
+_SETTINGS_PATH  = _CONFIG_DIR / "settings.yaml"
+
+# ── defaults ──────────────────────────────────────────────────────────────────
+_DEFAULT_MAX_WORKERS: int = 8
+
+
+# ── result type ───────────────────────────────────────────────────────────────
+
+@dataclass
+class FetchSummary:
+    """
+    Result of a fetch_watchlist() run.
+
+    Attributes
+    ----------
+    succeeded : list[str]
+        Tickers fetched and written to cache without error.
+    failed    : dict[str, str]
+        Ticker → error message for every ticker that raised an exception.
+    total     : int
+        Total number of tickers attempted.
+    duration  : float
+        Wall-clock time of the entire run, in seconds.
+    """
+    succeeded: list[str]       = field(default_factory=list)
+    failed:    dict[str, str]  = field(default_factory=dict)
+    total:     int             = 0
+    duration:  float           = 0.0
+
+    @property
+    def n_succeeded(self) -> int:
+        return len(self.succeeded)
+
+    @property
+    def n_failed(self) -> int:
+        return len(self.failed)
+
+    def __str__(self) -> str:
+        lines = [
+            f"FetchSummary | {self.n_succeeded}/{self.total} succeeded "
+            f"| {self.n_failed} failed "
+            f"| {self.duration:.1f}s",
+        ]
+        if self.failed:
+            lines.append("  Failed tickers:")
+            for ticker, reason in sorted(self.failed.items()):
+                lines.append(f"    ✗ {ticker:<12} {reason}")
+        return "\n".join(lines)
+
+
+# ── public API ────────────────────────────────────────────────────────────────
+
+def fetch_watchlist(
+    watchlist_path: Path | str = _WATCHLIST_PATH,
+    settings_path:  Path | str = _SETTINGS_PATH,
+    force:          bool       = False,
+) -> FetchSummary:
+    """
+    Fetch and cache OHLCV for every ticker in the watchlist.
+
+    Reads watchlist.yaml → tickers and settings.yaml → fetcher.max_workers,
+    storage.staleness_hours, storage.cache_dir. Interval and lookback come
+    from yfinance_fetcher module defaults.
+
+    Parameters
+    ----------
+    watchlist_path : Path to watchlist.yaml.
+    settings_path  : Path to settings.yaml.
+    force          : When True, bypass staleness check and always re-fetch.
+
+    Returns
+    -------
+    FetchSummary
+    """
+    tickers, max_workers, staleness_hours, cache_dir = _load_config(
+        watchlist_path, settings_path
+    )
+
+    # Pre-bind start date and interval so the callable matches
+    # the signature cache.get_or_fetch expects: fetcher(ticker) -> DataFrame.
+    # End date is left to yfinance_fetcher's default (today + 1d, exclusive).
+    start_str  = (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
+    fetcher_fn = partial(
+        yfinance_fetcher.fetch,
+        start=start_str,
+        interval=DEFAULT_INTERVAL,
+    )
+
+    summary = FetchSummary(total=len(tickers))
+    t0      = time.perf_counter()
+
+    logger.info(
+        "Watchlist fetch started | tickers=%d | workers=%d "
+        "| interval=%s | lookback=%dd | staleness=%dh",
+        len(tickers), max_workers, DEFAULT_INTERVAL, DEFAULT_LOOKBACK, staleness_hours,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _fetch_one,
+                ticker,
+                fetcher_fn,
+                cache_dir,
+                staleness_hours,
+                force,
+            ): ticker
+            for ticker in tickers
+        }
+
+        for future in as_completed(futures):
+            ticker = futures[future]
+            exc    = future.exception()
+
+            if exc is None:
+                summary.succeeded.append(ticker)
+                logger.debug("✓ %s", ticker)
+            else:
+                summary.failed[ticker] = str(exc)
+                logger.warning("✗ %s — %s", ticker, exc)
+
+    summary.duration = time.perf_counter() - t0
+
+    logger.info(
+        "Watchlist fetch complete | %d/%d succeeded | %d failed | %.1fs",
+        summary.n_succeeded, summary.total, summary.n_failed, summary.duration,
+    )
+
+    return summary
+
+
+# ── internals ─────────────────────────────────────────────────────────────────
+
+def _fetch_one(
+    ticker:          str,
+    fetcher_fn,
+    cache_dir:       Path,
+    staleness_hours: int,
+    force:           bool,
+) -> None:
+    """
+    Fetch and cache a single ticker. Exceptions propagate to the future.
+    """
+    get_or_fetch(
+        ticker          = ticker,
+        fetcher         = fetcher_fn,
+        cache_dir       = cache_dir,
+        staleness_hours = staleness_hours,
+        force           = force,
+    )
+
+
+def _load_config(
+    watchlist_path: Path | str,
+    settings_path:  Path | str,
+) -> tuple[list[str], int, int, Path]:
+    """
+    Load and validate config from watchlist.yaml and settings.yaml.
+
+    Returns
+    -------
+    tickers         : list[str]   All symbols from watchlist.yaml → tickers.
+    max_workers     : int         Thread pool size.
+    staleness_hours : int         Cache freshness threshold in hours.
+    cache_dir       : Path        Directory for parquet files.
+
+    Raises
+    ------
+    FileNotFoundError   When either config file is missing.
+    ValueError          When the watchlist is empty.
+    """
+    watchlist_path = Path(watchlist_path)
+    settings_path  = Path(settings_path)
+
+    if not watchlist_path.exists():
+        raise FileNotFoundError(f"Watchlist config not found: {watchlist_path}")
+    if not settings_path.exists():
+        raise FileNotFoundError(f"Settings config not found: {settings_path}")
+
+    watchlist = yaml.safe_load(watchlist_path.read_text())
+    settings  = yaml.safe_load(settings_path.read_text())
+
+    tickers = watchlist.get("tickers", [])
+    if not tickers:
+        raise ValueError(f"Watchlist is empty: {watchlist_path}")
+
+    max_workers     = settings.get("fetcher",  {}).get("max_workers",     _DEFAULT_MAX_WORKERS)
+    staleness_hours = settings.get("storage",  {}).get("staleness_hours", DEFAULT_STALENESS_H)
+    cache_dir       = Path(settings.get("storage", {}).get("cache_dir",   "data/prices"))
+
+    return tickers, max_workers, staleness_hours, cache_dir

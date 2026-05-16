@@ -1,0 +1,81 @@
+account:
+  total_capital: 25800
+  base_currency: CAD
+
+risk:
+  per_trade_pct: 1.0
+  max_concurrent_risk_pct: 6.0
+  max_open_positions: 3
+  max_positions_per_sector: 2
+  consecutive_loss_pause: 2
+  daily_loss_limit_pct: 3.0
+
+scanner:
+  weights:
+    trend_up:          25
+    ma50_slope:        15
+    volume_spike:      20
+    rsi_healthy:       10   # reduced — bb_zscore covers the statistical side
+    breakout_20d:      20
+    macd_bullish:      15
+    no_earnings_risk:  10
+    relative_strength: 15   # ticker vs SPY over 20d and 60d
+    weekly_trend:      20   # daily signal agrees with weekly trend
+    bb_zscore:         10   # Bollinger Z-score positioning
+
+  exit_weights:
+    regime_flip:       40
+    multi_bar_decay:   20
+    rsi_overbought:    15
+    macd_cross_down:   15
+    vol_expansion:     10
+    rs_divergence:     15   # ticker underperforming SPY over 20d
+  min_score_to_alert: 60
+  top_n_candidates:   5
+
+market_hours:
+  timezone: America/New_York
+  open:  "09:30"
+  close: "16:00"
+  expected_hold_days_low:  10
+  expected_hold_days_high: 15
+
+position_sizing:
+  hard_cap_pct: 2.0
+  buckets:
+    medium:
+      score_min: 60
+      score_max: 75
+      kelly_fraction: 0.25
+    high:
+      score_min: 75
+      score_max: 90
+      kelly_fraction: 0.33
+    premium:
+      score_min: 90
+      score_max: 100
+      kelly_fraction: 0.50
+
+market_filter:
+  indices: [SPY, QQQ]
+  ma_period: 50
+  require_all: true
+
+alerts:
+  telegram:
+    enabled: false
+    chat_id: ${TG_CHAT_ID}
+    bot_token: ${TG_BOT_TOKEN}
+  timezone: America/Winnipeg
+  daily_scan_time: "07:30"
+  weekly_review_time: "Sunday 18:00"
+
+fetcher:
+  max_workers: 8
+
+storage:
+  cache_dir: ./data/prices
+  staleness_hours: 1
+  journal_db: ./data/journal.db
+  screenshot_dir: ./data/screenshots
+  log_level: INFO

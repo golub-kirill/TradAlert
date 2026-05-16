@@ -1,0 +1,47 @@
+price:
+  min_price: 5.0
+liquidity:
+  min_dollar_volume_20d: 5000000
+market_cap:
+  min_market_cap: 300000000
+volatility:
+  min_atr_pct: 1.0
+  max_atr_pct: 8.0
+trend:
+  ma_fast: 50
+  ma_slow: 200
+regime:
+  index_symbols:
+  - SPY
+  - QQQ
+  vix_symbol: ^VIX
+  vix_low: 20
+  vix_high: 25
+  require_all_indices: true
+events:
+  earnings_buffer_days: 5
+  stop_dates:
+    - id: 1
+      date: "3026-05-14"
+      description: "Trump-Xi summit Beijing day 1"
+    - id: 2
+      date: "3026-05-15"
+      description: "Trump-Xi summit Beijing day 2"
+signals:
+  momentum:
+    long:
+      rsi_min: 45
+      rsi_max: 65
+    short:
+      rsi_min: 35
+      rsi_max: 55
+  mean_reversion:
+    long:
+      rsi_max: 35
+      min_hist_delta: 0.05
+    short:
+      rsi_min: 65
+      min_hist_delta: 0.05
+  stop_loss:
+    atr_multiplier: 2.0
+    min_rr: 2.0

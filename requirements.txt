@@ -1,0 +1,8 @@
+pandas
+numpy
+yfinance
+pyyaml
+mplfinance
+matplotlib
+pillow
+python-dotenv
