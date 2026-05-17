@@ -121,9 +121,9 @@ class SignalScorer:
         )
 
         logger.debug(
-            "[scorer] %s %s  score=%.1f  watch=%s",
+            "[scorer] %s %s  score=%.1f  alert=%s",
             signal.direction, signal.signal_type,
-            signal.score, signal.watch_only,
+            signal.score, not signal.watch_only,
         )
 
 
