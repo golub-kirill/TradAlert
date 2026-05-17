@@ -75,7 +75,7 @@ fetcher:
 
 storage:
   cache_dir: ./data/prices
-  staleness_hours: 1
+  staleness_hours: 12
   journal_db: ./data/journal.db
   screenshot_dir: ./data/screenshots
   log_level: INFO
