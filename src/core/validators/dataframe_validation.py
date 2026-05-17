@@ -80,7 +80,7 @@ def validate_ohlcv(
     df = _fix_price_dtypes(df, tag)
     df = _drop_bad_rows(df, tag)
     df = _fix_volume_dtype(df, tag)
-    _check_ohlcv_logic(df, ticker)
+    df = _check_ohlcv_logic(df, ticker)
     df = df.sort_index()
 
     if df.empty:
@@ -182,29 +182,46 @@ def _fix_volume_dtype(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     return df
 
 
-def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> None:
+def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """
-    Raise ValidationError on the first OHLCV logical violation found.
+    Auto-drop recoverable OHLCV violations; raise on unrecoverable ones.
 
-    Checks performed in order:
-        1. high >= low
-        2. close <= high
-        3. close >= low
-        4. close > 0
-        5. volume >= 0
+    Dropped with WARNING (yfinance data-quality blips — single bad rows):
+        high < low
+        close > high
+        close < low
 
-    Reports the violation description, affected row count, and timestamps
-    of the first three offending bars.
+    Hard raise (data is fundamentally broken):
+        close <= 0   (zero or negative price)
+        volume < 0
+
+    Returns the filtered DataFrame with bad rows removed.
     """
-    checks: list[tuple[pd.Series, str]] = [
-        (df["high"] < df["low"],    "high < low"),
-        (df["close"] > df["high"],  "close > high"),
-        (df["close"] < df["low"],   "close < low"),
-        (df["close"] <= 0,          "close <= 0 (zero or negative price)"),
-        (df["volume"] < 0,          "volume < 0"),
+    tag = f"[{ticker}] " if ticker else ""
+
+    # ── auto-drop recoverable violations ──────────────────────────────────────
+    droppable: list[tuple[pd.Series, str]] = [
+        (df["high"] < df["low"], "high < low"),
+        (df["close"] > df["high"], "close > high"),
+        (df["close"] < df["low"], "close < low"),
     ]
+    for mask, description in droppable:
+        bad = df[mask]
+        if not bad.empty:
+            sample = bad.index[:3].tolist()
+            logger.warning(
+                "%sOHLCV violation '%s' on %d row(s) — dropping; "
+                "first offenders: %s",
+                tag, description, len(bad), sample,
+            )
+            df = df[~mask]
 
-    for mask, description in checks:
+    # ── hard failures — data cannot be recovered ──────────────────────────────
+    hard: list[tuple[pd.Series, str]] = [
+        (df["close"] <= 0, "close <= 0 (zero or negative price)"),
+        (df["volume"] < 0, "volume < 0"),
+    ]
+    for mask, description in hard:
         bad = df[mask]
         if not bad.empty:
             sample = bad.index[:3].tolist()
@@ -213,3 +230,5 @@ def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> None:
                 f"first offenders: {sample}",
                 ticker=ticker,
             )
+
+    return df
