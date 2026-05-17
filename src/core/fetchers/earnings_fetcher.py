@@ -21,7 +21,7 @@ from core.fetchers.earnings_history import (
     get_earnings_history,
     next_earnings_from,
 )
-from core.persistence.json_cache import DEFAULT_CACHE_DIR
+from persistence.json_cache import DEFAULT_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 

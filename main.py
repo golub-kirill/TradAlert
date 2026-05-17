@@ -27,9 +27,9 @@ from dotenv import load_dotenv
 # Resolve relative to this file so the script works from any working directory.
 load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 
-from core.persistence.cache import load as cache_load  # noqa: E402
+from persistence.cache import load as cache_load  # noqa: E402
 from core.indicators.chart import chart                            # noqa: E402
-from core.persistence.db import save_scan_run, save_scan_results  # noqa: E402
+from persistence.db import save_scan_run, save_scan_results  # noqa: E402
 from core.filter_engine import FilterEngine, ScanResult, SignalResult  # noqa: E402
 from core.fetchers.fetcher import FetchSummary, fetch_watchlist    # noqa: E402
 from core.fetchers.earnings_fetcher import get_next_earnings       # noqa: E402

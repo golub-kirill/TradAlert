@@ -30,13 +30,13 @@ from pathlib import Path
 
 import yfinance as yf
 
-from core.persistence.json_cache import (
+from core.validators.yf_tickerValidator import validate_ticker
+from persistence.json_cache import (
     DEFAULT_CACHE_DIR,
     load_fresh_section,
     save_section,
     silence_yfinance,
 )
-from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 
