@@ -14,20 +14,20 @@ from datetime import date, timedelta
 import pandas as pd
 import yfinance as yf
 
-from core.validators.dataframe_validation import REQUIRED_COLUMNS
-from core.validators.yfinance_validator import validate_ticker
+from core.validators.dataframe_validator import REQUIRED_COLUMNS
+from core.validators.yf_tickerValidator import validate_ticker
 
-DEFAULT_LOOKBACK: int = 500    # calendar days — ~350 trading days, covers MA200 warmup
-DEFAULT_INTERVAL: str = "1d"   # daily bars — correct for swing trading
+DEFAULT_LOOKBACK: int = 500  # calendar days — ~350 trading days, covers MA200 warmup
+DEFAULT_INTERVAL: str = "1d"  # daily bars — correct for swing trading
 
 
 # ── public API ────────────────────────────────────────────────────────────────
 
 def fetch(
-    ticker:   str,
-    start:    str | None = None,
-    end:      str | None = None,
-    interval: str = DEFAULT_INTERVAL,
+        ticker: str,
+        start: str | None = None,
+        end: str | None = None,
+        interval: str = DEFAULT_INTERVAL,
 ) -> pd.DataFrame:
     """
     Download OHLCV for *ticker* and return a partially standardised DataFrame.
@@ -61,7 +61,7 @@ def fetch(
 
     # yfinance treats `end` as exclusive — pass tomorrow to include today's bar.
     start = start or (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
-    end   = end   or (date.today() + timedelta(days=1)).isoformat()
+    end = end or (date.today() + timedelta(days=1)).isoformat()
 
     raw = yf.download(
         ticker,
@@ -69,7 +69,7 @@ def fetch(
         end=end,
         interval=interval,
         auto_adjust=True,
-        repair=True,       # detects and fixes 100x currency unit mixups (CAD/USD)
+        repair=True,  # detects and fixes 100x currency unit mixups (CAD/USD)
         progress=False,
     )
 
@@ -108,7 +108,7 @@ def _standardise(df: pd.DataFrame) -> pd.DataFrame:
 
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
-    df.index      = pd.to_datetime(df.index)
+    df.index = pd.to_datetime(df.index)
     df.index.name = "timestamp"
 
     df = df.sort_index()

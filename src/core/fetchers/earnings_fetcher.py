@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yfinance as yf
 
-from core.validators.yfinance_validator import validate_ticker
+from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 

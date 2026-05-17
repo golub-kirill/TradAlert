@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yfinance as yf
 
-from core.validators.yfinance_validator import validate_ticker
+from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def _fetch(ticker: str) -> float | None:
     """Query yfinance fast_info for last_price. Returns None on any error."""
     try:
         fi = yf.Ticker(ticker).fast_info
-        price = getattr(fi, "last_price", None)
+        price: int = getattr(fi, "last_price", 0)
         if price is not None and price > 0:
             return float(price)
     except Exception as exc:

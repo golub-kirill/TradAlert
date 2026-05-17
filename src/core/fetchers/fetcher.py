@@ -18,9 +18,9 @@ from pathlib import Path
 
 import yaml
 
-from core.cache import DEFAULT_STALENESS_H, get_or_fetch
-from core.fetchers import yfinance_fetcher
-from core.fetchers.yfinance_fetcher import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
+from core.cache import get_or_fetch
+from core.fetchers import yf_fetchOne
+from core.fetchers.yf_fetchOne import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def fetch_watchlist(
     # End date is left to yfinance_fetcher's default (today + 1d, exclusive).
     start_str  = (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
     fetcher_fn = partial(
-        yfinance_fetcher.fetch,
+        yf_fetchOne.fetch,
         start=start_str,
         interval=DEFAULT_INTERVAL,
     )
@@ -143,7 +143,7 @@ def fetch_watchlist(
 
             if exc is None:
                 summary.succeeded.append(ticker)
-                logger.debug("✓ %s", ticker)
+                logger.info("✓ %s ready", ticker)
             else:
                 summary.failed[ticker] = str(exc)
                 logger.warning("✗ %s — %s", ticker, exc)
@@ -214,7 +214,7 @@ def _load_config(
         raise ValueError(f"Watchlist is empty: {watchlist_path}")
 
     max_workers     = settings.get("fetcher",  {}).get("max_workers",     _DEFAULT_MAX_WORKERS)
-    staleness_hours = settings.get("storage",  {}).get("staleness_hours", DEFAULT_STALENESS_H)
+    staleness_hours = settings.get("storage", {}).get("staleness_hours")
     cache_dir       = Path(settings.get("storage", {}).get("cache_dir",   "data/prices"))
 
     return tickers, max_workers, staleness_hours, cache_dir

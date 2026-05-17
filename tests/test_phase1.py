@@ -5,7 +5,6 @@ Run from project root: python3 tests/test_phase1.py
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -88,7 +87,7 @@ def test_rr_ok_short_requires_target_above_zero():
 # ── Fix 6: yfinance end-date convention (signature check only — no network) ──
 
 def test_yfinance_default_end_is_tomorrow():
-    src = (ROOT / "src" / "core" / "fetchers" / "yfinance_fetcher.py").read_text()
+    src = (ROOT / "src" / "core" / "fetchers" / "yf_fetchOne.py").read_text()
     nowhite = src.replace(" ", "").replace("\n", "")
     assert "date.today()+timedelta(days=1)" in nowhite, \
         "fetch() end default should be (today + 1d).isoformat()"
@@ -198,7 +197,7 @@ if __name__ == "__main__":
     for t in tests:
         print(f"\n→ {t.__name__}")
         try:
-            t()
+            t
         except AssertionError as e:
             failures += 1
             print(f"  FAIL  {e}")

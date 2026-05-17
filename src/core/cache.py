@@ -13,13 +13,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
-from core.validators.dataframe_validation import REQUIRED_COLUMNS, validate_ohlcv
+from core.validators.dataframe_validator import REQUIRED_COLUMNS, validate_ohlcv
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR:    Path = Path("data/prices")
-DEFAULT_STALENESS_H:  int  = 12          # hours; mirrors settings.yaml default
+_SETTINGS_PATH = Path("config/settings.yaml")
+
+
+def load_default_staleness_h() -> int:
+    if _SETTINGS_PATH.exists():
+        settings = yaml.safe_load(_SETTINGS_PATH.read_text())
+        return settings.get("storage", {}).get("staleness_hours", 12)
+    return 12
+
+
+DEFAULT_STALENESS_H: int = load_default_staleness_h()
 
 
 # ── public API ────────────────────────────────────────────────────────────────

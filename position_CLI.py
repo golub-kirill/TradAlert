@@ -8,10 +8,10 @@ Subcommands
     stop    ID PRICE                  update stop on an open position
 
 Examples
-    python admin.py list
-    python admin.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
-    python admin.py close 7 8.20
-    python admin.py stop  3 35.00
+    python position_CLI.py list
+    python position_CLI.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
+    python position_CLI.py close 7 8.20
+    python position_CLI.py stop  3 35.00
 """
 
 from __future__ import annotations

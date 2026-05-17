@@ -21,7 +21,7 @@ from exceptions import FetchError
 
 MAX_TICKER_LENGTH: int = 12
 
-_VALID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Z0-9.\-\^]+$")
+_VALID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Z0-9.\-^]+$")
 
 
 # ── public API ────────────────────────────────────────────────────────────────

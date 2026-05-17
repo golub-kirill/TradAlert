@@ -206,6 +206,7 @@ def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         (df["close"] < df["low"], "close < low"),
     ]
     for mask, description in droppable:
+        mask = mask.reindex(df.index, fill_value=False)
         bad = df[mask]
         if not bad.empty:
             sample = bad.index[:3].tolist()
