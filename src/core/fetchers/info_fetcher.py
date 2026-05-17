@@ -1,59 +1,53 @@
 """
-Market-cap fetcher with 24h JSON cache.
+Market-cap fetcher backed by the shared sectioned-JSON fundamentals cache.
 
 Returns None for tickers without a meaningful market cap (ETFs, indices)
 or when yfinance lookup fails. The None signal lets FilterEngine.scan()
 skip the market-cap gate cleanly for these symbols.
 
-Cache layout
-    data/info/{TICKER}.json
+Storage is delegated to ``core.persistence.json_cache``; this module owns
+only the yfinance query logic and the section schema:
+
+    data/fundamentals/{TICKER}.json
         {
-            "ticker":      "AAPL",
-            "market_cap":  2900000000000.0,
-            "fetched_at":  "2026-05-15T08:00:00"
+            "info": {
+                "market_cap": 2900000000000.0,
+                "fetched_at": "2026-05-15T08:00:00"
+            },
+            ...
         }
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import yfinance as yf
 
+from core.persistence.json_cache import (
+    DEFAULT_CACHE_DIR,
+    load_fresh_section,
+    save_section,
+    silence_yfinance,
+)
 from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 
+# ── constants ─────────────────────────────────────────────────────────────────
 
-@contextlib.contextmanager
-def _silence_yfinance():
-    """Raise yfinance logger to CRITICAL for the block duration."""
-    yf_log = logging.getLogger("yfinance")
-    old    = yf_log.level
-    yf_log.setLevel(logging.CRITICAL)
-    try:
-        yield
-    finally:
-        yf_log.setLevel(old)
+DEFAULT_STALENESS_HOURS: int = 24
+_SECTION: str = "info"
 
 
-# ── constants ────────────────────────────────────────────────────────────────
-
-DEFAULT_CACHE_DIR:       Path = Path("data/info")
-DEFAULT_STALENESS_HOURS: int  = 24
-
-
-# ── public API ───────────────────────────────────────────────────────────────
+# ── public API ────────────────────────────────────────────────────────────────
 
 def get_market_cap(
     ticker:          str,
-    cache_dir:       Path | str  = DEFAULT_CACHE_DIR,
-    staleness_hours: int         = DEFAULT_STALENESS_HOURS,
-    force:           bool        = False,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        staleness_hours: int = DEFAULT_STALENESS_HOURS,
+        force: bool = False,
 ) -> float | None:
     """
     Return the latest market cap in dollars, or None.
@@ -61,34 +55,50 @@ def get_market_cap(
     Cached values (including cached None for ETFs/indices) are preserved
     until the staleness window elapses. Network and parser failures are
     swallowed — caller stays agnostic to yfinance failure modes.
+
+    Parameters
+    ----------
+    ticker          : Ticker symbol; validated and normalised internally.
+    cache_dir       : Root fundamentals cache directory.
+    staleness_hours : Cache freshness threshold. Default 24h.
+    force           : When True, bypass cache and always re-fetch.
+
+    Returns
+    -------
+    float | None
+        Market cap in dollars, or None for symbols without fundamentals.
     """
     ticker = validate_ticker(ticker)
 
     if not force:
-        hit, cached = _load_cache(ticker, cache_dir, staleness_hours)
+        hit, cached = load_fresh_section(
+            ticker, _SECTION, staleness_hours, cache_dir,
+        )
         if hit:
-            logger.debug("Market-cap cache hit ✓ %s → %s", ticker, cached)
-            return cached
+            value = cached.get("market_cap") if cached else None
+            logger.debug("Market-cap cache hit ✓ %s → %s", ticker, value)
+            return value
 
     logger.debug("Market-cap fetch    ↓ %s", ticker)
     value = _fetch(ticker)
-    _save_cache(ticker, value, cache_dir)
+    save_section(ticker, _SECTION, {"market_cap": value}, cache_dir)
     return value
 
 
-# ── internals ────────────────────────────────────────────────────────────────
+# ── internals ─────────────────────────────────────────────────────────────────
 
 def _fetch(ticker: str) -> float | None:
     """
     Query yfinance for market cap.
 
-    Tries fast_info first (lightweight). Falls back to .info on failure.
-    Returns None for any unrecoverable lookup error.
-    yfinance HTTP 404 errors (ETFs/indices have no fundamentals) are suppressed.
+    Tries ``fast_info`` first (lightweight). Falls back to ``.info`` on
+    failure. Returns None for any unrecoverable lookup error — yfinance
+    HTTP 404s (ETFs/indices have no fundamentals) are suppressed by
+    ``silence_yfinance``.
     """
     try:
         yf_ticker = yf.Ticker(ticker)
-        with _silence_yfinance():
+        with silence_yfinance():
             try:
                 fi = yf_ticker.fast_info
                 mc = getattr(fi, "market_cap", None)
@@ -109,52 +119,3 @@ def _fetch(ticker: str) -> float | None:
         logger.warning("Market-cap fetch failed for %s — %s", ticker, exc)
 
     return None
-
-
-def _cache_path(ticker: str, cache_dir: Path | str) -> Path:
-    return Path(cache_dir) / f"{ticker.upper()}.json"
-
-
-def _load_cache(
-    ticker:          str,
-    cache_dir:       Path | str,
-    staleness_hours: int,
-) -> tuple[bool, float | None]:
-    """
-    Return (cache_hit, value). Two-tuple lets the caller distinguish
-    "cache fresh with None" from "cache miss".
-    """
-    path = _cache_path(ticker, cache_dir)
-    if not path.exists():
-        return False, None
-
-    age = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
-    if age > timedelta(hours=staleness_hours):
-        return False, None
-
-    try:
-        payload = json.loads(path.read_text())
-        raw     = payload.get("market_cap")
-        value   = float(raw) if raw is not None else None
-        return True, value
-    except (json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
-        logger.warning("Corrupt market-cap cache for %s — %s", ticker, exc)
-        return False, None
-
-
-def _save_cache(
-    ticker:    str,
-    value:     float | None,
-    cache_dir: Path | str,
-) -> None:
-    path = _cache_path(ticker, cache_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "ticker":     ticker.upper(),
-        "market_cap": value,
-        "fetched_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    try:
-        path.write_text(json.dumps(payload, indent=2))
-    except OSError as exc:
-        logger.warning("Failed to write market-cap cache for %s — %s", ticker, exc)
