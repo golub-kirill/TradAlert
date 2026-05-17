@@ -150,7 +150,7 @@ def _score_entry(
     ma50  = df["close"].rolling(50,  min_periods=50).mean().iloc[-1]
     ma200 = df["close"].rolling(200, min_periods=200).mean().iloc[-1]
     close = float(row["close"])
-    if close > ma50 and ma50 > ma200:
+    if close > ma50 > ma200:
         components["trend_up"] = 1.0
     elif close > ma50:
         components["trend_up"] = 0.5
@@ -291,8 +291,7 @@ def _score_exit(
 
     return _weighted_average(components, weights), components
 
-
-# ── Phase 7 sub-score helpers ─────────────────────────────────────────────────
+    # 7 sub-score helpers ─────────────────────────────────────────────────
 
 def _score_rs_entry(
     df:         pd.DataFrame,

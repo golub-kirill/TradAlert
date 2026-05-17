@@ -60,12 +60,19 @@ class Position:
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
 _SELECT_OPEN_SQL = """
-    SELECT id, ticker, side, entry_price, entry_date,
-           stop_price, exit_price, exit_date, notes
-    FROM positions
-    WHERE exit_date IS NULL
-    ORDER BY entry_date ASC
-"""
+                   SELECT id,
+                          ticker,
+                          side,
+                          entry_price,
+                          entry_date,
+                          stop_price,
+                          exit_price,
+                          exit_date,
+                          notes
+                   FROM positions
+                   WHERE exit_date IS NULL
+                   ORDER BY entry_date \
+                   """
 
 _SELECT_ALL_SQL = """
     SELECT id, ticker, side, entry_price, entry_date,

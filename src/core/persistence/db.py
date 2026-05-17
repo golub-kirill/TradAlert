@@ -17,8 +17,10 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-import mysql.connector
+import mysql
 from mysql.connector import Error as MySQLError
+from mysql.connector.abstracts import MySQLConnectionAbstract
+from mysql.connector.pooling import PooledMySQLConnection
 
 if TYPE_CHECKING:
     # Imported for type hints only — avoids a circular import at runtime
@@ -228,7 +230,7 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
     }
 
 
-def _connect() -> mysql.connector.MySQLConnection:
+def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
     """Open a MySQL connection. Raises MySQLError on failure."""
     return mysql.connector.connect(
         host            = os.environ.get("DB_HOST", "localhost"),

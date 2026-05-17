@@ -18,9 +18,9 @@ from pathlib import Path
 
 import yaml
 
-from core.cache import get_or_fetch
 from core.fetchers import yf_fetchOne
 from core.fetchers.yf_fetchOne import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
+from core.persistence.cache import get_or_fetch
 
 logger = logging.getLogger(__name__)
 

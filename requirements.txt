@@ -6,3 +6,4 @@ mplfinance
 matplotlib
 pillow
 python-dotenv
+mysql-connector-python
