@@ -110,7 +110,7 @@ class ScanResult:
 @dataclass
 class SignalResult:
     """
-    Output of FilterEngine.signal(), enriched by SignalScorer.enrich().
+    Output of FilterEngine.signal().
 
     Attributes
     ----------
@@ -259,14 +259,6 @@ class FilterEngine:
             return _snapshot(f"ATR% {atr_pct:.2f} > max {max_atr}", False)
 
         return _snapshot(self._scan_pass_reason(df, row, dv20), True)
-
-    def market_regime(
-        self,
-        market_dfs: dict[str, pd.DataFrame] | None = None,
-        vix_df:     pd.DataFrame | None = None,
-    ) -> MarketRegime:
-        """Return the current MarketRegime without running signal logic."""
-        return self._market_regime(market_dfs, vix_df)
 
     # ── Stage 2 ───────────────────────────────────────────────────────────────
 
@@ -423,6 +415,11 @@ class FilterEngine:
             1. regime flip      — regime no longer BULL
             2. momentum fade    — macd_hist crosses below zero + RSI confirms
             3. mean-rev exit    — RSI overbought + macd_hist turning down
+
+        Each condition is individually gated by signals.exits.<name> in
+        filters.yaml (default True when missing — preserves prior behavior).
+        Use the toggles for ablation: disable an exit, re-run the backtest,
+        compare the new run row in MySQL against the prior.
         """
         # row-count guard still applies — trend label needs MA200
         min_rows = max(2, self._cfg["trend"]["ma_slow"])
@@ -433,8 +430,11 @@ class FilterEngine:
         row          = df.iloc[-1]
         prev         = df.iloc[-2]
 
+        # Per-exit toggles. Missing section → all True (back-compat with old configs).
+        exit_cfg = self._cfg.get("signals", {}).get("exits", {})
+
         # 1. regime flip — any non-BULL regime triggers exit on a held long
-        if regime.trend != "BULL":
+        if exit_cfg.get("regime_flip", True) and regime.trend != "BULL":
             return SignalResult(
                 passed        = True,
                 direction     = "exit_long",
@@ -449,7 +449,7 @@ class FilterEngine:
             )
 
         # 2. momentum fade — see _momentum_fade_exit
-        if self._momentum_fade_exit(row, prev):
+        if exit_cfg.get("momentum_fade", True) and self._momentum_fade_exit(row, prev):
             return SignalResult(
                 passed        = True,
                 direction     = "exit_long",
@@ -464,7 +464,7 @@ class FilterEngine:
             )
 
         # 3. mean-reversion exit: overbought + macd_hist turning down
-        if self._mean_rev_exit(row, prev):
+        if exit_cfg.get("mean_rev", True) and self._mean_rev_exit(row, prev):
             return SignalResult(
                 passed        = True,
                 direction     = "exit_long",
@@ -484,6 +484,20 @@ class FilterEngine:
             market_regime=regime.label, ticker_trend=ticker_trend,
         )
 
+    # ── public — regime classifier (for scoring + main pipeline) ─────────────
+
+    def market_regime(
+            self,
+            market_dfs: dict[str, pd.DataFrame] | None,
+            vix_df: pd.DataFrame | None,
+    ) -> MarketRegime:
+        """
+        Public wrapper around _market_regime.
+
+        For callers that need regime classification standalone — e.g. main.py
+        computing the regime once and passing it down to SignalScorer.enrich().
+        """
+        return self._market_regime(market_dfs, vix_df)
     # ── private — regime classifier ──────────────────────────────────────────
 
     def _market_regime(
