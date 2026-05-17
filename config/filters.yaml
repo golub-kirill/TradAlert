@@ -1,25 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TradAlert — filters.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── SCAN FILTERS ──────────────────────────────────────────────────────────────
+
 price:
-  min_price: 5.0
+  min_price: 5.00
+
 liquidity:
-  min_dollar_volume_20d: 5000000
+  min_dollar_volume_20d: 5_000_000
+
 market_cap:
-  min_market_cap: 300000000
+  min_market_cap: 300_000_000
+
 volatility:
   min_atr_pct: 1.0
   max_atr_pct: 8.0
+
+
+# ── TREND ─────────────────────────────────────────────────────────────────────
+
 trend:
   ma_fast: 50
   ma_slow: 200
+
+
+# ── MARKET REGIME ─────────────────────────────────────────────────────────────
+
 regime:
-  index_symbols:
-  - SPY
-  - QQQ
-  vix_symbol: ^VIX
-  vix_low: 20
-  vix_high: 25
-  require_all_indices: true
+  index_symbols:        [SPY, QQQ]
+  vix_symbol:           ^VIX
+  vix_low:              20
+  vix_high:             25
+  require_all_indices:  true
+
+
+# ── EVENTS ────────────────────────────────────────────────────────────────────
+
 events:
   earnings_buffer_days: 5
+
   stop_dates:
     - id: 1
       date: "3026-05-14"
@@ -27,14 +48,41 @@ events:
     - id: 2
       date: "3026-05-15"
       description: "Trump-Xi summit Beijing day 2"
+
+
+# ── EXECUTION MODEL ───────────────────────────────────────────────────────────
+# Applied to every trade in both single-stream and portfolio modes.
+# Use --no-execution flag in backtest.py to disable for clean comparison.
+#
+# entry_slippage_pct:
+#   Fraction of bar_open added to the long entry cost.
+#   0.0010 = 0.10% ≈ typical IBKR-tier fill vs midpoint on liquid names.
+#   Applies before R-multiple computation: actual_entry = open × (1 + pct).
+#
+# commission_r:
+#   Flat per-trade round-trip commission, expressed in R units.
+#   Subtracted from r_multiple after close.
+#   Derivation for $25,800 capital at 1% risk per trade:
+#       1R ≈ $258 per trade
+#       $1.25 round-trip (IBKR tiered) ÷ $258 ≈ 0.0048 R  →  0.005 is conservative
+
+execution:
+  entry_slippage_pct: 0.0010
+  commission_r:       0.0050
+
+
+# ── SIGNAL FILTERS ────────────────────────────────────────────────────────────
+
 signals:
+
   momentum:
     long:
       rsi_min: 45
       rsi_max: 65
     short:
-      rsi_min: 35
-      rsi_max: 55
+      rsi_min: 30
+      rsi_max: 45
+
   mean_reversion:
     long:
       rsi_max: 35
@@ -42,6 +90,13 @@ signals:
     short:
       rsi_min: 65
       min_hist_delta: 0.05
+
+  # ── Exit-signal toggles ──────────────────────────────────────────────────
+  exits:
+    regime_flip:   true
+    momentum_fade: true
+    mean_rev:      true
+
   stop_loss:
     atr_multiplier: 2.0
     min_rr: 2.0
