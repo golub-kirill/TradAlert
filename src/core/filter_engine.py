@@ -2,7 +2,8 @@
 Two-stage filter pipeline.
 
     scan()    structural quality gate, always runs
-    signal()  long-entry detection with regime, trend, and earnings gating
+    signal()  long-entry detection on flat positions, exit detection on
+              held longs (branches on the held_long flag)
 
 Indicators (RSI, MACD, ATR) must be present on the input DataFrame.
 Moving averages used for trend classification are computed internally.
@@ -22,9 +23,54 @@ from typing import Literal
 import pandas as pd
 import yaml
 
-from exceptions import InsufficientDataError
+from exceptions import InsufficientDataError, TradAlertError
 
 logger = logging.getLogger(__name__)
+
+# ── module-level helpers (config type checking) ──────────────────────────────
+
+_NUMERIC: tuple[type, ...] = (int, float)
+
+
+def _type_ok(value: object, expected: type | tuple[type, ...]) -> bool:
+    """
+    isinstance() with `bool` excluded from `int`.
+
+    YAML literals `true` / `false` deserialize to Python `True` / `False`,
+    which are subclasses of `int`. Without this guard, `ma_fast: true` would
+    silently pass an `int` type-check.
+    """
+    accept = expected if isinstance(expected, tuple) else (expected,)
+    if isinstance(value, bool):
+        return bool in accept
+    return isinstance(value, accept)
+
+
+def _type_name(expected: type | tuple[type, ...]) -> str:
+    """Format an expected-type spec for error messages."""
+    if isinstance(expected, type):
+        return expected.__name__
+    return " or ".join(t.__name__ for t in expected)
+
+
+# ── exceptions ────────────────────────────────────────────────────────────────
+
+class ConfigError(TradAlertError):
+    """
+    Raised at construction when filters.yaml is missing a required key or
+    has a value of the wrong type.
+
+    The dotted path is attached as ``dotted`` and embedded in the message,
+    so the caller can fix the YAML without spelunking through the engine.
+    The legacy attribute ``missing_key`` is preserved as an alias for
+    backward compatibility with callers that introspect it.
+    """
+
+    def __init__(self, dotted: str, *, reason: str):
+        self.dotted = dotted
+        self.reason = reason
+        self.missing_key = dotted  # alias — kept for introspection callers
+        super().__init__(f"config key {dotted}: {reason}")
 
 
 # ── type aliases ──────────────────────────────────────────────────────────────
@@ -33,7 +79,7 @@ TrendState  = Literal["BULL", "BEAR", "CHOP"]
 VolState    = Literal["LOW", "NORMAL", "HIGH"]
 TickerTrend = Literal["UPTREND", "DOWNTREND", "CHOP"]
 Direction   = Literal["long", "exit_long", "none"]
-SignalType  = Literal["momentum", "mean_reversion", "regime_exit", "none"]
+SignalType = Literal["momentum", "mean_reversion", "regime", "none"]
 
 
 # ── result types ──────────────────────────────────────────────────────────────
@@ -47,8 +93,9 @@ class MarketRegime:
     ----------
     trend      : "BULL" | "BEAR" | "CHOP"
         Computed from regime.index_symbols (default SPY + QQQ) vs each
-        index's own MA50. BULL when indices agree they are above MA50;
-        BEAR when they agree below; CHOP when they disagree.
+        index's own MA(trend.ma_fast) — defaults to MA50. BULL when indices
+        agree they are above MA; BEAR when they agree below; CHOP when
+        they disagree.
     volatility : "LOW" | "NORMAL" | "HIGH"
         Computed from VIX close vs regime.vix_low / regime.vix_high
         thresholds (defaults 20 / 25). Defaults to NORMAL when vix_df
@@ -66,11 +113,6 @@ class MarketRegime:
     def allows_longs(self) -> bool:
         """Long signals require BULL trend and not-HIGH volatility."""
         return self.trend == "BULL" and self.volatility != "HIGH"
-
-    @property
-    def allows_shorts(self) -> bool:
-        """Short signals require BEAR trend and not-HIGH volatility."""
-        return self.trend == "BEAR" and self.volatility != "HIGH"
 
 
 @dataclass
@@ -116,16 +158,18 @@ class SignalResult:
     ----------
     passed            : True when a signal fired and all gates cleared.
     direction         : "long" | "exit_long" | "none".
-    signal_type       : "momentum" | "mean_reversion" | "regime_exit" | "none".
-    stop_price        : close ± ATR × atr_multiplier.
-    target_price      : close ± risk × min_rr, where risk = abs(close - stop_price).
-    min_rr            : Minimum risk:reward ratio from config.
+    signal_type       : "momentum" | "mean_reversion" | "regime" | "none".
+                        direction carries the entry-vs-exit distinction —
+                        "regime" only ever pairs with direction="exit_long".
+    stop_price        : close − ATR × atr_multiplier on entry. Zero on exit.
+    target_price      : close + risk × min_rr on entry. Zero on exit.
+    min_rr            : Minimum risk:reward ratio from config. Zero on exit.
     size_mult         : Position-size multiplier. Always 1.0; reserved.
     market_regime     : Regime label at signal time, e.g. "BULL_NORMAL".
     ticker_trend      : "UPTREND" | "DOWNTREND" | "CHOP" | "N/A".
     reason            : Human-readable explanation. Always populated.
     score             : Confidence score [0, 100]. 0 until SignalScorer.enrich().
-    score_components  : Sub-score dict {name: 0-1}. Empty until enriched.
+    score_components  : Sub-score dict {name: 0..1}. Empty until enriched.
     timeframe         : "daily".
     expected_hold_days: (low, high) trading day range.
     watch_only        : True when trigger fired but score < min_score_to_alert.
@@ -142,12 +186,12 @@ class SignalResult:
     ticker_trend:       str        = ""
     reason:             str        = ""
     # ── enriched by SignalScorer ──────────────────────────────────────────────
-    score:              float               = field(default=0.0,  repr=False)
-    score_components:   dict                = field(default_factory=dict, repr=False)
-    timeframe:          str                 = field(default="daily",  repr=False)
-    expected_hold_days: tuple               = field(default=(10, 15), repr=False)
-    watch_only:         bool                = field(default=False,    repr=False)
-    description:        str                 = field(default="",       repr=False)
+    score: float = field(default=0.0, repr=False)
+    score_components: dict[str, float] = field(default_factory=dict, repr=False)
+    timeframe: str = field(default="daily", repr=False)
+    expected_hold_days: tuple[int, int] = field(default=(10, 15), repr=False)
+    watch_only: bool = field(default=False, repr=False)
+    description: str = field(default="", repr=False)
 
 
 # ── engine ────────────────────────────────────────────────────────────────────
@@ -162,14 +206,71 @@ class FilterEngine:
     today       : Override "today" for backtesting. Default date.today().
     """
 
+    _REQUIRED_CONFIG_KEYS: tuple[tuple[str, type | tuple[type, ...]], ...] = (
+        ("price.min_price", _NUMERIC),
+        ("liquidity.min_dollar_volume_20d", _NUMERIC),
+        ("volatility.min_atr_pct", _NUMERIC),
+        ("volatility.max_atr_pct", _NUMERIC),
+        ("trend.ma_fast", int),
+        ("trend.ma_slow", int),
+        ("signals.momentum.long.rsi_min", _NUMERIC),
+        ("signals.momentum.long.rsi_max", _NUMERIC),
+        ("signals.momentum.short.rsi_min", _NUMERIC),
+        ("signals.momentum.short.rsi_max", _NUMERIC),
+        ("signals.mean_reversion.long.rsi_max", _NUMERIC),
+        ("signals.mean_reversion.long.min_hist_delta", _NUMERIC),
+        ("signals.mean_reversion.short.rsi_min", _NUMERIC),
+        ("signals.mean_reversion.short.min_hist_delta", _NUMERIC),
+        ("signals.stop_loss.atr_multiplier", _NUMERIC),
+        ("signals.stop_loss.min_rr", _NUMERIC),
+    )
+
+    _EARNINGS_BUFFER_DAYS_DEFAULT: int = 5
+
     def __init__(
         self,
         config_path: Path | str = "config/filters.yaml",
         today:       date | None = None,
     ):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
+        self._validate_config()
         self._today = today or date.today()
+        self._stop_dates = self._build_stop_dates_index()
+
+    # ── private — config validation ──────────────────────────────────────────
+
+    def _validate_config(self) -> None:
+
+        for dotted, expected in self._REQUIRED_CONFIG_KEYS:
+            node = self._cfg
+            for part in dotted.split("."):
+                if not isinstance(node, dict) or part not in node:
+                    raise ConfigError(dotted, reason="missing")
+                node = node[part]
+            if not _type_ok(node, expected):
+                raise ConfigError(
+                    dotted,
+                    reason=f"expected {_type_name(expected)}, got {type(node).__name__}",
+                )
+
+    def _build_stop_dates_index(self) -> dict[str, dict]:
+        raw = self._cfg.get("events", {}).get("stop_dates", []) or []
+        index: dict[str, dict] = {}
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ConfigError(
+                    f"events.stop_dates[{i}]",
+                    reason=f"expected dict, got {type(entry).__name__}",
+                )
+            for required in ("date", "id", "description"):
+                if required not in entry:
+                    raise ConfigError(
+                        f"events.stop_dates[{i}].{required}",
+                        reason="missing",
+                    )
+            index[str(entry["date"])] = entry
+        return index
 
     # ── Stage 1 ───────────────────────────────────────────────────────────────
 
@@ -198,8 +299,6 @@ class FilterEngine:
         ----------
         ticker     : Symbol; used for logging only.
         df         : DataFrame with indicators already computed.
-                     Required columns: open, high, low, close, volume, atr,
-                                       rsi, macd, macd_signal, macd_hist.
         market_cap : Market cap in dollars. None skips the gate (ETFs/indices).
 
         Returns
@@ -210,6 +309,8 @@ class FilterEngine:
         ------
         InsufficientDataError
             When df has fewer than 20 rows.
+        KeyError
+            When a required indicator column is missing from df.
         """
         if len(df) < 20:
             raise InsufficientDataError(got=len(df), need=20, ticker=ticker)
@@ -219,6 +320,10 @@ class FilterEngine:
 
         # ── capture snapshot now so all exit paths can carry it ───────────────
         def _snapshot(reason: str, passed: bool) -> ScanResult:
+            logger.debug(
+                "scan %s %s: %s",
+                "PASS" if passed else "FAIL", ticker, reason,
+            )
             return ScanResult(
                 passed      = passed,
                 reason      = reason,
@@ -227,10 +332,10 @@ class FilterEngine:
                 atr_pct     = float(row["atr"] / row["close"] * 100),
                 dv20        = dv20,
                 market_cap  = market_cap,
-                rsi         = float(row["rsi"])         if "rsi"         in row.index else None,
-                macd        = float(row["macd"])        if "macd"        in row.index else None,
-                macd_signal = float(row["macd_signal"]) if "macd_signal" in row.index else None,
-                macd_hist   = float(row["macd_hist"])   if "macd_hist"   in row.index else None,
+                rsi=float(row["rsi"]),
+                macd=float(row["macd"]),
+                macd_signal=float(row["macd_signal"]),
+                macd_hist=float(row["macd_hist"]),
             )
 
         # 1. price floor
@@ -314,9 +419,20 @@ class FilterEngine:
         # Regime is computed in both modes so it can be reported.
         regime = self._market_regime(market_dfs, vix_df)
 
-        if held_long:
-            return self._signal_exit(ticker, df, regime)
-        return self._signal_entry(ticker, df, regime, earnings_date)
+        result = (
+            self._signal_exit(ticker, df, regime)
+            if held_long
+            else self._signal_entry(ticker, df, regime, earnings_date)
+        )
+
+        if result.passed:
+            logger.info(
+                "signal FIRED %s %s/%s: %s",
+                ticker, result.direction, result.signal_type, result.reason,
+            )
+        else:
+            logger.debug("signal NONE %s: %s", ticker, result.reason)
+        return result
 
     # ── Stage 2: entry mode ──────────────────────────────────────────────────
 
@@ -331,26 +447,20 @@ class FilterEngine:
         # 1. stop_date blackout
         blocked, reason = self._signal_blocked()
         if blocked:
-            return SignalResult(
-                False, reason=reason,
-                market_regime=regime.label, ticker_trend="N/A",
-            )
+            return self._fail_result(reason, regime, "N/A")
 
         # 2. row-count guard
-        min_rows = max(2, self._cfg["trend"]["ma_slow"])
-        if len(df) < min_rows:
-            raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
+        self._min_rows_guard(df, ticker)
 
         ticker_trend = self._ticker_trend(df)
 
         # 3. earnings buffer
         if self._near_earnings(earnings_date):
-            buf     = self._cfg["events"]["earnings_buffer_days"]
+            buf = self._earnings_buffer_days()
             days_to = (earnings_date - self._today).days
-            return SignalResult(
-                False,
-                reason=f"earnings in {days_to}d (buffer {buf}d)",
-                market_regime=regime.label, ticker_trend=ticker_trend,
+            return self._fail_result(
+                f"earnings in {days_to}d (buffer {buf}d)",
+                regime, ticker_trend,
             )
 
         row  = df.iloc[-1]
@@ -362,10 +472,7 @@ class FilterEngine:
         )
 
         if direction == "none":
-            return SignalResult(
-                False, reason=why,
-                market_regime=regime.label, ticker_trend=ticker_trend,
-            )
+            return self._fail_result(why, regime, ticker_trend)
 
         # 5. R:R sanity (longs only — direction is always "long" here)
         atr_mult     = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
@@ -376,10 +483,8 @@ class FilterEngine:
         target_price = row["close"] + risk * min_rr
 
         if not self._rr_ok(row["close"], stop_price, min_rr, is_long=True):
-            return SignalResult(
-                False,
-                reason=f"R:R below minimum {min_rr}",
-                market_regime=regime.label, ticker_trend=ticker_trend,
+            return self._fail_result(
+                f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
         return SignalResult(
@@ -417,71 +522,51 @@ class FilterEngine:
             3. mean-rev exit    — RSI overbought + macd_hist turning down
 
         Each condition is individually gated by signals.exits.<name> in
-        filters.yaml (default True when missing — preserves prior behavior).
-        Use the toggles for ablation: disable an exit, re-run the backtest,
-        compare the new run row in MySQL against the prior.
+        filters.yaml. Use the toggles for ablation: disable an exit, re-run
+        the backtest, compare the new run row in MySQL against the prior.
+
+        Example config (all three keys are optional, default True):
+            signals:
+              exits:
+                regime_flip:   true
+                momentum_fade: true
+                mean_rev:      true
         """
         # row-count guard still applies — trend label needs MA200
-        min_rows = max(2, self._cfg["trend"]["ma_slow"])
-        if len(df) < min_rows:
-            raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
+        self._min_rows_guard(df, ticker)
 
         ticker_trend = self._ticker_trend(df)
         row          = df.iloc[-1]
         prev         = df.iloc[-2]
 
-        # Per-exit toggles. Missing section → all True (back-compat with old configs).
         exit_cfg = self._cfg.get("signals", {}).get("exits", {})
 
         # 1. regime flip — any non-BULL regime triggers exit on a held long
         if exit_cfg.get("regime_flip", True) and regime.trend != "BULL":
-            return SignalResult(
-                passed        = True,
-                direction     = "exit_long",
-                signal_type   = "regime_exit",
-                stop_price    = 0.0,
-                target_price  = 0.0,
-                min_rr        = 0.0,
-                size_mult     = 1.0,
-                market_regime = regime.label,
-                ticker_trend  = ticker_trend,
-                reason        = f"regime flipped to {regime.trend} — exit held long",
+            return self._exit_result(
+                "regime",
+                f"regime flipped to {regime.trend} — exit held long",
+                regime, ticker_trend,
             )
 
         # 2. momentum fade — see _momentum_fade_exit
         if exit_cfg.get("momentum_fade", True) and self._momentum_fade_exit(row, prev):
-            return SignalResult(
-                passed        = True,
-                direction     = "exit_long",
-                signal_type   = "momentum",
-                stop_price    = 0.0,
-                target_price  = 0.0,
-                min_rr        = 0.0,
-                size_mult     = 1.0,
-                market_regime = regime.label,
-                ticker_trend  = ticker_trend,
-                reason        = "momentum fade — exit held long",
+            return self._exit_result(
+                "momentum",
+                "momentum fade — exit held long",
+                regime, ticker_trend,
             )
 
         # 3. mean-reversion exit: overbought + macd_hist turning down
         if exit_cfg.get("mean_rev", True) and self._mean_rev_exit(row, prev):
-            return SignalResult(
-                passed        = True,
-                direction     = "exit_long",
-                signal_type   = "mean_reversion",
-                stop_price    = 0.0,
-                target_price  = 0.0,
-                min_rr        = 0.0,
-                size_mult     = 1.0,
-                market_regime = regime.label,
-                ticker_trend  = ticker_trend,
-                reason        = "overbought + momentum down — exit held long",
+            return self._exit_result(
+                "mean_reversion",
+                "overbought + momentum down — exit held long",
+                regime, ticker_trend,
             )
 
-        return SignalResult(
-            False,
-            reason="no exit condition met (hold)",
-            market_regime=regime.label, ticker_trend=ticker_trend,
+        return self._fail_result(
+            "no exit condition met (hold)", regime, ticker_trend,
         )
 
     # ── public — regime classifier (for scoring + main pipeline) ─────────────
@@ -498,6 +583,7 @@ class FilterEngine:
         computing the regime once and passing it down to SignalScorer.enrich().
         """
         return self._market_regime(market_dfs, vix_df)
+
     # ── private — regime classifier ──────────────────────────────────────────
 
     def _market_regime(
@@ -508,13 +594,12 @@ class FilterEngine:
         """
         Classify the broad market on trend and volatility axes.
 
-        Trend (regime.index_symbols, default SPY + QQQ vs each MA50):
-            require_all_indices: true  → BULL if all > MA50,
-                                         BEAR if all < MA50, else CHOP
+        Trend (regime.index_symbols, default SPY + QQQ vs each MA(ma_fast)):
+            require_all_indices: true  → BULL if all > MA, BEAR if all < MA,
+                                         else CHOP
             require_all_indices: false → majority vote among up/down
 
-        Empty market_dfs defaults trend to BULL. Shorts still blocked
-        because they require BEAR.
+        Empty market_dfs defaults trend to BULL.
 
         Volatility (VIX close vs regime.vix_low / regime.vix_high):
             None vix_df defaults to NORMAL; high-vol cutoff disabled.
@@ -526,11 +611,13 @@ class FilterEngine:
         rcfg = self._cfg.get("regime", {})
 
         # ── volatility ───────────────────────────────────────────────────────
+        volatility: VolState
         if vix_df is not None and not vix_df.empty:
             vix_close = float(vix_df["close"].iloc[-1])
             vix_low   = rcfg.get("vix_low",  20)
             vix_high  = rcfg.get("vix_high", 25)
-            if   vix_close < vix_low:  volatility: VolState = "LOW"
+            if vix_close < vix_low:
+                volatility = "LOW"
             elif vix_close > vix_high: volatility = "HIGH"
             else:                      volatility = "NORMAL"
         else:
@@ -556,8 +643,9 @@ class FilterEngine:
             elif last < ma: votes_dn += 1
 
         total_votes = votes_up + votes_dn
+        trend: TrendState
         if total_votes == 0:
-            trend: TrendState = "BULL"
+            trend = "BULL"
         elif require_all:
             if   votes_up == total_votes: trend = "BULL"
             elif votes_dn == total_votes: trend = "BEAR"
@@ -573,23 +661,15 @@ class FilterEngine:
 
     def _ticker_trend(self, df: pd.DataFrame) -> TickerTrend:
         """
-        Three-state ticker trend from MA50 / MA200 stack.
+        Three-state ticker trend from MA(trend.ma_fast) / MA(trend.ma_slow).
 
-            UPTREND   close > MA50 > MA200
-            DOWNTREND close < MA50 < MA200
+            UPTREND   close > MA_fast > MA_slow
+            DOWNTREND close < MA_fast < MA_slow
             CHOP      anything else
         """
         fast = self._cfg["trend"]["ma_fast"]
         slow = self._cfg["trend"]["ma_slow"]
-
-        close   = df["close"]
-        ma_fast = close.rolling(fast, min_periods=fast).mean().iloc[-1]
-        ma_slow = close.rolling(slow, min_periods=slow).mean().iloc[-1]
-        last    = close.iloc[-1]
-
-        if   last > ma_fast > ma_slow: return "UPTREND"
-        elif last < ma_fast < ma_slow: return "DOWNTREND"
-        else:                          return "CHOP"
+        return self._classify_trend(df["close"], fast, slow)
 
     # ── private — entry evaluator (longs only) ───────────────────────────────
 
@@ -672,7 +752,90 @@ class FilterEngine:
         delta = row["macd_hist"] - prev["macd_hist"]
         return row["rsi"] > cfg["rsi_min"] and delta <= -cfg["min_hist_delta"]
 
-    # ── private — small helpers ──────────────────────────────────────────────
+    # ── private — shared helpers ─────────────────────────────────────────────
+
+    def _min_rows_guard(self, df: pd.DataFrame, ticker: str) -> None:
+        """
+        Enforce the minimum-row contract for signal evaluation.
+
+        Need at least trend.ma_slow rows (for the MA stack) and at least 2
+        rows (so iloc[-2] exists). Raises InsufficientDataError otherwise.
+        """
+        min_rows = max(2, self._cfg["trend"]["ma_slow"])
+        if len(df) < min_rows:
+            raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
+
+    @staticmethod
+    def _classify_trend(close: pd.Series, fast: int, slow: int) -> TickerTrend:
+        """
+        Three-state trend from the MA(fast)/MA(slow) stack on a close Series.
+
+            UPTREND   close > MA(fast) > MA(slow)
+            DOWNTREND close < MA(fast) < MA(slow)
+            CHOP      anything else, or insufficient data
+
+        Shared by _ticker_trend (signal gate) and _scan_pass_reason
+        (persisted reason). Single source of truth — extending one
+        automatically extends the other.
+        """
+        if len(close) < slow:
+            return "CHOP"
+        ma_fast = close.rolling(fast, min_periods=fast).mean().iloc[-1]
+        ma_slow = close.rolling(slow, min_periods=slow).mean().iloc[-1]
+        last = close.iloc[-1]
+        if last > ma_fast > ma_slow:
+            return "UPTREND"
+        elif last < ma_fast < ma_slow:
+            return "DOWNTREND"
+        else:
+            return "CHOP"
+
+    @staticmethod
+    def _exit_result(
+            signal_type: SignalType,
+            reason: str,
+            regime: MarketRegime,
+            ticker_trend: TickerTrend,
+    ) -> SignalResult:
+        """
+        Build a passing exit SignalResult.
+
+        stop_price / target_price / min_rr are zeroed — an exit closes the
+        position at market, not at a planned level. size_mult is fixed at
+        1.0 to match entry-side semantics.
+        """
+        return SignalResult(
+            passed=True,
+            direction="exit_long",
+            signal_type=signal_type,
+            stop_price=0.0,
+            target_price=0.0,
+            min_rr=0.0,
+            size_mult=1.0,
+            market_regime=regime.label,
+            ticker_trend=ticker_trend,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _fail_result(
+            reason: str,
+            regime: MarketRegime,
+            ticker_trend: str,
+    ) -> SignalResult:
+        """
+        Build a non-passing SignalResult for any gate failure.
+
+        Symmetric to `_exit_result` — collapses the repeated
+        `SignalResult(False, reason=..., market_regime=..., ticker_trend=...)`
+        construction that appeared six times across entry/exit gate failures.
+        """
+        return SignalResult(
+            passed=False,
+            reason=reason,
+            market_regime=regime.label,
+            ticker_trend=ticker_trend,
+        )
 
     def _scan_pass_reason(
         self,
@@ -685,7 +848,7 @@ class FilterEngine:
 
         Format: "UPTREND | vol×2.1 | RSI 54 | MACD↑ | 20d✓"
 
-        trend     UPTREND/DOWNTREND/CHOP from MA50/MA200 stack
+        trend     UPTREND/DOWNTREND/CHOP from MA(fast)/MA(slow) stack
         vol_mult  today's volume / 20-day average volume
         rsi       RSI(14) on the last bar
         macd_dir  ↑ when macd_hist > 0, else ↓
@@ -694,29 +857,18 @@ class FilterEngine:
         fast = self._cfg["trend"]["ma_fast"]
         slow = self._cfg["trend"]["ma_slow"]
 
-        close = df["close"]
         last  = float(row["close"])
-
-        # Strict min_periods matches _ticker_trend so the persisted reason
-        # cannot disagree with the signal-gate trend on the same bar.
-        if len(df) >= slow:
-            ma_fast = close.rolling(fast, min_periods=fast).mean().iloc[-1]
-            ma_slow = close.rolling(slow, min_periods=slow).mean().iloc[-1]
-            if   last > ma_fast > ma_slow: trend = "UPTREND"
-            elif last < ma_fast < ma_slow: trend = "DOWNTREND"
-            else:                          trend = "CHOP"
-        else:
-            trend = "CHOP"
+        trend = self._classify_trend(df["close"], fast, slow)
 
         # Volume multiplier vs 20-day average
         avg_vol  = float(df["volume"].tail(20).mean())
         vol_mult = float(row["volume"]) / avg_vol if avg_vol > 0 else 0.0
 
-        # RSI
-        rsi_val = float(row["rsi"]) if "rsi" in row.index else float("nan")
+        # RSI on the last bar. Required-column contract is enforced by scan().
+        rsi_val = float(row["rsi"])
 
         # MACD histogram direction
-        macd_dir = "↑" if ("macd_hist" in row.index and row["macd_hist"] > 0) else "↓"
+        macd_dir = "↑" if row["macd_hist"] > 0 else "↓"
 
         # 20-day breakout: close above the highest high of the prior 20 bars
         prior_high = float(df["high"].iloc[-21:-1].max()) if len(df) >= 21 else float("nan")
@@ -730,18 +882,22 @@ class FilterEngine:
         """
         Check whether today appears in events.stop_dates.
 
+        Uses the pre-built `self._stop_dates` index (O(1) dict lookup)
+        instead of a linear scan over the YAML list. Malformed entries
+        were rejected at construction time, so this method cannot raise.
+
         Returns
         -------
         (True, reason)  when signals should be suppressed.
         (False, "")     on a normal trading day.
         """
         today_str = self._today.isoformat()
-        for entry in self._cfg.get("events", {}).get("stop_dates", []) or []:
-            if entry["date"] == today_str:
-                return True, (
-                    f"stop date #{entry['id']}: {entry['description']} ({today_str})"
-                )
-        return False, ""
+        entry = self._stop_dates.get(today_str)
+        if entry is None:
+            return False, ""
+        return True, (
+            f"stop date #{entry['id']}: {entry['description']} ({today_str})"
+        )
 
     def _near_earnings(self, earnings_date: date | None) -> bool:
         """
@@ -750,8 +906,19 @@ class FilterEngine:
         """
         if earnings_date is None or earnings_date < self._today:
             return False
-        buffer_days = self._cfg.get("events", {}).get("earnings_buffer_days", 5)
-        return (earnings_date - self._today).days <= buffer_days
+        return (earnings_date - self._today).days <= self._earnings_buffer_days()
+
+    def _earnings_buffer_days(self) -> int:
+        """
+        events.earnings_buffer_days from filters.yaml.
+
+        Defaults to `_EARNINGS_BUFFER_DAYS_DEFAULT` (5) when the key is
+        absent — `events` is an optional section, so this key cannot live
+        in `_REQUIRED_CONFIG_KEYS`.
+        """
+        return self._cfg.get("events", {}).get(
+            "earnings_buffer_days", self._EARNINGS_BUFFER_DAYS_DEFAULT,
+        )
 
     @staticmethod
     def _rr_ok(entry: float, stop: float, min_rr: float, is_long: bool) -> bool:
