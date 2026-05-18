@@ -1,13 +1,12 @@
 """
 TradAlert custom exception hierarchy.
 
-Hierarchy
-─────────
-    TradAlertError                  base for all TradAlert exceptions
+    TradAlertError                  base class for the tree
     ├── ValidationError             DataFrame structure or content is invalid
     │   ├── StaleDataError          cached file exceeds the staleness threshold
     │   └── InsufficientDataError   too few rows for the requested operation
-    └── FetchError                  data source returned unusable data
+    ├── FetchError                  data source returned unusable data
+    └── ConfigError                 YAML config key missing or wrong type
 """
 
 from __future__ import annotations
@@ -94,7 +93,7 @@ class FetchError(TradAlertError):
     Attributes
     ----------
     detail : str
-        Human-readable reason for the failure.
+        Reason for the failure.
     ticker : str
         Symbol that failed to fetch. Empty string when unknown.
     """
@@ -104,3 +103,23 @@ class FetchError(TradAlertError):
         self.ticker = ticker
         prefix = f"[{ticker}] " if ticker else ""
         super().__init__(f"{prefix}{detail}")
+
+
+# ── config branch ─────────────────────────────────────────────────────────────
+
+class ConfigError(TradAlertError):
+    """
+    Raised when a YAML config value is missing or has the wrong type.
+
+    Attributes
+    ----------
+    dotted      : str  Dotted path to the offending key.
+    reason      : str  Specific violation.
+    missing_key : str  Alias for ``dotted``.
+    """
+
+    def __init__(self, dotted: str, *, reason: str) -> None:
+        self.dotted = dotted
+        self.reason = reason
+        self.missing_key = dotted
+        super().__init__(f"config key {dotted}: {reason}")

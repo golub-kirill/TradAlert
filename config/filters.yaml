@@ -1,102 +1,96 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # TradAlert — filters.yaml
+# Read by FilterEngine (src/core/filter_engine.py) and chart.py (RSI bands).
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── SCAN FILTERS ──────────────────────────────────────────────────────────────
 
-price:
-  min_price: 5.00
+price: # block: hard price floor
+  min_price: 5.00                       # USD/CAD; rows with close < min_price fail scan
 
-liquidity:
-  min_dollar_volume_20d: 5_000_000
+liquidity: # block: dollar-volume floor
+  min_dollar_volume_20d: 5_000_000      # 20-day average; rows below fail scan
 
-market_cap:
-  min_market_cap: 300_000_000
+market_cap: # block: market-cap floor
+  min_market_cap: 300_000_000           # USD; None (ETF/index) skips the gate
 
-volatility:
-  min_atr_pct: 1.0
-  max_atr_pct: 8.0
+volatility: # block: ATR% band [min, max]
+  min_atr_pct: 1.0                      # atr/close*100 floor; reject illiquid/dead names
+  max_atr_pct: 8.0                      # atr/close*100 ceiling; reject blow-off vol
 
 
 # ── TREND ─────────────────────────────────────────────────────────────────────
 
-trend:
-  ma_fast: 50
-  ma_slow: 200
+trend: # block: ticker-trend MA stack
+  ma_fast: 50                           # MA(50) for trend classification + ticker_trend
+  ma_slow: 200                          # MA(200); also drives _min_rows_guard
 
 
 # ── MARKET REGIME ─────────────────────────────────────────────────────────────
 
-regime:
-  index_symbols:        [SPY, QQQ]
-  vix_symbol:           ^VIX
-  vix_low:              20
-  vix_high:             25
-  require_all_indices:  true
+regime: # block: broad-market regime classifier
+  index_symbols: [ SPY, QQQ ]      # indices voted for trend; vs each MA(ma_fast)
+  vix_symbol: ^VIX            # volatility series; resolved by fetcher
+  vix_low: 20              # VIX close below → volatility = LOW
+  vix_high: 25              # VIX close above → volatility = HIGH
+  require_all_indices: true            # true: unanimous vote; false: majority vote
 
 
 # ── EVENTS ────────────────────────────────────────────────────────────────────
 
-events:
-  earnings_buffer_days: 5
+events: # block: calendar gates
+  earnings_buffer_days: 5               # block new longs within N days of next earnings
 
-  stop_dates:
-    - id: 1
-      date: "3026-05-14"
+  stop_dates: # signal blackout calendar; suppresses entries + exits
+    - id: 1                             # row id; logged in the block reason
+      date: "3026-05-14"                # ISO date; matched against engine._today
       description: "Trump-Xi summit Beijing day 1"
-    - id: 2
-      date: "3026-05-15"
+    - id: 2                             # row id
+      date: "3026-05-15"                # ISO date
       description: "Trump-Xi summit Beijing day 2"
 
 
 # ── EXECUTION MODEL ───────────────────────────────────────────────────────────
-# Applied to every trade in both single-stream and portfolio modes.
-# Use --no-execution flag in backtest.py to disable for clean comparison.
-#
-# entry_slippage_pct:
-#   Fraction of bar_open added to the long entry cost.
-#   0.0010 = 0.10% ≈ typical IBKR-tier fill vs midpoint on liquid names.
-#   Applies before R-multiple computation: actual_entry = open × (1 + pct).
-#
-# commission_r:
-#   Flat per-trade round-trip commission, expressed in R units.
-#   Subtracted from r_multiple after close.
-#   Derivation for $25,800 capital at 1% risk per trade:
-#       1R ≈ $258 per trade
-#       $1.25 round-trip (IBKR tiered) ÷ $258 ≈ 0.0048 R  →  0.005 is conservative
 
-execution:
-  entry_slippage_pct: 0.0010
-  commission_r:       0.0050
+execution: # block: backtest fill model (stage 2)
+  entry_slippage_pct: 0.0010            # 0.10% added to bar_open on long fills
+  commission_r: 0.0050            # round-trip cost in R; subtracted from r_multiple
 
 
 # ── SIGNAL FILTERS ────────────────────────────────────────────────────────────
 
-signals:
+signals: # block: trigger configuration
 
-  momentum:
-    long:
-      rsi_min: 45
-      rsi_max: 65
-    short:
-      rsi_min: 30
-      rsi_max: 45
+  # Magnitude gates are ATR-relative: |macd_hist[t] - macd_hist[t-1]|
+  # must be >= min_hist_delta_atr * row.atr. A typical value of 0.05
+  # means "delta worth ~5% of one ATR". This makes the same threshold
+  # behave consistently across $7 and $400 names instead of triggering
+  # on noise for low-priced stocks and never firing for high-priced ones.
 
-  mean_reversion:
-    long:
-      rsi_max: 35
-      min_hist_delta: 0.05
-    short:
-      rsi_min: 65
-      min_hist_delta: 0.05
+  momentum: # block: trend-following triggers
+    long: # entry: macd_hist crosses up + RSI in band + delta gate
+      rsi_min: 45                       # inclusive floor for momentum long
+      rsi_max: 65                       # inclusive ceiling for momentum long
+      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) >= this * atr
+    short: # held-long exit: fade trigger; reused by _momentum_fade_exit
+      rsi_min: 30                       # inclusive floor for fade trigger
+      rsi_max: 45                       # inclusive ceiling for fade trigger
+      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
 
-  # ── Exit-signal toggles ──────────────────────────────────────────────────
-  exits:
-    regime_flip:   true
-    momentum_fade: true
-    mean_rev:      true
+  mean_reversion: # block: counter-trend triggers
+    long: # entry: RSI < rsi_max + macd_hist rising
+      rsi_max: 35                       # exclusive ceiling; lower = more oversold
+      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) >= this * atr
+    short: # held-long exit: overbought trigger
+      rsi_min: 65                       # exclusive floor; higher = more overbought
+      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
 
-  stop_loss:
-    atr_multiplier: 2.0
-    min_rr: 2.0
+  exits: # block: held-long exit toggles (all default true)
+    regime_flip: true                 # exit when broad-market trend != BULL
+    momentum_fade: true                 # exit on momentum-fade trigger
+    mean_rev: true                 # exit on overbought mean-reversion trigger
+
+  stop_loss: # block: position-sizing & R:R structure
+    atr_multiplier: 2.0                 # stop = close - atr*atr_multiplier (long entry)
+    min_rr: 2.0                         # target = close + risk*min_rr; ratio gate

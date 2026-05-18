@@ -1,13 +1,8 @@
 """
-Historical earnings-date fetcher for backtests.
+Historical earnings-date fetcher.
 
-Unlike core.fetchers.earnings_fetcher (which only returns the NEXT
-scheduled date), this module returns ALL known earnings dates for a
-ticker — past and future — so the backtester can apply the
-events.earnings_buffer_days gate correctly at any historical bar.
-
-Storage is delegated to ``core.persistence.json_cache``; this module owns
-only the yfinance query logic and the section schema:
+Returns all known earnings dates for a ticker — past and future — for use by
+the backtester and the events.earnings_buffer_days gate.
 
     data/fundamentals/{TICKER}.json
         {
@@ -18,8 +13,7 @@ only the yfinance query logic and the section schema:
             ...
         }
 
-ETFs / indices return [] (no earnings exist). Network failures return []
-(fail-open — earnings buffer simply does not gate that ticker).
+ETFs / indices and network failures return ``[]``.
 """
 
 from __future__ import annotations
@@ -36,14 +30,16 @@ from persistence.json_cache import (
     load_fresh_section,
     save_section,
     silence_yfinance,
+    staleness_for,
 )
 
 logger = logging.getLogger(__name__)
 
 # ── constants ────────────────────────────────────────────────────────────────
 
-DEFAULT_STALENESS_HOURS: int = 7 * 24  # 1 week; historical dates don't move
 _SECTION: str = "earnings_history"
+_FALLBACK_STALENESS_H: int = 7 * 24
+DEFAULT_STALENESS_HOURS: int = staleness_for(_SECTION, _FALLBACK_STALENESS_H)
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -56,10 +52,6 @@ def get_earnings_history(
 ) -> list[date]:
     """
     Return every known earnings date for *ticker*, sorted ascending.
-
-    Past and future dates included. Empty list for ETFs / indices or on
-    any fetch failure — backtester treats empty history as "no earnings
-    gate for this ticker".
 
     Parameters
     ----------
@@ -98,14 +90,10 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
     """
     Return the first earnings date in *history* on or after *asof*.
 
-    This is the value FilterEngine.signal() expects in its ``earnings_date``
-    parameter — "next scheduled report from this bar's perspective". Returns
-    None when *history* is empty or *asof* is past the last known date.
-
     Parameters
     ----------
-    history : Sorted list of earnings dates (output of get_earnings_history).
-    asof    : Reference date — the bar's date in a backtest, today() live.
+    history : Sorted list of earnings dates.
+    asof    : Reference date.
 
     Returns
     -------
@@ -119,15 +107,10 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
 
 def _fetch(ticker: str) -> list[date]:
     """
-    Query yfinance for the full earnings_dates DataFrame.
+    Query yfinance ``earnings_dates`` and return a sorted, de-duplicated date list.
 
-    yfinance returns a DataFrame indexed by Timestamp; every index entry
-    is coerced to a python date. Duplicate dates (rare — pre-market vs
-    after-hours filings sharing a calendar day) are de-duplicated.
-    All exceptions are swallowed and produce an empty list.
-
-    yfinance logs its own ERROR-level "No earnings dates found" message
-    for every ETF and index — suppressed via ``silence_yfinance``.
+    Returns ``[]`` on any failure. yfinance ERROR logs are suppressed via
+    ``silence_yfinance``.
     """
     try:
         yf_ticker = yf.Ticker(ticker)
@@ -152,12 +135,7 @@ def _fetch(ticker: str) -> list[date]:
 
 
 def _parse_dates(raw: list[str]) -> list[date]:
-    """
-    Coerce a list of ISO date strings (from cache) to python dates.
-
-    Bad entries are skipped with a debug log; the cache reader stays
-    fail-open so a single malformed string can't lose the whole history.
-    """
+    """Coerce ISO date strings from cache to ``date`` objects; skip unparseable entries."""
     out: list[date] = []
     for s in raw:
         try:

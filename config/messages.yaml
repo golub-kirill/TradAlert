@@ -1,6 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TradAlert — messages.yaml
+# Alert message templates; .format(**ctx) substitution at send time.
+# Available keys per template documented inline below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# {direction}     "LONG" | "EXIT"
+# {ticker}        symbol (case as fed)
+# {signal_type}   "momentum" | "mean_reversion" | "regime"
+# {entry}         float; signal-bar close
+# {stop_price}    float; long-side hard stop
+# {target_price}  float; computed from min_rr
+# {min_rr}        float; from filters.yaml stop_loss.min_rr
+# {market_regime} "BULL_NORMAL" | "BULL_LOW" | ... (TrendState_VolState)
 signal: "🚨 {direction} {ticker} | {signal_type} | Entry ~{entry:.2f} | SL {stop_price:.2f} | TP {target_price:.2f} | R:R 1:{min_rr} | Regime {market_regime}"
+
+# {ticker}                symbol
+# {days_until_earnings}   int; positive = future
+# {min_rr}                float; tighter R:R near earnings
+# {size_pct}              int; % of normal position size
 earnings_pre: "EARNINGS SETUP: {ticker} reports in {days_until_earnings}d. Min R:R 1:{min_rr}. Size: {size_pct}% of normal. Exit before report."
+
+# {ticker}        symbol
+# {gap_pct}       float; signed; pre-market or open gap
+# {report_date}   ISO date of the report
+# {min_rr}        float
+# {size_pct}      int
 earnings_post: "POST-EARN DRIFT: {ticker} gapped {gap_pct}% on {report_date}. Setup forming. Min R:R 1:{min_rr}. Size: {size_pct}%."
+
+# no substitution keys; rendered as-is on FOMC days
 fomc: "FOMC BLACKOUT: rate decision today. No new entries until 24h after release."
+
+# no substitution keys; rendered as-is on CPI release days
 cpi: "CPI RELEASE TODAY: watch for gaps. Reduce or skip entries."
+
+# {description}   stop_dates[].description from filters.yaml
+# {date}          ISO date (today)
+# {action}        caller-supplied string ("no-trade" | "reduce size" | ...)
 custom: "{description} on {date}. Action: {action}."

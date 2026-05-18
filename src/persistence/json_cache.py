@@ -1,30 +1,19 @@
 """
 Sectioned-JSON cache for per-ticker fundamentals.
 
-Multiple data sources (info, next_earnings, earnings_history) share one
-file per ticker. Each source owns a section with its own ``fetched_at``
-timestamp so different staleness windows can coexist:
+Multiple data sources share one file per ticker; each section owns its own
+``fetched_at`` timestamp so different staleness windows coexist:
 
     data/fundamentals/AAPL.json
         {
             "ticker": "AAPL",
-            "info": {
-                "market_cap": 4.4e12,
-                "fetched_at": "2026-05-16T12:59:24"
-            },
-            "next_earnings": {
-                "date": "2026-07-30",
-                "fetched_at": "2026-05-16T12:59:24"
-            },
-            "earnings_history": {
-                "dates": ["2020-07-30", "..."],
-                "fetched_at": "2026-05-16T13:03:36"
-            }
+            "info":             {..., "fetched_at": "..."},
+            "next_earnings":    {..., "fetched_at": "..."},
+            "earnings_history": {..., "fetched_at": "..."}
         }
 
-Section writes are read-modify-write: other sections are preserved.
-Corrupt files are auto-quarantined (renamed ``.corrupt``) and treated
-as a miss so the next fetch repopulates cleanly.
+Section writes are read-modify-write. Corrupt files are renamed
+``{path}.corrupt`` and treated as a miss.
 """
 
 from __future__ import annotations
@@ -36,11 +25,41 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_CACHE_DIR: Path = Path("data/fundamentals")
+_SETTINGS_PATH: Path = Path("config/settings.yaml")
+
+
+def staleness_for(section: str, fallback_hours: int) -> int:
+    """
+    Resolve a section's cache staleness from settings.yaml.
+
+    Reads ``storage.staleness_<section>`` first, falling back to
+    ``storage.staleness_hours``, then to ``fallback_hours``.
+
+    Parameters
+    ----------
+    section        : Section key, e.g. ``"info"`` or ``"earnings_history"``.
+    fallback_hours : Value returned when both settings keys are absent.
+
+    Returns
+    -------
+    int  Staleness threshold in hours.
+    """
+    if not _SETTINGS_PATH.exists():
+        return fallback_hours
+    storage = (yaml.safe_load(_SETTINGS_PATH.read_text()) or {}).get("storage", {})
+    section_key = f"staleness_{section}"
+    if section_key in storage:
+        return int(storage[section_key])
+    if "staleness_hours" in storage:
+        return int(storage["staleness_hours"])
+    return fallback_hours
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -49,10 +68,6 @@ DEFAULT_CACHE_DIR: Path = Path("data/fundamentals")
 def silence_yfinance():
     """
     Raise yfinance's logger to CRITICAL for the duration of the block.
-
-    Suppresses spurious ERROR-level messages yfinance emits for symbols
-    with no fundamentals (ETFs, indices) — "No earnings dates found,
-    symbol may be delisted", HTTP 404s on .info, etc.
 
     Yields
     ------
@@ -76,13 +91,9 @@ def load_fresh_section(
     """
     Return (hit, section_data) for one section of a sectioned JSON cache.
 
-    The two-tuple lets the caller distinguish "cache fresh, payload is
-    None/empty" from "cache miss" — None is itself a valid cached value
-    for the fetchers that gate on missing fundamentals (ETFs, indices).
-
     Parameters
     ----------
-    ticker          : Ticker symbol (case-preserving; filename uses upper).
+    ticker          : Ticker symbol (filename uses upper).
     section         : Section key inside the JSON payload, e.g. ``"info"``.
     staleness_hours : Max age of the section's ``fetched_at`` before miss.
     cache_dir       : Root cache directory.
@@ -91,16 +102,9 @@ def load_fresh_section(
     -------
     (False, None)
         File missing, section absent, ``fetched_at`` missing/unparseable,
-        section is stale, or the file is corrupt.
+        section stale, or file corrupt (also quarantined as ``.corrupt``).
     (True, dict)
-        Section is fresh; the entire section dict (sans ``fetched_at``)
-        is returned for the caller to destructure.
-
-    Notes
-    -----
-    Corrupt files are renamed to ``{path}.corrupt`` and a WARNING is
-    logged. This auto-correct behaviour follows the project convention:
-    fixable issues warn-and-recover, not raise.
+        Section is fresh; section payload returned without ``fetched_at``.
     """
     path = _cache_path(ticker, cache_dir)
     if not path.exists():
@@ -146,22 +150,19 @@ def save_section(
     """
     Write one section of the sectioned JSON cache; preserve other sections.
 
-    Reads the existing file (or starts empty), stamps the section with
-    ``fetched_at = now()``, sets ``payload[section] = {**data, fetched_at}``,
-    and writes the whole file. Other sections are untouched.
+    Stamps ``fetched_at = now()`` onto the section payload before writing.
 
     Parameters
     ----------
     ticker    : Ticker symbol — filename derived as ``{TICKER}.json``.
     section   : Section key, e.g. ``"info"`` or ``"earnings_history"``.
-    data      : Section payload. ``fetched_at`` is added automatically;
-                any caller-supplied ``fetched_at`` is overwritten.
+    data      : Section payload. Any caller-supplied ``fetched_at`` is
+                overwritten.
     cache_dir : Root cache directory; created if missing.
 
     Notes
     -----
-    Write failures are logged but never raised — caching is best-effort
-    and must never break the fetch path.
+    Write failures are logged at WARNING and swallowed.
     """
     path = _cache_path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)

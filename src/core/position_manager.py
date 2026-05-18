@@ -1,9 +1,8 @@
 """
-Position CRUD on the positions MySQL table.
+Position CRUD on the ``positions`` MySQL table.
 
-Open positions have exit_date IS NULL. Closed positions are retained for
-history. All DB errors are caught and logged; functions return safe
-fallbacks (empty dict, None) so a DB hiccup never aborts a scan run.
+Open positions have ``exit_date IS NULL``. DB errors are caught and logged;
+functions return safe fallbacks so a DB hiccup never aborts a scan run.
 """
 
 from __future__ import annotations
@@ -258,7 +257,8 @@ def _row_to_position(r: dict) -> Position:
     )
 
 
-def _connect() -> mysql.connector.MySQLConnection:
+def _connect():
+    """Open a fresh MySQL connection. Returns ``MySQLConnectionAbstract | PooledMySQLConnection``."""
     return mysql.connector.connect(
         host            = os.environ.get("DB_HOST", "localhost"),
         port            = int(os.environ.get("DB_PORT", "3306")),

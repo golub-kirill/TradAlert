@@ -1,81 +1,88 @@
-account:
-  total_capital: 25800
-  base_currency: CAD
+# ─────────────────────────────────────────────────────────────────────────────
+# TradAlert — settings.yaml
+# Read by main.py, fetcher.py, scoring.py, cache.py, json_cache.py.
+# All keys are optional — code falls back to the defaults shown in [brackets].
+# ─────────────────────────────────────────────────────────────────────────────
 
-risk:
-  per_trade_pct: 1.0
-  max_concurrent_risk_pct: 6.0
-  max_open_positions: 3
-  max_positions_per_sector: 2
-  consecutive_loss_pause: 2
-  daily_loss_limit_pct: 3.0
 
-scanner:
-  weights:
-    trend_up:          25
-    ma50_slope:        15
-    volume_spike:      20
-    rsi_healthy:       10   # reduced — bb_zscore covers the statistical side
-    breakout_20d:      20
-    macd_bullish:      15
-    no_earnings_risk:  10
-    relative_strength: 15   # ticker vs SPY over 20d and 60d
-    weekly_trend:      20   # daily signal agrees with weekly trend
-    bb_zscore:         10   # Bollinger Z-score positioning
+# ── STORAGE ───────────────────────────────────────────────────────────────────
+# Cache directories, freshness windows, log level.
 
-  exit_weights:
-    regime_flip:       40
-    multi_bar_decay:   20
-    rsi_overbought:    15
-    macd_cross_down:   15
-    vol_expansion:     10
-    rs_divergence:     15   # ticker underperforming SPY over 20d
-  min_score_to_alert: 60
-  top_n_candidates:   5
+storage: # block: paths + cache freshness + logging
+  cache_dir: "data/prices"           # OHLCV parquet cache; fetcher.py [data/prices]
+  log_level: "INFO"                  # DEBUG | INFO | WARNING | ERROR | CRITICAL [INFO]
 
-market_hours:
-  timezone: America/New_York
-  open:  "09:30"
-  close: "16:00"
-  expected_hold_days_low:  10
-  expected_hold_days_high: 15
+  # ── staleness windows (hours) ───────────────────────────────────────────────
+  # Each fetcher consults storage.staleness_<section> first via
+  # persistence.json_cache.staleness_for(); falls back to staleness_hours;
+  # then to the per-fetcher hard-coded default.
+  staleness_hours: 12        # OHLCV parquet (cache.py) [12]
+  staleness_info: 24        # market cap (info_fetcher.py) [24]
+  staleness_next_earnings: 24        # next earnings date (earnings_fetcher.py) [24]
+  staleness_earnings_history: 168       # full earnings history; 7d (earnings_history.py) [168]
 
-position_sizing:
-  hard_cap_pct: 2.0
-  buckets:
-    medium:
-      score_min: 60
-      score_max: 75
-      kelly_fraction: 0.25
-    high:
-      score_min: 75
-      score_max: 90
-      kelly_fraction: 0.33
-    premium:
-      score_min: 90
-      score_max: 100
-      kelly_fraction: 0.50
 
-market_filter:
-  indices: [SPY, QQQ]
-  ma_period: 50
-  require_all: true
+# ── FETCHER ───────────────────────────────────────────────────────────────────
+# Parallel watchlist fetch via ThreadPoolExecutor.
 
-alerts:
-  telegram:
-    enabled: false
-    chat_id: ${TG_CHAT_ID}
-    bot_token: ${TG_BOT_TOKEN}
-  timezone: America/Winnipeg
-  daily_scan_time: "07:30"
-  weekly_review_time: "Sunday 18:00"
+fetcher: # block: concurrency
+  max_workers: 8                        # yfinance is network-bound; more threads ≠ faster [8]
 
-fetcher:
-  max_workers: 8
 
-storage:
-  cache_dir: ./data/prices
-  staleness_hours: 12
-  journal_db: ./data/journal.db
-  screenshot_dir: ./data/screenshots
-  log_level: INFO
+# ── MARKET HOURS ──────────────────────────────────────────────────────────────
+# Expected hold horizon for swing entries; surfaced in signal descriptions.
+
+market_hours: # block: trade horizon
+  expected_hold_days_low: 10           # low end of "~N-Md hold" line in description [10]
+  expected_hold_days_high: 15           # high end of the range [15]
+
+
+# ── SCANNER ───────────────────────────────────────────────────────────────────
+# Confidence-scoring weights, thresholds, and alert gate.
+
+scanner: # block: scoring + alerting
+
+  min_score_to_alert: 60                # entries below this score are watch_only [60]
+
+  # ── ENTRY WEIGHTS ──────────────────────────────────────────────────────────
+  # Weighted-averaged in scoring._weighted_average(); units are arbitrary,
+  # only relative magnitudes matter. Components present in code but absent
+  # from this dict contribute 0 to the score.
+  weights: # block: long-entry sub-score weights
+    trend_up: 3                # close > MA50 > MA200 stack alignment
+    ma50_slope: 2                # MA50 % change over last 20 bars
+    volume_spike: 2                # today_vol / 20d avg
+    rsi_healthy: 2                # RSI proximity to ideal trend-confirm centre
+    breakout_20d: 3                # close vs prior 20-bar high
+    macd_bullish: 3                # macd_hist sign + direction
+    no_earnings_risk: 2                # days until earnings vs buffer
+    relative_strength: 2                # ticker vs SPY over 20d + 60d
+    weekly_trend: 2                # weekly close > 10w SMA + rising
+    bb_zscore: 2                # Bollinger Z-score positioning; signal-type-aware
+
+  # ── EXIT WEIGHTS ──────────────────────────────────────────────────────────
+  # Same mechanic as weights; used only when direction == "exit_long".
+  exit_weights: # block: held-long exit sub-score weights
+    regime_flip: 4                  # broad-market trend no longer BULL (strongest)
+    multi_bar_decay: 3                  # consecutive negative macd_hist bars
+    rsi_overbought: 2                  # RSI above the overbought floor
+    macd_cross_down: 3                  # macd_hist crosses below zero
+    vol_expansion: 2                  # atr today / atr 5d avg
+    rs_divergence: 2                  # ticker underperforming SPY over 20d
+
+  # ── ENTRY THRESHOLDS ──────────────────────────────────────────────────────
+  # Tunables loaded into scoring.EntryThresholds; passed to _score_entry().
+  entry_thresholds: # block: entry sub-score tunables
+    rsi_healthy_center: 52.5            # RSI mapped to rsi_healthy score 1.0 [52.5]
+    rsi_healthy_half_w: 12.5            # half-width of the band; score 0.0 at ±half_w [12.5]
+    ma50_slope_scale: 2.0             # MA50 % slope scaled by (slope+s)/(2*s) [2.0]
+    breakout_band_pct: 3.0             # below prior 20d high by this % → score 0 [3.0]
+    volume_spike_ratio: 2.0             # today_vol/avg_vol_20 saturating score at 1.0 [2.0]
+
+  # ── EXIT THRESHOLDS ───────────────────────────────────────────────────────
+  # Tunables loaded into scoring.ExitThresholds; passed to _score_exit().
+  exit_thresholds: # block: exit sub-score tunables
+    rsi_overbought_floor: 60.0          # RSI below this gives score 0 [60.0]
+    rsi_overbought_range: 10.0          # delta over floor saturating score at 1.0 [10.0]
+    multi_bar_decay_max: 3.0           # consecutive negative macd_hist bars → score 1.0 [3.0]
+    vol_expansion_ratio: 0.5           # (atr_today/atr_5d_avg − 1) saturating score at 1.0 [0.5]

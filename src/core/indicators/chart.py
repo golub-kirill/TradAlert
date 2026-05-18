@@ -6,8 +6,7 @@
     Panel 3  RSI(14) with overbought / oversold   (ratio 1.5)
     Panel 4  MACD histogram + MACD + signal       (ratio 2)
 
-When a SignalResult with passed=True is supplied, the last bar is
-annotated with direction, stop line, and target zone.
+Signal annotation on the last bar fires when SignalResult.passed is True.
 """
 
 from __future__ import annotations
@@ -16,28 +15,49 @@ import io
 import logging
 from pathlib import Path
 
-import mplfinance as mpf
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 import pandas as pd
+import yaml
 from PIL import Image
 
 from core.filter_engine import SignalResult
+from exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-LOOKBACK_BARS:  int = 90        # trading days shown — ~4 months, ideal for swing
-_WEBP_QUALITY:  int = 90        # 0–100; 90 = near-lossless, reasonable file size
+LOOKBACK_BARS: int = 90  # trading days shown — ~4 months
+_WEBP_QUALITY: int = 90  # 0–100; 90 = near-lossless
 _DPI:           int = 150       # 16×10 inch canvas @ 150 DPI → 2400×1500 px
 _FIGSIZE            = (16, 10)
 
 DEFAULT_OUT_DIR = Path("data/screenshots")
+_FILTERS_PATH = Path("config/filters.yaml")
+_RSI_MID_DEFAULT = 50.0
 
-# RSI thresholds from filters.yaml — must match signals.mean_reversion config
-_RSI_OB: float = 65.0   # overbought
-_RSI_OS: float = 35.0   # oversold
-_RSI_MID: float = 50.0
+
+def _load_rsi_thresholds() -> tuple[float, float, float]:
+    """
+    Return (overbought, oversold, midline) RSI levels for chart guide lines.
+
+    Reads ``signals.mean_reversion.short.rsi_min`` (overbought) and
+    ``signals.mean_reversion.long.rsi_max`` (oversold) from filters.yaml.
+    Midline is fixed at 50.0 (RSI scale midpoint).
+    """
+    if not _FILTERS_PATH.exists():
+        logger.warning("filters.yaml not found at %s — using defaults 65/35/50", _FILTERS_PATH)
+        return 65.0, 35.0, _RSI_MID_DEFAULT
+
+    cfg = yaml.safe_load(_FILTERS_PATH.read_text()) or {}
+    mr = cfg.get("signals", {}).get("mean_reversion", {})
+    ob = float(mr.get("short", {}).get("rsi_min", 65))
+    os_ = float(mr.get("long", {}).get("rsi_max", 35))
+    return ob, os_, _RSI_MID_DEFAULT
+
+
+_RSI_OB, _RSI_OS, _RSI_MID = _load_rsi_thresholds()
 
 # ── Palette ─────────────────────────────────────────
 _C_BG       = "#131722"
@@ -95,23 +115,20 @@ def chart(
     ticker     : Symbol — used in chart title and output filename.
     df         : Enriched OHLCV DataFrame.
                  Required columns: open high low close volume
-                                   atr rsi macd macd_signal macd_hist
-                 Must have a DatetimeIndex (tz-naive).
-                 Must contain at least max(50, lookback) rows so MA50
-                 is meaningful across the full display window.
-    signal     : Optional SignalResult. When passed=True, annotates the
-                 last bar with direction arrow, stop line, and target zone.
-    output_dir : Directory for the output file. Created if missing.
-    lookback   : Number of trading bars to display. Default 90 (~4 months).
+                                   atr rsi macd macd_signal macd_hist.
+                 DatetimeIndex (tz-naive). Length ≥ max(50, lookback) so MA50
+                 has values across the displayed window.
+    signal     : Optional SignalResult; ``passed=True`` annotates the last bar.
+    output_dir : Output directory; created if missing.
+    lookback   : Number of trading bars to display. Default 90.
 
     Returns
     -------
-    Path
-        Absolute path to the saved .webp file.
+    Path  Absolute path to the saved .webp file.
 
     Raises
     ------
-    ValueError
+    ValidationError
         When required indicator columns are missing from df.
     """
     _check_columns(df)
@@ -235,11 +252,12 @@ def chart(
 # ── private helpers ───────────────────────────────────────────────────────────
 
 def _check_columns(df: pd.DataFrame) -> None:
+    """Raise ValidationError when any required column is absent from df."""
     required = ["open", "high", "low", "close", "volume",
                 "atr", "rsi", "macd", "macd_signal", "macd_hist"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"chart(): df missing columns: {missing}")
+        raise ValidationError(f"chart(): df missing columns: {missing}")
 
 
 def _annotate_signal(
@@ -248,11 +266,10 @@ def _annotate_signal(
     signal: SignalResult,
 ) -> None:
     """
-    Annotate the last bar based on direction.
+    Annotate the last bar based on signal direction.
 
     Long entry  : ▲ LONG label + stop line + target zone.
-    Long exit   : ✕ EXIT label only — stops live on the position, not the
-                  signal; targets aren't meaningful for "get out now".
+    Long exit   : ✕ EXIT label only.
     """
     last_x     = len(df) - 1
     last_close = df["close"].iloc[-1]

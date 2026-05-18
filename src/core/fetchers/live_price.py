@@ -1,9 +1,7 @@
 """
 Live price fetcher with 5-minute JSON cache.
 
-Uses yfinance fast_info.last_price — a single lightweight HTTP call, no
-full OHLCV download. Returns None on any failure so the caller degrades
-gracefully (current price line is simply omitted from the signal description).
+Uses yfinance ``fast_info.last_price``. Returns None on any failure.
 
 Cache layout
     data/prices_live/{TICKER}.json
@@ -42,9 +40,6 @@ def get_live_price(
     """
     Return the latest trade price for ticker, or None on any failure.
 
-    Cached for staleness_min minutes. Network and parser failures are
-    swallowed — caller treats None as "live price unavailable".
-
     Parameters
     ----------
     ticker        : Ticker symbol; validated and normalised internally.
@@ -73,10 +68,10 @@ def get_live_price(
 # ── internals ────────────────────────────────────────────────────────────────
 
 def _fetch(ticker: str) -> float | None:
-    """Query yfinance fast_info for last_price. Returns None on any error."""
+    """Query yfinance fast_info for last_price. Return None on any error."""
     try:
         fi = yf.Ticker(ticker).fast_info
-        price: int = getattr(fi, "last_price", 0)
+        price: float = getattr(fi, "last_price", 0.0)
         if price is not None and price > 0:
             return float(price)
     except Exception as exc:

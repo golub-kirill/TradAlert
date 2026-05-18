@@ -16,6 +16,7 @@ import yfinance as yf
 
 from core.validators.dataframe_validator import REQUIRED_COLUMNS
 from core.validators.yf_tickerValidator import validate_ticker
+from exceptions import FetchError
 
 DEFAULT_LOOKBACK: int = 500  # calendar days — ~350 trading days, covers MA200 warmup
 DEFAULT_INTERVAL: str = "1d"  # daily bars — correct for swing trading
@@ -53,9 +54,7 @@ def fetch(
     Raises
     ------
     FetchError
-        When the ticker string is invalid (see yfinance_validator).
-    ValueError
-        When yfinance returns an empty response for a valid ticker.
+        On invalid ticker string or empty yfinance response.
     """
     ticker = validate_ticker(ticker)
 
@@ -74,7 +73,7 @@ def fetch(
     )
 
     if raw.empty:
-        raise ValueError(f"yfinance returned no data for '{ticker}'")
+        raise FetchError("yfinance returned no data", ticker=ticker)
 
     return _standardise(raw)
 

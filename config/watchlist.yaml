@@ -1,83 +1,85 @@
-# config/watchlist.yaml
 # ─────────────────────────────────────────────────────────────────────────────
-# Master ticker list for TradAlert.
+# TradAlert — watchlist.yaml
+# Master ticker list. Loaded by core.fetchers.fetcher._load_config().
 #
-# Conventions:
-#   .TO  — Toronto Stock Exchange (TSX)
-#   .V   — TSX Venture Exchange
-#   No suffix — US exchanges (NYSE / NASDAQ)
+# Suffix conventions
+#   .TO   Toronto Stock Exchange (TSX)
+#   .V    TSX Venture Exchange
+#   (none) US exchanges (NYSE / NASDAQ)
 # ─────────────────────────────────────────────────────────────────────────────
 
-tickers:
+tickers: # list: order does not affect pipeline order
+
   # ── Market context (used by FilterEngine regime check) ────────────────────
-  - SPY
-  - QQQ
-  - ^VIX   #   only for scanner (CBOE Volatility Index)
+  - SPY                                 # S&P 500 ETF; tradeable, scanned, vote member
+  - QQQ                                 # NASDAQ-100 ETF; tradeable, scanned, vote member
+  - ^VIX                                # CBOE Volatility Index; context-only, no scan
 
-  # ── Canadian (TSX) ──────────────────────────────────────────────────────────
-  - ZQQ.TO
-  - SHOP.TO
-  - ENB.TO
-  - RY.TO
-  - CNQ.TO
-  - SU.TO
-  - TD.TO
+  # ── Canadian (TSX) ────────────────────────────────────────────────────────
+  - ZQQ.TO                              # BMO NASDAQ-100 hedged-CAD ETF
+  - SHOP.TO                             # Shopify
+  - ENB.TO                              # Enbridge
+  - RY.TO                               # Royal Bank of Canada
+  - CNQ.TO                              # Canadian Natural Resources
+  - SU.TO                               # Suncor Energy
+  - TD.TO                               # Toronto-Dominion Bank
 
-  # ── US Sector ETFs ──────────────────────────────────────────────────────────
-  - XLE
-  - XLK
-  - SMH
-  - GLD
+  # ── US Sector ETFs ────────────────────────────────────────────────────────
+  - XLE                                 # Energy Select Sector SPDR
+  - XLK                                 # Technology Select Sector SPDR
+  - SMH                                 # VanEck Semiconductor ETF
+  - GLD                                 # SPDR Gold Shares
 
-  # ── Semiconductors ──────────────────────────────────────────────────────────
-  - NVDA
-  - AMD
-  - AVGO
-  - TSM
-  - SMCI
-  - MU
+  # ── Semiconductors ────────────────────────────────────────────────────────
+  - NVDA                                # NVIDIA
+  - AMD                                 # Advanced Micro Devices
+  - AVGO                                # Broadcom
+  - TSM                                 # Taiwan Semiconductor ADR
+  - SMCI                                # Super Micro Computer
+  - MU                                  # Micron Technology
 
-  # ── Tech / Cloud ────────────────────────────────────────────────────────────
-  - PLTR
-  - CRWD
-  - NET
-  - SNOW
-  - MSFT
-  - GOOGL
-  - AAPL
-  - AMZN
-  - META
+  # ── Tech / Cloud ──────────────────────────────────────────────────────────
+  - PLTR                                # Palantir Technologies
+  - CRWD                                # CrowdStrike
+  - NET                                 # Cloudflare
+  - SNOW                                # Snowflake
+  - MSFT                                # Microsoft
+  - GOOGL                               # Alphabet (Class A)
+  - AAPL                                # Apple
+  - AMZN                                # Amazon
+  - META                                # Meta Platforms
 
-  # ── Consumer / EV ───────────────────────────────────────────────────────────
-  - TSLA
+  # ── Consumer / EV ─────────────────────────────────────────────────────────
+  - TSLA                                # Tesla
 
-  # ── Energy ──────────────────────────────────────────────────────────────────
-  - XOM
-  - CVX
-  - SLB
+  # ── Energy ────────────────────────────────────────────────────────────────
+  - XOM                                 # Exxon Mobil
+  - CVX                                 # Chevron
+  - SLB                                 # Schlumberger
 
-  # ── AI / Small-Cap ──────────────────────────────────────────────────────────
-  - SOUN
-  # ── AI Storage ──────────────────────────────────────────────────────────────
-  - SNDK
-  - WDC
-  - STX
+  # ── AI / Small-Cap ────────────────────────────────────────────────────────
+  - SOUN                                # SoundHound AI
 
-  # ── Semiconductors ──────────────────────────────────────────────────────────
-  - INTC
-  - MRVL
-  - ANET
-  - QCOM
+  # ── AI Storage ────────────────────────────────────────────────────────────
+  - SNDK                                # Sandisk
+  - WDC                                 # Western Digital
+  - STX                                 # Seagate Technology
 
-  # ── Chip Equipment ──────────────────────────────────────────────────────────
-  - ASML
-  - KLAC
-  - LRCX
+  # ── Semiconductors (additional) ───────────────────────────────────────────
+  - INTC                                # Intel
+  - MRVL                                # Marvell Technology
+  - ANET                                # Arista Networks
+  - QCOM                                # Qualcomm
 
-  # ── Gold ────────────────────────────────────────────────────────────────────
-  - GOLD
-  - NEM
-  - ABX.TO
+  # ── Chip Equipment ────────────────────────────────────────────────────────
+  - ASML                                # ASML Holding
+  - KLAC                                # KLA Corporation
+  - LRCX                                # Lam Research
 
-  # ── Finance ─────────────────────────────────────────────────────────────────
-  - JPM
+  # ── Gold ──────────────────────────────────────────────────────────────────
+  - GOLD                                # Barrick Gold (US-listed)
+  - NEM                                 # Newmont
+  - ABX.TO                              # Barrick Gold (TSX-listed)
+
+  # ── Finance ───────────────────────────────────────────────────────────────
+  - JPM                                 # JPMorgan Chase

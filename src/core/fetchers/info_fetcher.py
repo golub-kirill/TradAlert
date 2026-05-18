@@ -2,11 +2,7 @@
 Market-cap fetcher backed by the shared sectioned-JSON fundamentals cache.
 
 Returns None for tickers without a meaningful market cap (ETFs, indices)
-or when yfinance lookup fails. The None signal lets FilterEngine.scan()
-skip the market-cap gate cleanly for these symbols.
-
-Storage is delegated to ``core.persistence.json_cache``; this module owns
-only the yfinance query logic and the section schema:
+and on any yfinance failure.
 
     data/fundamentals/{TICKER}.json
         {
@@ -31,14 +27,16 @@ from persistence.json_cache import (
     load_fresh_section,
     save_section,
     silence_yfinance,
+    staleness_for,
 )
 
 logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_STALENESS_HOURS: int = 24
 _SECTION: str = "info"
+_FALLBACK_STALENESS_H: int = 24
+DEFAULT_STALENESS_HOURS: int = staleness_for(_SECTION, _FALLBACK_STALENESS_H)
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -51,10 +49,6 @@ def get_market_cap(
 ) -> float | None:
     """
     Return the latest market cap in dollars, or None.
-
-    Cached values (including cached None for ETFs/indices) are preserved
-    until the staleness window elapses. Network and parser failures are
-    swallowed — caller stays agnostic to yfinance failure modes.
 
     Parameters
     ----------
@@ -88,14 +82,7 @@ def get_market_cap(
 # ── internals ─────────────────────────────────────────────────────────────────
 
 def _fetch(ticker: str) -> float | None:
-    """
-    Query yfinance for market cap.
-
-    Tries ``fast_info`` first (lightweight). Falls back to ``.info`` on
-    failure. Returns None for any unrecoverable lookup error — yfinance
-    HTTP 404s (ETFs/indices have no fundamentals) are suppressed by
-    ``silence_yfinance``.
-    """
+    """Query yfinance for market cap. Try ``fast_info`` then ``.info``."""
     try:
         yf_ticker = yf.Ticker(ticker)
         with silence_yfinance():

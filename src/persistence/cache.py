@@ -1,9 +1,8 @@
 """
-Source-agnostic parquet cache for OHLCV DataFrames.
+Parquet cache for OHLCV DataFrames.
 
-Any fetcher that produces a DataFrame passing validate_ohlcv() can write
-here. Staleness uses a time-based threshold (default 12h) loaded from
-settings.yaml → storage.staleness_hours.
+Staleness threshold loaded from settings.yaml → ``storage.staleness_hours``
+(default 12h when unset).
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ import pandas as pd
 import yaml
 
 from core.validators.dataframe_validator import REQUIRED_COLUMNS, validate_ohlcv
+from exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ _SETTINGS_PATH = Path("config/settings.yaml")
 
 
 def load_default_staleness_h() -> int:
+    """Return ``storage.staleness_hours`` from settings.yaml, else 12."""
     if _SETTINGS_PATH.exists():
         settings = yaml.safe_load(_SETTINGS_PATH.read_text())
         return settings.get("storage", {}).get("staleness_hours", 12)
@@ -116,10 +117,6 @@ def save(
     """
     Validate structure and write a standardised OHLCV DataFrame to parquet.
 
-    Performs a lightweight structural guard (columns + index type) before
-    writing. Full content validation is the caller's responsibility — see
-    get_or_fetch() which chains validate_ohlcv() before save().
-
     Parameters
     ----------
     df        : Validated OHLCV DataFrame.
@@ -128,9 +125,8 @@ def save(
 
     Raises
     ------
-    ValueError   When required columns are missing.
-    TypeError    When the index is not a DatetimeIndex.
-    ValueError   When the index is tz-aware (must be tz-naive).
+    ValidationError
+        On missing required columns, non-DatetimeIndex, or tz-aware index.
     """
     _validate_structure(df)
     path = _path(ticker, cache_dir)
@@ -149,10 +145,10 @@ def get_or_fetch(
     force:           bool = False,
 ) -> pd.DataFrame:
     """
-    Return cached data when fresh; otherwise fetch, validate, and cache.
+    Return cached data when fresh; otherwise fetch, validate, cache, return.
 
-    Pipeline when cache is stale or missing:
-        fetcher(ticker) → validate_ohlcv() → save() → return trimmed frame
+    Pipeline on miss or stale cache:
+        fetcher(ticker) → validate_ohlcv() → save() → trimmed frame.
 
     Parameters
     ----------
@@ -170,9 +166,8 @@ def get_or_fetch(
 
     Raises
     ------
-    FetchError        From the fetcher on a bad ticker string.
+    FetchError        From the fetcher on bad ticker or empty response.
     ValidationError   From validate_ohlcv() on bad OHLCV data.
-    ValueError        From the fetcher when the exchange returns no data.
     """
     if not force and is_fresh(ticker, cache_dir, staleness_hours):
         logger.debug("Cache hit   ✓ %s", ticker)
@@ -201,16 +196,17 @@ def _trim(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame:
 
 def _validate_structure(df: pd.DataFrame) -> None:
     """
-    Lightweight structural guard for save().
+    Structural guard for save(): column presence, DatetimeIndex type, tz-naive index.
 
-    Checks only what parquet write itself depends on: column presence,
-    DatetimeIndex type, tz-naive index. Full content validation lives
-    in validate_ohlcv().
+    Raises
+    ------
+    ValidationError
+        On missing required columns, non-DatetimeIndex, or tz-aware index.
     """
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
-        raise ValueError(f"DataFrame missing required columns: {missing}")
+        raise ValidationError(f"DataFrame missing required columns: {missing}")
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise TypeError("DataFrame index must be a DatetimeIndex")
+        raise ValidationError(f"DataFrame index must be a DatetimeIndex, got {type(df.index).__name__}")
     if df.index.tz is not None:
-        raise ValueError("DatetimeIndex must be tz-naive (strip tz before saving)")
+        raise ValidationError(f"DatetimeIndex must be tz-naive, got tz={df.index.tz}")

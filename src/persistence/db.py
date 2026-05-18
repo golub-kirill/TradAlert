@@ -17,7 +17,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-import mysql
+import mysql.connector
 from mysql.connector import Error as MySQLError
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection

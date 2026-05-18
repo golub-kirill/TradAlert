@@ -76,7 +76,7 @@ def validate_ohlcv(
 
     df = df[REQUIRED_COLUMNS]
 
-    df = _fix_index(df, tag)
+    df = _fix_index(df, tag, ticker)
     df = _fix_price_dtypes(df, tag)
     df = _drop_bad_rows(df, tag)
     df = _fix_volume_dtype(df, tag)
@@ -104,8 +104,14 @@ def _check_required_columns(df: pd.DataFrame, ticker: str) -> None:
         )
 
 
-def _fix_index(df: pd.DataFrame, tag: str) -> pd.DataFrame:
-    """Convert index to a tz-naive DatetimeIndex. Raises if not convertible."""
+def _fix_index(df: pd.DataFrame, tag: str, ticker: str) -> pd.DataFrame:
+    """Convert index to a tz-naive DatetimeIndex.
+
+    Raises
+    ------
+    ValidationError
+        When the index cannot be converted to a DatetimeIndex.
+    """
     if not isinstance(df.index, pd.DatetimeIndex):
         logger.warning(
             "%sindex is %s, not DatetimeIndex — converting via pd.to_datetime()",
@@ -117,7 +123,7 @@ def _fix_index(df: pd.DataFrame, tag: str) -> pd.DataFrame:
         except Exception as exc:
             raise ValidationError(
                 f"index cannot be converted to DatetimeIndex: {exc}",
-                ticker=tag.strip("[] "),
+                ticker=ticker,
             ) from exc
 
     if df.index.tz is not None:

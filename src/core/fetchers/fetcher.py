@@ -20,7 +20,8 @@ import yaml
 
 from core.fetchers import yf_fetchOne
 from core.fetchers.yf_fetchOne import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
-from persistence.cache import get_or_fetch
+from exceptions import ConfigError
+from persistence.cache import DEFAULT_STALENESS_H, get_or_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,7 @@ def _load_config(
     Raises
     ------
     FileNotFoundError   When either config file is missing.
-    ValueError          When the watchlist is empty.
+    ConfigError         When the watchlist is empty.
     """
     watchlist_path = Path(watchlist_path)
     settings_path  = Path(settings_path)
@@ -211,10 +212,10 @@ def _load_config(
 
     tickers = watchlist.get("tickers", [])
     if not tickers:
-        raise ValueError(f"Watchlist is empty: {watchlist_path}")
+        raise ConfigError("tickers", reason=f"empty list in {watchlist_path}")
 
     max_workers     = settings.get("fetcher",  {}).get("max_workers",     _DEFAULT_MAX_WORKERS)
-    staleness_hours = settings.get("storage", {}).get("staleness_hours")
+    staleness_hours = settings.get("storage", {}).get("staleness_hours", DEFAULT_STALENESS_H)
     cache_dir       = Path(settings.get("storage", {}).get("cache_dir",   "data/prices"))
 
     return tickers, max_workers, staleness_hours, cache_dir

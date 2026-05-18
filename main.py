@@ -1,13 +1,10 @@
 """
 TradAlert entry point. Fetches OHLCV, computes indicators, runs the two-stage
-filter, persists run metadata, and logs a structured report.
+filter, persists run metadata, logs a structured report.
 
 CLI
     python main.py              use cached data when fresh
     python main.py --force      bypass cache staleness and re-fetch
-
-Credentials are loaded from config/secrets.env before any module that reads
-os.environ. Required keys: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
 """
 
 from __future__ import annotations
@@ -23,8 +20,7 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
-# Load secrets.env before any module that reads os.environ (db, position_manager).
-# Resolve relative to this file so the script works from any working directory.
+# Load secrets.env before any module that reads os.environ.
 load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 
 from persistence.cache import load as cache_load  # noqa: E402
@@ -49,15 +45,10 @@ _FILTERS   = _ROOT / "config" / "filters.yaml"
 _WATCHLIST = _ROOT / "config" / "watchlist.yaml"
 _LOG_FILE  = _ROOT / "data"   / "tradealert.log"
 
-# scan() needs 20 rows for the 20-day dollar-volume average.
-# signal() needs trend.ma_slow (200) rows for MA200 — that guard lives inside
-# FilterEngine and raises InsufficientDataError, which is caught below.
 _MIN_ROWS: int = 20
 
-# SPY/QQQ are tradeable so they remain in the signal loop.
-# ^VIX is an index level only — skipped via _CONTEXT_ONLY.
-_REGIME_INDICES: list[str] = ["SPY", "QQQ"]
-_VIX_SYMBOL:     str       = "^VIX"
+_REGIME_INDICES: list[str] = ["SPY", "QQQ"]  # tradeable, scanned
+_VIX_SYMBOL: str = "^VIX"  # context-only
 _CONTEXT_ONLY:   set[str]  = {_VIX_SYMBOL}
 
 
@@ -71,8 +62,8 @@ class TickerResult:
     Attributes
     ----------
     ticker : Symbol.
-    scan   : ScanResult, always present.
-    signal : SignalResult or None when scan failed or signal was skipped.
+    scan   : ScanResult; always present.
+    signal : SignalResult, or None when scan failed or signal was skipped.
     error  : Non-empty when an unexpected exception occurred.
     """
     ticker: str
@@ -84,11 +75,7 @@ class TickerResult:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """
-    Orchestrate the full pipeline for one scan run.
-
-    Exits with code 1 when no tickers were fetched successfully.
-    """
+    """Run the full pipeline for one scan. Exit 1 when no tickers were fetched."""
     args     = _parse_args()
     settings = _load_settings()
     _setup_logging(settings)
@@ -131,27 +118,27 @@ def _run_pipeline(
     scorer:  SignalScorer,
 ) -> list[TickerResult]:
     """
-    Run the enrichment → scan → signal → score pipeline for every fetched ticker.
+    Run enrichment → scan → signal → score for every fetched ticker.
 
     Per-ticker steps:
         1. Load cached OHLCV from parquet
-        2. Attach ATR, RSI, MACD
+        2. Attach ATR, RSI, MACD, Bollinger
         3. Row-count guard (≥ _MIN_ROWS)
         4. Warmup guard (no NaN on last bar)
         5. Market-cap fetch (24h JSON cache, fail-open)
         6. FilterEngine.scan()
         7. FilterEngine.signal() — entry or exit mode based on positions
         8. Live price fetch (5-min cache, fail-open)
-        9. SignalScorer.enrich() — score, description, watch_only
+        9. SignalScorer.enrich()
 
     Held positions always proceed to signal() regardless of scan outcome.
-    Market context (SPY / QQQ / ^VIX) and open positions are loaded once
+    Market context (SPY/QQQ/^VIX) and open positions are loaded once
     before the loop. Earnings dates are fetched per ticker on the entry
-    path only (24h JSON cache).
+    path only.
 
     Parameters
     ----------
-    tickers : Symbols successfully fetched, from FetchSummary.succeeded.
+    tickers : Symbols successfully fetched (FetchSummary.succeeded).
     engine  : Shared FilterEngine instance.
     scorer  : Shared SignalScorer instance.
 
@@ -329,14 +316,11 @@ def _load_market_context(
     succeeded: list[str],
 ) -> tuple[dict[str, pd.DataFrame] | None, pd.DataFrame | None]:
     """
-    Load SPY / QQQ (regime trend) and ^VIX (volatility regime) from cache.
-
-    Both loads are best-effort. Missing indices → _market_regime() falls
-    back to BULL. Missing VIX → volatility defaults to NORMAL.
+    Load SPY/QQQ (regime trend) and ^VIX (volatility) from cache.
 
     Returns
     -------
-    market_dfs : Symbol → OHLCV mapping, or None when all failed.
+    market_dfs : Symbol → OHLCV mapping, or None when all loads failed.
     vix_df     : VIX OHLCV, or None when absent/failed.
     """
     logger = logging.getLogger(__name__)
@@ -375,14 +359,14 @@ def _load_market_context(
 
 def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Return a copy of df with ATR/RSI/MACD columns attached.
+    Return a copy of df with ATR/RSI/MACD/Bollinger columns attached.
 
-    Added columns: atr, rsi, macd, macd_signal, macd_hist.
-    All computed on the full history so the last bar has no warmup NaN.
+    Added columns: atr, rsi, macd, macd_signal, macd_hist,
+                   bb_mid, bb_upper, bb_lower, bb_bw, bb_z.
 
     Parameters
     ----------
-    df : Validated OHLCV DataFrame with columns open/high/low/close/volume.
+    df : Validated OHLCV DataFrame.
 
     Returns
     -------
@@ -409,11 +393,7 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _indicators_ready(df: pd.DataFrame) -> bool:
-    """
-    True when every indicator column is non-NaN on the last bar.
-
-    A NaN means an EWM has not warmed up — filter results would be undefined.
-    """
+    """True when every indicator column is non-NaN on the last bar."""
     required = ["atr", "rsi", "macd", "macd_signal", "macd_hist"]
     return bool(df[required].iloc[-1].notna().all())
 
@@ -424,16 +404,14 @@ def _save_scan(
     forced:        bool,
 ) -> None:
     """
-    Persist one scan_runs row to MySQL after the pipeline has completed.
+    Persist one scan_runs row + scan_results rows.
 
-    Counter definitions match _print_report() so log and DB agree.
-
+    Counters
+    --------
     tickers_scanned : Reached engine.scan() (excludes pre-scan failures).
     scan_passed     : ScanResult.passed is True.
     signals_fired   : SignalResult.passed is True.
     market_regime   : First non-empty regime label across results.
-
-    Fail-open: save_scan_run() catches MySQLError internally.
     """
     scan_passed     = [r for r in results if r.scan.passed]
     scan_blocked    = [r for r in results if not r.scan.passed and not r.error]
@@ -448,7 +426,6 @@ def _save_scan(
         ),
         None,
     )
-
 
     run_id = save_scan_run(
         forced=forced,
@@ -465,11 +442,7 @@ def _save_scan(
 
 
 def _parse_args() -> argparse.Namespace:
-    """
-    Parse CLI args.
-
-    --force : Bypass cache staleness check and re-fetch all tickers.
-    """
+    """Parse CLI args. ``--force`` bypasses cache staleness."""
     parser = argparse.ArgumentParser(
         prog        = "tradealert",
         description = "TradAlert — fetch, enrich, scan, and signal the watchlist.",
@@ -485,10 +458,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _load_settings() -> dict:
     """
-    Load config/settings.yaml as a dict.
-
-    Called before logging is configured — a missing file surfaces as an
-    unformatted exception, which is the intended failure mode.
+    Load ``config/settings.yaml`` as a dict.
 
     Raises
     ------
@@ -502,10 +472,10 @@ def _load_settings() -> dict:
 
 def _setup_logging(settings: dict) -> None:
     """
-    Configure the root logger with stdout + data/tradealert.log handlers.
+    Configure the root logger with stdout + ``data/tradealert.log`` handlers.
 
-    Level read from settings.yaml → storage.log_level (default INFO).
-    Call exactly once from main(); a second call adds duplicate handlers.
+    Level read from ``storage.log_level`` (default INFO). Call once from main();
+    repeated calls add duplicate handlers.
     """
     level_name: str = settings.get("storage", {}).get("log_level", "INFO").upper()
     level: int      = getattr(logging, level_name, logging.INFO)
@@ -535,11 +505,7 @@ def _print_report(
     results:       list[TickerResult],
     total_seconds: float = 0.0,
 ) -> None:
-    """
-    Log a structured pipeline summary at the end of the run.
-
-    Sections: FETCH, SCAN, SIGNALS, ERRORS.
-    """
+    """Log a structured pipeline summary: FETCH, SCAN, ENTRIES, EXITS, ERRORS."""
     logger = logging.getLogger(__name__)
 
     scan_passed  = [r for r in results if r.scan.passed]
@@ -627,12 +593,6 @@ def _print_report(
                 r.ticker, s.signal_type,
                 _score_label(s), s.market_regime, s.ticker_trend, s.reason,
             )
-
-    if errors:
-        logger.info(divider)
-        logger.info("ERRORS   %d ticker(s) raised exceptions", len(errors))
-        for r in errors:
-            logger.warning("  %-12s %s", r.ticker, r.error)
 
     if errors:
         logger.info(divider)

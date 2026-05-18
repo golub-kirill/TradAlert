@@ -1,32 +1,37 @@
 """
 Confidence scoring for entry and exit signals.
 
-Enriches a SignalResult in-place after FilterEngine fires. Reads weight
-definitions from settings.yaml → scanner.weights and scanner.exit_weights.
+Enriches a SignalResult in-place after FilterEngine fires. Weights and
+threshold dataclasses are loaded from settings.yaml.
 
-Entry sub-scores (each in [0, 1], weighted-averaged to [0, 100]):
-    trend_up         close > MA50 > MA200 stack alignment
-    ma50_slope       MA50 rising or falling over last 20 bars
-    volume_spike     today's volume vs 20-day average
-    rsi_healthy      RSI proximity to the ideal trend-confirm band
-    breakout_20d     close vs prior 20-bar high
-    macd_bullish     histogram sign and direction
-    no_earnings_risk days until next earnings vs the configured buffer
+Entry sub-scores  (each in [0, 1], weighted-averaged to [0, 100])
+    trend_up           close > MA50 > MA200 stack alignment
+    ma50_slope         MA50 rising or falling over last 20 bars
+    volume_spike       today's volume vs 20-day average
+    rsi_healthy        RSI proximity to the ideal trend-confirm band
+    breakout_20d       close vs prior 20-bar high
+    macd_bullish       histogram sign and direction
+    no_earnings_risk   days until next earnings vs the configured buffer
+    relative_strength  ticker outperforming SPY over 20d and 60d
+    weekly_trend       higher-timeframe agreement with daily signal
+    bb_zscore          Bollinger Z-score positioning
 
-Exit sub-scores (same mechanics):
-    regime_flip      broad-market trend is no longer BULL
-    multi_bar_decay  consecutive negative MACD histogram bars
-    rsi_overbought   RSI above the overbought threshold
-    macd_cross_down  MACD histogram crosses below zero
-    vol_expansion    ATR today vs 5-day average (volatility expanding)
+Exit sub-scores
+    regime_flip        broad-market trend is no longer BULL
+    multi_bar_decay    consecutive negative MACD histogram bars
+    rsi_overbought     RSI above the overbought floor
+    macd_cross_down    MACD histogram crosses below zero
+    vol_expansion      ATR today vs 5-day average
+    rs_divergence      ticker underperforming SPY over 20d
 
-Signals where the trigger fired but score < min_score_to_alert are marked
-watch_only=True and appear on the WATCH list rather than firing as alerts.
+Signals where the trigger fired but ``score < min_score_to_alert`` are
+marked ``watch_only=True``.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -46,14 +51,74 @@ _DEFAULT_HOLD_HIGH = 15
 _DEFAULT_MIN_SCORE = 60
 
 
+# ── entry-side scoring thresholds (settings.yaml → scanner.entry_thresholds) ──
+
+@dataclass(frozen=True)
+class EntryThresholds:
+    """Tunable constants used by entry sub-scores.
+
+    Attributes
+    ----------
+    rsi_healthy_center : RSI value mapped to score 1.0 for trend-confirm band.
+    rsi_healthy_half_w : Half-width of the band; score 0.0 at center ± width.
+    ma50_slope_scale   : 20-bar MA50 % slope scaled by (slope + scale) / (2*scale).
+    breakout_band_pct  : Below prior 20d high by this many %% maps linearly to 0.
+    volume_spike_ratio : Today's volume / 20d avg at which score saturates to 1.0.
+    """
+    rsi_healthy_center: float = 52.5
+    rsi_healthy_half_w: float = 12.5
+    ma50_slope_scale: float = 2.0
+    breakout_band_pct: float = 3.0
+    volume_spike_ratio: float = 2.0
+
+
+@dataclass(frozen=True)
+class ExitThresholds:
+    """Tunable constants used by exit sub-scores.
+
+    Attributes
+    ----------
+    rsi_overbought_floor : RSI value at which rsi_overbought score becomes > 0.
+    rsi_overbought_range : RSI delta over the floor at which score saturates to 1.0.
+    multi_bar_decay_max  : Consecutive negative macd_hist bars saturating score at 1.0.
+    vol_expansion_ratio  : ATR(today)/ATR(5d avg) − 1 saturating score at 1.0.
+    """
+    rsi_overbought_floor: float = 60.0
+    rsi_overbought_range: float = 10.0
+    multi_bar_decay_max: float = 3.0
+    vol_expansion_ratio: float = 0.5
+
+
+def _load_entry_thresholds(settings: dict) -> EntryThresholds:
+    """Load entry thresholds from settings.scanner.entry_thresholds with defaults."""
+    raw = settings.get("scanner", {}).get("entry_thresholds", {}) or {}
+    defaults = EntryThresholds()
+    return EntryThresholds(
+        rsi_healthy_center=float(raw.get("rsi_healthy_center", defaults.rsi_healthy_center)),
+        rsi_healthy_half_w=float(raw.get("rsi_healthy_half_w", defaults.rsi_healthy_half_w)),
+        ma50_slope_scale=float(raw.get("ma50_slope_scale", defaults.ma50_slope_scale)),
+        breakout_band_pct=float(raw.get("breakout_band_pct", defaults.breakout_band_pct)),
+        volume_spike_ratio=float(raw.get("volume_spike_ratio", defaults.volume_spike_ratio)),
+    )
+
+
+def _load_exit_thresholds(settings: dict) -> ExitThresholds:
+    """Load exit thresholds from settings.scanner.exit_thresholds with defaults."""
+    raw = settings.get("scanner", {}).get("exit_thresholds", {}) or {}
+    defaults = ExitThresholds()
+    return ExitThresholds(
+        rsi_overbought_floor=float(raw.get("rsi_overbought_floor", defaults.rsi_overbought_floor)),
+        rsi_overbought_range=float(raw.get("rsi_overbought_range", defaults.rsi_overbought_range)),
+        multi_bar_decay_max=float(raw.get("multi_bar_decay_max", defaults.multi_bar_decay_max)),
+        vol_expansion_ratio=float(raw.get("vol_expansion_ratio", defaults.vol_expansion_ratio)),
+    )
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 class SignalScorer:
     """
-    Enriches SignalResult objects with confidence score and description.
-
-    Construct once per run with the loaded settings and filters configs.
-    Call enrich() once per signal after engine.signal() returns.
+    Enrich SignalResult objects with confidence score and description.
 
     Parameters
     ----------
@@ -71,6 +136,8 @@ class SignalScorer:
         self._hold_low:      int            = mh.get("expected_hold_days_low",  _DEFAULT_HOLD_LOW)
         self._hold_high:     int            = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)
         self._filters_cfg:   dict           = filters_cfg
+        self._entry_thr: EntryThresholds = _load_entry_thresholds(settings)
+        self._exit_thr: ExitThresholds = _load_exit_thresholds(settings)
 
     def enrich(
         self,
@@ -84,27 +151,30 @@ class SignalScorer:
         current_price: float | None        = None,
     ) -> None:
         """
-        Mutate signal in-place: add score, components, description.
+        Mutate signal in-place: add ``score``, ``score_components``,
+        ``timeframe``, ``expected_hold_days``, ``watch_only``, ``description``.
 
         Parameters
         ----------
-        signal        : SignalResult from FilterEngine.signal(). Mutated directly.
+        signal        : SignalResult from FilterEngine.signal(). Mutated.
         df            : Enriched OHLCV DataFrame for this ticker.
         regime        : MarketRegime at signal time.
         earnings_date : Next scheduled earnings date.
-        position      : Open Position for this ticker, if any (used for exit P&L).
-        market_dfs    : Symbol → OHLCV for SPY/QQQ (regime detail in description).
-        vix_df        : VIX OHLCV (VIX level in description).
-        current_price : Latest live price, if available (shows drift from signal bar).
+        position      : Open Position for this ticker, if any.
+        market_dfs    : Symbol → OHLCV for regime indices.
+        vix_df        : VIX OHLCV.
+        current_price : Latest live price, if available.
         """
         if signal.direction == "long":
             score, components = _score_entry(
                 df, regime, earnings_date, self._entry_weights, self._filters_cfg,
+                self._entry_thr,
                 market_dfs=market_dfs, signal_type=signal.signal_type,
             )
         elif signal.direction == "exit_long":
             score, components = _score_exit(
-                df, regime, self._exit_weights, market_dfs=market_dfs,
+                df, regime, self._exit_weights, self._exit_thr,
+                market_dfs=market_dfs,
             )
         else:
             score, components = 0.0, {}
@@ -135,12 +205,11 @@ def _score_entry(
     earnings_date: date | None,
     weights:       dict[str, int],
     filters_cfg:   dict,
+        thr: EntryThresholds,
     market_dfs:    dict | None = None,
     signal_type:   str         = "momentum",
 ) -> tuple[float, dict[str, float]]:
-    """
-    Returns (weighted_score_0_to_100, component_dict_0_to_1).
-    """
+    """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
     row  = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -161,7 +230,10 @@ def _score_entry(
     ma50_series = df["close"].rolling(50, min_periods=50).mean().dropna()
     if len(ma50_series) >= 21:
         slope_pct = (ma50_series.iloc[-1] - ma50_series.iloc[-21]) / ma50_series.iloc[-21] * 100
-        components["ma50_slope"] = max(0.0, min(1.0, (slope_pct + 2.0) / 4.0))
+        components["ma50_slope"] = max(
+            0.0,
+            min(1.0, (slope_pct + thr.ma50_slope_scale) / (2.0 * thr.ma50_slope_scale)),
+        )
     else:
         components["ma50_slope"] = 0.5
 
@@ -169,14 +241,16 @@ def _score_entry(
     avg_vol = float(df["volume"].iloc[-21:-1].mean()) if len(df) >= 22 else 0.0
     if avg_vol > 0:
         vol_ratio = float(row["volume"]) / avg_vol
-        components["volume_spike"] = max(0.0, min(1.0, vol_ratio / 2.0))
+        components["volume_spike"] = max(0.0, min(1.0, vol_ratio / thr.volume_spike_ratio))
     else:
         components["volume_spike"] = 0.5
 
-    # 4. rsi_healthy — RSI proximity to ideal trend-confirm centre (52.5)
+    # 4. rsi_healthy — RSI proximity to ideal trend-confirm centre
     rsi_val = float(row["rsi"]) if "rsi" in row.index else 50.0
-    center, half_width = 52.5, 12.5
-    components["rsi_healthy"] = max(0.0, 1.0 - abs(rsi_val - center) / half_width)
+    components["rsi_healthy"] = max(
+        0.0,
+        1.0 - abs(rsi_val - thr.rsi_healthy_center) / thr.rsi_healthy_half_w,
+    )
 
     # 5. breakout_20d — close vs prior 20-bar high
     if len(df) >= 21:
@@ -184,8 +258,8 @@ def _score_entry(
         gap_pct = (close - prior_high) / prior_high * 100
         if close > prior_high:
             components["breakout_20d"] = 1.0
-        elif gap_pct > -3.0:
-            components["breakout_20d"] = max(0.0, (gap_pct + 3.0) / 3.0)
+        elif gap_pct > -thr.breakout_band_pct:
+            components["breakout_20d"] = max(0.0, (gap_pct + thr.breakout_band_pct) / thr.breakout_band_pct)
         else:
             components["breakout_20d"] = 0.0
     else:
@@ -240,11 +314,10 @@ def _score_exit(
     df:         pd.DataFrame,
     regime:     MarketRegime,
     weights:    dict[str, int],
+        thr: ExitThresholds,
     market_dfs: dict | None = None,
 ) -> tuple[float, dict[str, float]]:
-    """
-    Returns (weighted_score_0_to_100, component_dict_0_to_1).
-    """
+    """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
     row      = df.iloc[-1]
     prev_row = df.iloc[-2]
     components: dict[str, float] = {}
@@ -260,11 +333,14 @@ def _score_exit(
             neg_streak += 1
         else:
             break
-    components["multi_bar_decay"] = min(1.0, neg_streak / 3.0)
+    components["multi_bar_decay"] = min(1.0, neg_streak / thr.multi_bar_decay_max)
 
-    # 3. rsi_overbought — RSI above the exit threshold (threshold = 65)
+    # 3. rsi_overbought — RSI above the configured floor saturates at floor + range
     rsi_val = float(row["rsi"]) if "rsi" in row.index else 50.0
-    components["rsi_overbought"] = max(0.0, min(1.0, (rsi_val - 60.0) / 10.0))
+    components["rsi_overbought"] = max(
+        0.0,
+        min(1.0, (rsi_val - thr.rsi_overbought_floor) / thr.rsi_overbought_range),
+    )
 
     # 4. macd_cross_down — histogram crossing below zero
     hist      = float(row["macd_hist"])  if "macd_hist"  in row.index else 0.0
@@ -281,7 +357,10 @@ def _score_exit(
     atr_5d_avg  = float(df["atr"].tail(6).iloc[:-1].mean())
     if atr_5d_avg > 0:
         atr_ratio = atr_today / atr_5d_avg
-        components["vol_expansion"] = max(0.0, min(1.0, (atr_ratio - 1.0) / 0.5))
+        components["vol_expansion"] = max(
+            0.0,
+            min(1.0, (atr_ratio - 1.0) / thr.vol_expansion_ratio),
+        )
     else:
         components["vol_expansion"] = 0.0
 
@@ -291,7 +370,8 @@ def _score_exit(
 
     return _weighted_average(components, weights), components
 
-    # 7 sub-score helpers ─────────────────────────────────────────────────
+
+# ── sub-score helpers ─────────────────────────────────────────────────────────
 
 def _score_rs_entry(
     df:         pd.DataFrame,
@@ -300,17 +380,15 @@ def _score_rs_entry(
     """
     Relative strength vs SPY over 20 and 60 trading days.
 
-    RS_n = (ticker_now / ticker_-n) / (SPY_now / SPY_-n) − 1
-
-    Positive RS means outperforming SPY over that window.
+        RS_n = (ticker_now / ticker_-n) / (SPY_now / SPY_-n) − 1
 
     Returns
     -------
-    1.0   both RS20 and RS60 positive (outperforming short and long term)
-    0.7   only RS20 positive  (recent strength, long-term lagging)
-    0.4   only RS60 positive  (improving relative to recent drift)
-    0.0   both negative       (consistently underperforming the market)
-    0.5   insufficient data or no SPY available (neutral)
+    1.0   both RS20 and RS60 positive
+    0.7   only RS20 positive
+    0.4   only RS60 positive
+    0.0   both negative
+    0.5   insufficient data or SPY unavailable
     """
     if not market_dfs or "SPY" not in market_dfs:
         return 0.5
@@ -348,15 +426,9 @@ def _score_rs_exit(
     """
     Exit signal from relative-strength divergence vs SPY over 20 days.
 
-    A held long that has been underperforming the market is showing
-    internal weakness regardless of price level. The further below zero,
-    the stronger the exit signal.
+        score = clamp01(-RS20 * 10)
 
-    RS20 = 0%    → 0.0  (in-line with market — no signal)
-    RS20 = −5%   → 0.5
-    RS20 = −10%+ → 1.0
-
-    Returns 0.5 (neutral) when SPY data is unavailable.
+    Returns 0.5 when SPY data is unavailable or insufficient.
     """
     if not market_dfs or "SPY" not in market_dfs:
         return 0.5
@@ -382,17 +454,16 @@ def _score_weekly_trend(df: pd.DataFrame) -> float:
     """
     Higher-timeframe agreement: does the weekly trend support the daily signal?
 
-    Resamples daily close to weekly (W-FRI). Computes a 10-week SMA.
-    Checks two conditions:
-        A. Last weekly close > 10-week SMA
-        B. 10-week SMA is rising vs 4 weeks ago
+    Resamples daily close to weekly (W-FRI), computes a 10-week SMA, then:
+        A. weekly close > 10-week SMA
+        B. 10-week SMA rising vs 4 weeks ago
 
     Returns
     -------
-    1.0  both conditions met  (strong weekly trend backing the daily signal)
-    0.6  A only               (above SMA but momentum flattening)
-    0.0  A fails              (price below weekly SMA — counter-trend daily)
-    0.5  insufficient data    (< 14 weekly bars)
+    1.0   both A and B
+    0.6   A only
+    0.0   A fails
+    0.5   < 14 weekly bars
     """
     if len(df) < 70:   # need ~14 weeks at minimum
         return 0.5
@@ -429,23 +500,16 @@ def _score_weekly_trend(df: pd.DataFrame) -> float:
 
 def _score_bb_zscore(df: pd.DataFrame, signal_type: str) -> float:
     """
-    Bollinger Band Z-score statistical positioning.
+    Bollinger Band Z-score scoring, signal-type-aware.
 
-    Z = (close − SMA₂₀) / σ₂₀  — signed standard deviations from the mean.
+        Z = (close − SMA₂₀) / σ₂₀
 
-    Scoring is signal-type-aware:
+    Momentum entry (trend-following):
+        score = max(0, 1 − |Z| / 2)             — best near Z=0
+    Mean-reversion entry (statistical dip):
+        score = clamp01((−Z − 0.5) / 2)         — best at Z ≪ 0
 
-    Momentum entry  (trend-following, entering an established move):
-        Ideal Z is near 0 to slightly positive — not extended.
-        Z = 0 → 1.0;  Z = ±2 → 0.0
-        Formula: max(0, 1 − |Z| / 2)
-
-    Mean-reversion entry  (buying a statistical dip):
-        Ideal Z is deeply negative — the more oversold the better.
-        Z = −1.5 → 0.5;  Z = −2.5 → 1.0;  Z ≥ 0 → 0.0
-        Formula: max(0, min(1, (−Z − 0.5) / 2))
-
-    Returns 0.5 (neutral) when bb_z is NaN or not yet in df.
+    Returns 0.5 when ``bb_z`` is NaN or absent.
     """
     bb_z = None
     if "bb_z" in df.columns:
@@ -540,14 +604,14 @@ def _build_description(
         if days_to > 0:
             lines.append(f"earnings: {earnings_date.isoformat()} ({days_to}d away)")
 
-    # Line 4: component breakdown
+    # Line 5: component breakdown
     if signal.score_components:
         parts = "  ".join(
             f"{k}={v:.2f}" for k, v in signal.score_components.items()
         )
         lines.append(f"components: {parts}")
 
-    # Line 5: position P&L for exits
+    # Line 6: position P&L for exits
     if signal.direction == "exit_long" and position is not None:
         pnl_pct = (close - position.entry_price) / position.entry_price * 100
         hold_days = (date.today() - position.entry_date).days
@@ -571,8 +635,8 @@ def _weighted_average(
     """
     Weighted average of component scores scaled to [0, 100].
 
-    Components absent from weights are ignored. Weights missing a component
-    treat that component's score as 0.0 (conservative).
+    Components absent from ``weights`` are ignored. Returns 0.0 when the
+    total weight is zero.
     """
     total_weight = sum(weights.get(k, 0) for k in components)
     if total_weight == 0:

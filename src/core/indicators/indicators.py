@@ -6,23 +6,23 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from pandas import Series
 
 
-def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+def atr(df: pd.DataFrame, period: int = 14) -> Series:
     """
     Average True Range (Wilder smoothing).
 
     Parameters
     ----------
     df     : DataFrame with 'high', 'low', 'close' columns (lowercase).
-             Column names are normalised to lowercase internally.
     period : Lookback window. Default 14.
 
     Returns
     -------
-    pd.Series
+    Series
         ATR values aligned to df.index, named 'atr'.
-        First (period - 1) values will be NaN due to min_periods.
+        First (period - 1) values are NaN.
     """
     _df   = df.rename(columns=str.lower)
     high  = _df["high"]
@@ -48,7 +48,7 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     )
 
 
-def rsi(close: pd.Series, period: int = 14) -> pd.Series:
+def rsi(close: Series, period: int = 14) -> Series:
     """
     Relative Strength Index (Wilder smoothing).
 
@@ -59,9 +59,9 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
     Returns
     -------
-    pd.Series
-        RSI values in [0, 100], named 'rsi'.
-        First (period - 1) values will be NaN.
+    Series
+        RSI values in [0, 100], named 'rsi'. First (period - 1) values are NaN.
+        Sustained zero-loss windows yield 100.0 rather than NaN.
     """
     delta = close.diff()
 
@@ -71,28 +71,22 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
-    # When avg_loss is effectively zero (sustained uptrend with no down-closes),
-    # the canonical RSI is 100 — not NaN. Compute RS via safe division, then
-    # clamp the zero-loss case explicitly so the result is 100.0.
     rs        = avg_gain / avg_loss.where(avg_loss > 1e-10, np.nan)
     rsi_value = 100 - 100 / (1 + rs)
     rsi_value = rsi_value.where(avg_loss > 1e-10, 100.0)
-
-    # During the (period - 1)-bar warmup avg_loss itself is NaN; preserve that
-    # so callers can still gate on NaN at the warmup boundary.
     rsi_value = rsi_value.where(avg_loss.notna(), np.nan)
 
     return rsi_value.rename("rsi")
 
 
 def macd(
-    close:  pd.Series,
+        close: Series,
     fast:   int = 12,
     slow:   int = 26,
     signal: int = 9,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
+) -> tuple[Series, Series, Series]:
     """
-    MACD line, Signal line, and Histogram.
+    MACD line, signal line, and histogram.
 
     Parameters
     ----------
@@ -103,12 +97,10 @@ def macd(
 
     Returns
     -------
-    macd_line   : pd.Series  EMA(fast) − EMA(slow), named 'macd'.
-    signal_line : pd.Series  EMA(macd_line, signal), named 'macd_signal'.
-    histogram   : pd.Series  macd_line − signal_line, named 'macd_hist'.
-                  Positive → bullish momentum; negative → bearish.
-                  First (slow + signal - 2) values will be NaN — both EMAs
-                  must be warm before the histogram is reported.
+    macd_line   : Series  EMA(fast) − EMA(slow), named 'macd'.
+    signal_line : Series  EMA(macd_line, signal), named 'macd_signal'.
+    histogram   : Series  macd_line − signal_line, named 'macd_hist'.
+                  First (slow + signal - 2) values are NaN.
     """
     ema_fast = close.ewm(span=fast, min_periods=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, min_periods=slow, adjust=False).mean()
@@ -126,7 +118,7 @@ def macd(
 
 
 def bollinger_bands(
-    close:  pd.Series,
+        close: Series,
     period: int   = 20,
     n_std:  float = 2.0,
 ) -> pd.DataFrame:
@@ -147,14 +139,8 @@ def bollinger_bands(
         bb_upper : bb_mid + n_std × σ
         bb_lower : bb_mid − n_std × σ
         bb_bw    : (bb_upper − bb_lower) / bb_mid × 100  (bandwidth %)
-        bb_z     : (close − bb_mid) / σ  — signed standard deviations from
-                   the mean. Positive = above average, negative = oversold.
-                   First (period − 1) rows are NaN.
-
-    Notes
-    -----
-    Uses population standard deviation (ddof=0) consistent with the
-    standard Bollinger Band definition.
+        bb_z     : (close − bb_mid) / σ
+        First (period − 1) rows are NaN. Uses population std (ddof=0).
     """
     sma   = close.rolling(period, min_periods=period).mean()
     sigma = close.rolling(period, min_periods=period).std(ddof=0)
