@@ -33,8 +33,11 @@ fetcher: # block: concurrency
 # Expected hold horizon for swing entries; surfaced in signal descriptions.
 
 market_hours: # block: trade horizon
-  expected_hold_days_low: 10           # low end of "~N-Md hold" line in description [10]
-  expected_hold_days_high: 15           # high end of the range [15]
+  expected_hold_days_low: 5            # low end of "~N–Md hold" shown in signal description
+  # code default (scoring.py): 10  |  backtest avg: 10 bars
+  expected_hold_days_high: 15          # high end of the range
+  # code default (scoring.py): 15  |  was 20 — tightened to
+  # bracket actual avg hold of 10 bars (range: 5–15 td)
 
 
 # ── SCANNER ───────────────────────────────────────────────────────────────────

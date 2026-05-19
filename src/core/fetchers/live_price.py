@@ -25,17 +25,17 @@ from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR:      Path = Path("data/prices_live")
-DEFAULT_STALENESS_MIN:  int  = 5
+DEFAULT_CACHE_DIR: Path = Path("data/prices_live")
+DEFAULT_STALENESS_MIN: int = 5
 
 
 # ── public API ────────────────────────────────────────────────────────────────
 
 def get_live_price(
-    ticker:          str,
-    cache_dir:       Path | str = DEFAULT_CACHE_DIR,
-    staleness_min:   int        = DEFAULT_STALENESS_MIN,
-    force:           bool       = False,
+        ticker: str,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        staleness_min: int = DEFAULT_STALENESS_MIN,
+        force: bool = False,
 ) -> float | None:
     """
     Return the latest trade price for ticker, or None on any failure.
@@ -84,9 +84,9 @@ def _cache_path(ticker: str, cache_dir: Path | str) -> Path:
 
 
 def _load_cache(
-    ticker:        str,
-    cache_dir:     Path | str,
-    staleness_min: int,
+        ticker: str,
+        cache_dir: Path | str,
+        staleness_min: int,
 ) -> tuple[bool, float | None]:
     path = _cache_path(ticker, cache_dir)
     if not path.exists():
@@ -98,8 +98,8 @@ def _load_cache(
 
     try:
         payload = json.loads(path.read_text())
-        raw     = payload.get("price")
-        value   = float(raw) if raw is not None else None
+        raw = payload.get("price")
+        value = float(raw) if raw is not None else None
         return True, value
     except (json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
         logger.debug("Corrupt live price cache for %s — %s", ticker, exc)
@@ -107,15 +107,15 @@ def _load_cache(
 
 
 def _save_cache(
-    ticker:    str,
-    price:     float | None,
-    cache_dir: Path | str,
+        ticker: str,
+        price: float | None,
+        cache_dir: Path | str,
 ) -> None:
     path = _cache_path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "ticker":     ticker.upper(),
-        "price":      price,
+        "ticker": ticker.upper(),
+        "price": price,
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
     try:

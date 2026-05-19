@@ -26,9 +26,9 @@ from persistence.cache import DEFAULT_STALENESS_H, get_or_fetch
 logger = logging.getLogger(__name__)
 
 # ── config paths ──────────────────────────────────────────────────────────────
-_CONFIG_DIR     = Path("config")
+_CONFIG_DIR = Path("config")
 _WATCHLIST_PATH = _CONFIG_DIR / "watchlist.yaml"
-_SETTINGS_PATH  = _CONFIG_DIR / "settings.yaml"
+_SETTINGS_PATH = _CONFIG_DIR / "settings.yaml"
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 _DEFAULT_MAX_WORKERS: int = 8
@@ -52,10 +52,10 @@ class FetchSummary:
     duration  : float
         Wall-clock time of the entire run, in seconds.
     """
-    succeeded: list[str]       = field(default_factory=list)
-    failed:    dict[str, str]  = field(default_factory=dict)
-    total:     int             = 0
-    duration:  float           = 0.0
+    succeeded: list[str] = field(default_factory=list)
+    failed: dict[str, str] = field(default_factory=dict)
+    total: int = 0
+    duration: float = 0.0
 
     @property
     def n_succeeded(self) -> int:
@@ -81,9 +81,9 @@ class FetchSummary:
 # ── public API ────────────────────────────────────────────────────────────────
 
 def fetch_watchlist(
-    watchlist_path: Path | str = _WATCHLIST_PATH,
-    settings_path:  Path | str = _SETTINGS_PATH,
-    force:          bool       = False,
+        watchlist_path: Path | str = _WATCHLIST_PATH,
+        settings_path: Path | str = _SETTINGS_PATH,
+        force: bool = False,
 ) -> FetchSummary:
     """
     Fetch and cache OHLCV for every ticker in the watchlist.
@@ -109,7 +109,7 @@ def fetch_watchlist(
     # Pre-bind start date and interval so the callable matches
     # the signature cache.get_or_fetch expects: fetcher(ticker) -> DataFrame.
     # End date is left to yfinance_fetcher's default (today + 1d, exclusive).
-    start_str  = (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
+    start_str = (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
     fetcher_fn = partial(
         yf_fetchOne.fetch,
         start=start_str,
@@ -117,7 +117,7 @@ def fetch_watchlist(
     )
 
     summary = FetchSummary(total=len(tickers))
-    t0      = time.perf_counter()
+    t0 = time.perf_counter()
 
     logger.info(
         "Watchlist fetch started | tickers=%d | workers=%d "
@@ -140,7 +140,7 @@ def fetch_watchlist(
 
         for future in as_completed(futures):
             ticker = futures[future]
-            exc    = future.exception()
+            exc = future.exception()
 
             if exc is None:
                 summary.succeeded.append(ticker)
@@ -162,27 +162,27 @@ def fetch_watchlist(
 # ── internals ─────────────────────────────────────────────────────────────────
 
 def _fetch_one(
-    ticker:          str,
-    fetcher_fn,
-    cache_dir:       Path,
-    staleness_hours: int,
-    force:           bool,
+        ticker: str,
+        fetcher_fn,
+        cache_dir: Path,
+        staleness_hours: int,
+        force: bool,
 ) -> None:
     """
     Fetch and cache a single ticker. Exceptions propagate to the future.
     """
     get_or_fetch(
-        ticker          = ticker,
-        fetcher         = fetcher_fn,
-        cache_dir       = cache_dir,
-        staleness_hours = staleness_hours,
-        force           = force,
+        ticker=ticker,
+        fetcher=fetcher_fn,
+        cache_dir=cache_dir,
+        staleness_hours=staleness_hours,
+        force=force,
     )
 
 
 def _load_config(
-    watchlist_path: Path | str,
-    settings_path:  Path | str,
+        watchlist_path: Path | str,
+        settings_path: Path | str,
 ) -> tuple[list[str], int, int, Path]:
     """
     Load and validate config from watchlist.yaml and settings.yaml.
@@ -200,7 +200,7 @@ def _load_config(
     ConfigError         When the watchlist is empty.
     """
     watchlist_path = Path(watchlist_path)
-    settings_path  = Path(settings_path)
+    settings_path = Path(settings_path)
 
     if not watchlist_path.exists():
         raise FileNotFoundError(f"Watchlist config not found: {watchlist_path}")
@@ -208,14 +208,14 @@ def _load_config(
         raise FileNotFoundError(f"Settings config not found: {settings_path}")
 
     watchlist = yaml.safe_load(watchlist_path.read_text())
-    settings  = yaml.safe_load(settings_path.read_text())
+    settings = yaml.safe_load(settings_path.read_text())
 
     tickers = watchlist.get("tickers", [])
     if not tickers:
         raise ConfigError("tickers", reason=f"empty list in {watchlist_path}")
 
-    max_workers     = settings.get("fetcher",  {}).get("max_workers",     _DEFAULT_MAX_WORKERS)
+    max_workers = settings.get("fetcher", {}).get("max_workers", _DEFAULT_MAX_WORKERS)
     staleness_hours = settings.get("storage", {}).get("staleness_hours", DEFAULT_STALENESS_H)
-    cache_dir       = Path(settings.get("storage", {}).get("cache_dir",   "data/prices"))
+    cache_dir = Path(settings.get("storage", {}).get("cache_dir", "data/prices"))
 
     return tickers, max_workers, staleness_hours, cache_dir

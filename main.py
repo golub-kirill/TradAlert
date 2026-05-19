@@ -20,36 +20,43 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
+# ── path bootstrap ────────────────────────────────────────────────────────────
+# Ensure src/ is on the Python path so this script is runnable from the CLI
+# (python main.py) as well as from within the IDE with src/ as a source root.
+# Mirrors the same pattern used in position_CLI.py (CODE-06 in TODO).
+_SRC = Path(__file__).parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 # Load secrets.env before any module that reads os.environ.
 load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 
 from persistence.cache import load as cache_load  # noqa: E402
-from core.indicators.chart import chart                            # noqa: E402
+from core.indicators.chart import chart  # noqa: E402
 from persistence.db import save_scan_run, save_scan_results  # noqa: E402
 from core.filter_engine import FilterEngine, ScanResult, SignalResult  # noqa: E402
-from core.fetchers.fetcher import FetchSummary, fetch_watchlist    # noqa: E402
-from core.fetchers.earnings_fetcher import get_next_earnings       # noqa: E402
-from core.fetchers.info_fetcher import get_market_cap              # noqa: E402
-from core.fetchers.live_price import get_live_price                # noqa: E402
-from core.indicators.indicators import atr, bollinger_bands, macd, rsi              # noqa: E402
-from core.position_manager import load_open_positions    # noqa: E402
-from core.scoring import SignalScorer                              # noqa: E402
-from exceptions import InsufficientDataError                       # noqa: E402
-
+from core.fetchers.fetcher import FetchSummary, fetch_watchlist  # noqa: E402
+from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
+from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
+from core.fetchers.live_price import get_live_price  # noqa: E402
+from core.indicators.indicators import attach_indicators  # noqa: E402
+from core.position_manager import load_open_positions  # noqa: E402
+from core.scoring import SignalScorer  # noqa: E402
+from exceptions import InsufficientDataError  # noqa: E402
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
-_ROOT      = Path(__file__).parent
-_SETTINGS  = _ROOT / "config" / "settings.yaml"
-_FILTERS   = _ROOT / "config" / "filters.yaml"
+_ROOT = Path(__file__).parent
+_SETTINGS = _ROOT / "config" / "settings.yaml"
+_FILTERS = _ROOT / "config" / "filters.yaml"
 _WATCHLIST = _ROOT / "config" / "watchlist.yaml"
-_LOG_FILE  = _ROOT / "data"   / "tradealert.log"
+_LOG_FILE = _ROOT / "data" / "tradealert.log"
 
 _MIN_ROWS: int = 20
 
 _REGIME_INDICES: list[str] = ["SPY", "QQQ"]  # tradeable, scanned
 _VIX_SYMBOL: str = "^VIX"  # context-only
-_CONTEXT_ONLY:   set[str]  = {_VIX_SYMBOL}
+_CONTEXT_ONLY: set[str] = {_VIX_SYMBOL}
 
 
 # ── result type ───────────────────────────────────────────────────────────────
@@ -67,16 +74,16 @@ class TickerResult:
     error  : Non-empty when an unexpected exception occurred.
     """
     ticker: str
-    scan:   ScanResult
+    scan: ScanResult
     signal: SignalResult | None = None
-    error:  str                 = ""
+    error: str = ""
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     """Run the full pipeline for one scan. Exit 1 when no tickers were fetched."""
-    args     = _parse_args()
+    args = _parse_args()
     settings = _load_settings()
     _setup_logging(settings)
 
@@ -86,9 +93,9 @@ def main() -> None:
 
     # ── 1. fetch ──────────────────────────────────────────────────────────────
     fetch_summary = fetch_watchlist(
-        watchlist_path = _WATCHLIST,
-        settings_path  = _SETTINGS,
-        force          = args.force,
+        watchlist_path=_WATCHLIST,
+        settings_path=_SETTINGS,
+        force=args.force,
     )
 
     if not fetch_summary.succeeded:
@@ -96,10 +103,12 @@ def main() -> None:
         sys.exit(1)
 
     # ── 2 – 6. context → enrich → scan → signal → score ─────────────────────
+    # Parse filters.yaml once; pass the dict to both the engine and the scorer
+    # so the file is not read and parsed a second time inside FilterEngine.__init__.
     filters_cfg = yaml.safe_load(_FILTERS.read_text())
-    engine      = FilterEngine(config_path=_FILTERS)
-    scorer      = SignalScorer(settings=settings, filters_cfg=filters_cfg)
-    results     = _run_pipeline(fetch_summary.succeeded, engine, scorer)
+    engine = FilterEngine.from_dict(filters_cfg)
+    scorer = SignalScorer(settings=settings, filters_cfg=filters_cfg)
+    results = _run_pipeline(fetch_summary.succeeded, engine, scorer)
 
     elapsed = time.perf_counter() - t0
 
@@ -113,9 +122,9 @@ def main() -> None:
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
 def _run_pipeline(
-    tickers: list[str],
-    engine:  FilterEngine,
-    scorer:  SignalScorer,
+        tickers: list[str],
+        engine: FilterEngine,
+        scorer: SignalScorer,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal → score for every fetched ticker.
@@ -128,7 +137,7 @@ def _run_pipeline(
         5. Market-cap fetch (24h JSON cache, fail-open)
         6. FilterEngine.scan()
         7. FilterEngine.signal() — entry or exit mode based on positions
-        8. Live price fetch (5-min cache, fail-open)
+        8. Live price fetch (5-min cache, fail-open)  [entry signal path only]
         9. SignalScorer.enrich()
 
     Held positions always proceed to signal() regardless of scan outcome.
@@ -147,12 +156,12 @@ def _run_pipeline(
     list[TickerResult]
         One entry per ticker. Context-only tickers (^VIX) are skipped.
     """
-    logger  = logging.getLogger(__name__)
+    logger = logging.getLogger(__name__)
     results: list[TickerResult] = []
 
     # ── load market context and open positions once per run ──────────────────
     market_dfs, vix_df = _load_market_context(tickers)
-    positions          = load_open_positions()  # {ticker: Position}
+    positions = load_open_positions()  # {ticker: Position}
 
     for ticker in tickers:
         # ^VIX is context-only — not tradeable, not scanned or signalled.
@@ -162,7 +171,7 @@ def _run_pipeline(
 
         logger.debug("Processing %s", ticker)
         held_position = positions.get(ticker)
-        held_long     = held_position is not None and held_position.side == "long"
+        held_long = held_position is not None and held_position.side == "long"
 
         # ── 1. load cache ─────────────────────────────────────────────────────
         try:
@@ -170,9 +179,9 @@ def _run_pipeline(
         except Exception as exc:
             logger.warning("[%s] cache load failed — %s", ticker, exc)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = ScanResult(passed=False, reason="cache load failed"),
-                error  = str(exc),
+                ticker=ticker,
+                scan=ScanResult(passed=False, reason="cache load failed"),
+                error=str(exc),
             ))
             continue
 
@@ -182,9 +191,9 @@ def _run_pipeline(
         except Exception as exc:
             logger.warning("[%s] indicator computation failed — %s", ticker, exc)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = ScanResult(passed=False, reason="indicator error"),
-                error  = str(exc),
+                ticker=ticker,
+                scan=ScanResult(passed=False, reason="indicator error"),
+                error=str(exc),
             ))
             continue
 
@@ -193,8 +202,8 @@ def _run_pipeline(
             reason = f"only {len(df)} rows — need {_MIN_ROWS} for scan"
             logger.warning("[%s] skipping — %s", ticker, reason)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = ScanResult(passed=False, reason=reason),
+                ticker=ticker,
+                scan=ScanResult(passed=False, reason=reason),
             ))
             continue
 
@@ -203,13 +212,14 @@ def _run_pipeline(
             reason = "indicators still in warmup (NaN on last bar)"
             logger.warning("[%s] skipping — %s", ticker, reason)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = ScanResult(passed=False, reason=reason),
+                ticker=ticker,
+                scan=ScanResult(passed=False, reason=reason),
             ))
             continue
 
-        # ── 5. scan ───────────────────────────────────────────────────────────
-        # Market-cap fetch is fail-open: None skips the gate rather than blocks.
+        # ── 5. market-cap fetch (fail-open) ───────────────────────────────────
+        # None skips the gate rather than blocking; equity gate only applies when
+        # a value is returned.
         market_cap = None
         try:
             market_cap = get_market_cap(ticker)
@@ -217,14 +227,15 @@ def _run_pipeline(
             logger.warning("[%s] market-cap fetch failed (continuing) — %s",
                            ticker, exc)
 
+        # ── 6. scan ───────────────────────────────────────────────────────────
         try:
             scan = engine.scan(ticker, df, market_cap=market_cap)
         except Exception as exc:
             logger.warning("[%s] scan raised — %s", ticker, exc)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = ScanResult(passed=False, reason="scan exception"),
-                error  = str(exc),
+                ticker=ticker,
+                scan=ScanResult(passed=False, reason="scan exception"),
+                error=str(exc),
             ))
             continue
 
@@ -240,7 +251,7 @@ def _run_pipeline(
                      "HELD " if held_long else "",
                      "scan PASSED" if scan.passed else "scan filtered (held → proceed)")
 
-        # ── 6. signal ─────────────────────────────────────────────────────────
+        # ── 7. signal ─────────────────────────────────────────────────────────
         # Earnings buffer only applies to entries; exits skip the fetch.
         earnings_date = None
         if not held_long:
@@ -253,32 +264,32 @@ def _run_pipeline(
         try:
             signal = engine.signal(
                 ticker, df,
-                market_dfs    = market_dfs,
-                vix_df        = vix_df,
-                earnings_date = earnings_date,
-                held_long     = held_long,
+                market_dfs=market_dfs,
+                vix_df=vix_df,
+                earnings_date=earnings_date,
+                held_long=held_long,
             )
         except InsufficientDataError as exc:
             logger.info("[%s] signal skipped — %s", ticker, exc)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = scan,
-                signal = SignalResult(
-                    passed = False,
-                    reason = f"insufficient data: {exc.detail}",
+                ticker=ticker,
+                scan=scan,
+                signal=SignalResult(
+                    passed=False,
+                    reason=f"insufficient data: {exc.detail}",
                 ),
             ))
             continue
         except Exception as exc:
             logger.warning("[%s] signal raised — %s", ticker, exc)
             results.append(TickerResult(
-                ticker = ticker,
-                scan   = scan,
-                error  = str(exc),
+                ticker=ticker,
+                scan=scan,
+                error=str(exc),
             ))
             continue
 
-        # ── 8. score ──────────────────────────────────────────────────────────
+        # ── 8. live price + 9. score ──────────────────────────────────────────
         if signal.passed:
             # Live price fetch is fail-open — None omits current-price line
             live_price = None
@@ -289,14 +300,14 @@ def _run_pipeline(
 
             regime = engine.market_regime(market_dfs, vix_df)
             scorer.enrich(
-                signal        = signal,
-                df            = df,
-                regime        = regime,
-                earnings_date = earnings_date,
-                position      = held_position,
-                market_dfs    = market_dfs,
-                vix_df        = vix_df,
-                current_price = live_price,
+                signal=signal,
+                df=df,
+                regime=regime,
+                earnings_date=earnings_date,
+                position=held_position,
+                market_dfs=market_dfs,
+                vix_df=vix_df,
+                current_price=live_price,
             )
             # Chart only for fire signals (score ≥ threshold, not watch-only)
             if not signal.watch_only:
@@ -313,7 +324,7 @@ def _run_pipeline(
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _load_market_context(
-    succeeded: list[str],
+        succeeded: list[str],
 ) -> tuple[dict[str, pd.DataFrame] | None, pd.DataFrame | None]:
     """
     Load SPY/QQQ (regime trend) and ^VIX (volatility) from cache.
@@ -359,7 +370,10 @@ def _load_market_context(
 
 def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Return a copy of df with ATR/RSI/MACD/Bollinger columns attached.
+    Return a copy of df with all standard indicator columns attached.
+
+    Delegates to ``core.indicators.indicators.attach_indicators`` —
+    the single canonical implementation shared with the backtester.
 
     Added columns: atr, rsi, macd, macd_signal, macd_hist,
                    bb_mid, bb_upper, bb_lower, bb_bw, bb_z.
@@ -372,24 +386,7 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     -------
     pd.DataFrame
     """
-    df = df.copy()
-
-    df["atr"] = atr(df)
-    df["rsi"] = rsi(df["close"])
-
-    macd_line, signal_line, histogram = macd(df["close"])
-    df["macd"]        = macd_line
-    df["macd_signal"] = signal_line
-    df["macd_hist"]   = histogram
-
-    bb = bollinger_bands(df["close"])
-    df["bb_mid"]   = bb["bb_mid"]
-    df["bb_upper"] = bb["bb_upper"]
-    df["bb_lower"] = bb["bb_lower"]
-    df["bb_bw"]    = bb["bb_bw"]
-    df["bb_z"]     = bb["bb_z"]
-
-    return df
+    return attach_indicators(df)
 
 
 def _indicators_ready(df: pd.DataFrame) -> bool:
@@ -399,9 +396,9 @@ def _indicators_ready(df: pd.DataFrame) -> bool:
 
 
 def _save_scan(
-    fetch_summary: FetchSummary,
-    results:       list[TickerResult],
-    forced:        bool,
+        fetch_summary: FetchSummary,
+        results: list[TickerResult],
+        forced: bool,
 ) -> None:
     """
     Persist one scan_runs row + scan_results rows.
@@ -413,9 +410,9 @@ def _save_scan(
     signals_fired   : SignalResult.passed is True.
     market_regime   : First non-empty regime label across results.
     """
-    scan_passed     = [r for r in results if r.scan.passed]
-    scan_blocked    = [r for r in results if not r.scan.passed and not r.error]
-    signals         = [r for r in scan_passed if r.signal and r.signal.passed]
+    scan_passed = [r for r in results if r.scan.passed]
+    scan_blocked = [r for r in results if not r.scan.passed and not r.error]
+    signals = [r for r in scan_passed if r.signal and r.signal.passed]
     tickers_scanned = len(scan_passed) + len(scan_blocked)
 
     market_regime: str | None = next(
@@ -444,14 +441,14 @@ def _save_scan(
 def _parse_args() -> argparse.Namespace:
     """Parse CLI args. ``--force`` bypasses cache staleness."""
     parser = argparse.ArgumentParser(
-        prog        = "tradealert",
-        description = "TradAlert — fetch, enrich, scan, and signal the watchlist.",
+        prog="tradealert",
+        description="TradAlert — fetch, enrich, scan, and signal the watchlist.",
     )
     parser.add_argument(
         "--force",
-        action  = "store_true",
-        default = False,
-        help    = "Bypass cache staleness check and re-fetch all tickers.",
+        action="store_true",
+        default=False,
+        help="Bypass cache staleness check and re-fetch all tickers.",
     )
     return parser.parse_args()
 
@@ -478,12 +475,12 @@ def _setup_logging(settings: dict) -> None:
     repeated calls add duplicate handlers.
     """
     level_name: str = settings.get("storage", {}).get("log_level", "INFO").upper()
-    level: int      = getattr(logging, level_name, logging.INFO)
+    level: int = getattr(logging, level_name, logging.INFO)
 
     _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    fmt       = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
-    datefmt   = "%Y-%m-%d %H:%M:%S"
+    fmt = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
     formatter = logging.Formatter(fmt, datefmt=datefmt)
 
     console = logging.StreamHandler(sys.stdout)
@@ -501,23 +498,23 @@ def _setup_logging(settings: dict) -> None:
 # ── report ────────────────────────────────────────────────────────────────────
 
 def _print_report(
-    fetch_summary: FetchSummary,
-    results:       list[TickerResult],
-    total_seconds: float = 0.0,
+        fetch_summary: FetchSummary,
+        results: list[TickerResult],
+        total_seconds: float = 0.0,
 ) -> None:
     """Log a structured pipeline summary: FETCH, SCAN, ENTRIES, EXITS, ERRORS."""
     logger = logging.getLogger(__name__)
 
-    scan_passed  = [r for r in results if r.scan.passed]
+    scan_passed = [r for r in results if r.scan.passed]
     scan_blocked = [r for r in results if not r.scan.passed and not r.error]
-    signals      = [r for r in results if r.signal and r.signal.passed]
-    entries      = [r for r in signals  if r.signal.direction == "long"]
-    exits        = [r for r in signals  if r.signal.direction == "exit_long"]
-    fire_entries = [r for r in entries  if not r.signal.watch_only]
-    watch_entries= [r for r in entries  if r.signal.watch_only]
-    fire_exits   = [r for r in exits    if not r.signal.watch_only]
-    watch_exits  = [r for r in exits    if r.signal.watch_only]
-    errors       = [r for r in results  if r.error]
+    signals = [r for r in results if r.signal and r.signal.passed]
+    entries = [r for r in signals if r.signal.direction == "long"]
+    exits = [r for r in signals if r.signal.direction == "exit_long"]
+    fire_entries = [r for r in entries if not r.signal.watch_only]
+    watch_entries = [r for r in entries if r.signal.watch_only]
+    fire_exits = [r for r in exits if not r.signal.watch_only]
+    watch_exits = [r for r in exits if r.signal.watch_only]
+    errors = [r for r in results if r.error]
 
     divider = "─" * 72
 

@@ -21,7 +21,6 @@ from persistence.json_cache import DEFAULT_CACHE_DIR, staleness_for
 
 logger = logging.getLogger(__name__)
 
-
 # ── constants ─────────────────────────────────────────────────────────────────
 
 _SECTION: str = "next_earnings"
@@ -32,11 +31,11 @@ DEFAULT_STALENESS_HOURS: int = staleness_for(_SECTION, _FALLBACK_STALENESS_H)
 # ── public API ────────────────────────────────────────────────────────────────
 
 def get_next_earnings(
-    ticker:          str,
-    cache_dir:       Path | str  = DEFAULT_CACHE_DIR,
-    staleness_hours: int         = DEFAULT_STALENESS_HOURS,
-    force:           bool        = False,
-    today:           date | None = None,
+        ticker: str,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        staleness_hours: int = DEFAULT_STALENESS_HOURS,
+        force: bool = False,
+        today: date | None = None,
 ) -> date | None:
     """
     Return the next scheduled earnings date for *ticker*, or None.

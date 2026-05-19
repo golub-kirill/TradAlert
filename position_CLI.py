@@ -40,9 +40,9 @@ def _cmd_list(_args: argparse.Namespace) -> int:
           f"{'opened':<10}  {'stop':>10}  {'exit':>10}  {'closed':<10}  notes")
     print("─" * 100)
     for p in rows:
-        stop_s   = f"{p.stop_price:.4f}" if p.stop_price is not None else "—"
-        exit_s   = f"{p.exit_price:.4f}" if p.exit_price is not None else "—"
-        closed_s = p.exit_date.isoformat() if p.exit_date  else "open"
+        stop_s = f"{p.stop_price:.4f}" if p.stop_price is not None else "—"
+        exit_s = f"{p.exit_price:.4f}" if p.exit_price is not None else "—"
+        closed_s = p.exit_date.isoformat() if p.exit_date else "open"
         print(f"{p.id:>4}  {p.ticker:<10}  {p.side:<5}  {p.entry_price:>10.4f}  "
               f"{p.entry_date.isoformat():<10}  {stop_s:>10}  {exit_s:>10}  "
               f"{closed_s:<10}  {p.notes}")
@@ -51,12 +51,12 @@ def _cmd_list(_args: argparse.Namespace) -> int:
 
 def _cmd_open(args: argparse.Namespace) -> int:
     new_id = pm.open_position(
-        ticker      = args.ticker,
-        entry_price = args.price,
-        entry_date  = date.today(),
-        side        = args.side,
-        stop_price  = args.stop,
-        notes       = args.notes,
+        ticker=args.ticker,
+        entry_price=args.price,
+        entry_date=date.today(),
+        side=args.side,
+        stop_price=args.stop,
+        notes=args.notes,
     )
     if new_id is None:
         print("✗ failed to open position (see log)")
@@ -85,26 +85,26 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser  = argparse.ArgumentParser(prog="admin", description="TradAlert positions CLI.")
-    sub     = parser.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(prog="position_CLI", description="TradAlert positions CLI.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list", help="list all positions").set_defaults(func=_cmd_list)
 
     p_open = sub.add_parser("open", help="open a new position")
     p_open.add_argument("ticker", type=str)
-    p_open.add_argument("price",  type=float)
+    p_open.add_argument("price", type=float)
     p_open.add_argument("--side", choices=("long", "short"), default="long")
     p_open.add_argument("--stop", type=float, default=None)
     p_open.add_argument("--notes", type=str, default="")
     p_open.set_defaults(func=_cmd_open)
 
     p_close = sub.add_parser("close", help="close an open position")
-    p_close.add_argument("id",    type=int)
+    p_close.add_argument("id", type=int)
     p_close.add_argument("price", type=float)
     p_close.set_defaults(func=_cmd_close)
 
     p_stop = sub.add_parser("stop", help="update stop on an open position")
-    p_stop.add_argument("id",    type=int)
+    p_stop.add_argument("id", type=int)
     p_stop.add_argument("price", type=float)
     p_stop.set_defaults(func=_cmd_stop)
 

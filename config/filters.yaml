@@ -42,12 +42,12 @@ regime: # block: broad-market regime classifier
 events: # block: calendar gates
   earnings_buffer_days: 5               # block new longs within N days of next earnings
 
-  stop_dates: # signal blackout calendar; suppresses entries + exits
+  stop_dates: # signal blackout calendar; suppresses ENTRIES only — exits on held positions always proceed
     - id: 1                             # row id; logged in the block reason
-      date: "3026-05-14"                # ISO date; matched against engine._today
+      date: "2026-05-14"                # ISO date; matched against engine._today
       description: "Trump-Xi summit Beijing day 1"
     - id: 2                             # row id
-      date: "3026-05-15"                # ISO date
+      date: "2026-05-15"                # ISO date
       description: "Trump-Xi summit Beijing day 2"
 
 
@@ -75,13 +75,13 @@ signals: # block: trigger configuration
       min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) >= this * atr
     short: # held-long exit: fade trigger; reused by _momentum_fade_exit
       rsi_min: 30                       # inclusive floor for fade trigger
-      rsi_max: 45                       # inclusive ceiling for fade trigger
-      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
+      rsi_max: 65                       # was 45 — widened; MACD zero-cross after a run lands at RSI 45-65, so 45 silently blocked all fades
+      min_hist_delta_atr: 0.18          # ATR-multiple; (row - prev) <= -this * atr
 
   mean_reversion: # block: counter-trend triggers
     long: # entry: RSI < rsi_max + macd_hist rising
       rsi_max: 35                       # exclusive ceiling; lower = more oversold
-      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) >= this * atr
+      min_hist_delta_atr: 0.18          # ATR-multiple; set to 0.18 to effectively disable MR entries (tuning sweep showed MR signal bleeds -0.205 E[R])
     short: # held-long exit: overbought trigger
       rsi_min: 65                       # exclusive floor; higher = more overbought
       min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr

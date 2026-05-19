@@ -42,7 +42,7 @@ DEFAULT_STALENESS_HOURS: int = staleness_for(_SECTION, _FALLBACK_STALENESS_H)
 # ── public API ────────────────────────────────────────────────────────────────
 
 def get_market_cap(
-    ticker:          str,
+        ticker: str,
         cache_dir: Path | str = DEFAULT_CACHE_DIR,
         staleness_hours: int = DEFAULT_STALENESS_HOURS,
         force: bool = False,
@@ -96,7 +96,7 @@ def _fetch(ticker: str) -> float | None:
 
             try:
                 info = yf_ticker.info or {}
-                mc   = info.get("marketCap")
+                mc = info.get("marketCap")
                 if mc is not None and mc > 0:
                     return float(mc)
             except Exception as exc:

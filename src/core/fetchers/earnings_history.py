@@ -90,6 +90,9 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
     """
     Return the first earnings date in *history* on or after *asof*.
 
+    This is the single canonical implementation. Both ``backtest.earnings_history``
+    and ``core.ticker_store`` import from here — do not duplicate this function.
+
     Parameters
     ----------
     history : Sorted list of earnings dates.

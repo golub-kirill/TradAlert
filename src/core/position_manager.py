@@ -18,7 +18,6 @@ from mysql.connector import Error as MySQLError
 
 logger = logging.getLogger(__name__)
 
-
 Side = Literal["long", "short"]
 
 
@@ -41,15 +40,15 @@ class Position:
     exit_date   : Close date, or None while open.
     notes       : Free-text annotation.
     """
-    id:          int
-    ticker:      str
-    side:        Side
+    id: int
+    ticker: str
+    side: Side
     entry_price: float
-    entry_date:  date
-    stop_price:  float | None = None
-    exit_price:  float | None = None
-    exit_date:   date  | None = None
-    notes:       str          = ""
+    entry_date: date
+    stop_price: float | None = None
+    exit_price: float | None = None
+    exit_date: date | None = None
+    notes: str = ""
 
     @property
     def is_open(self) -> bool:
@@ -74,32 +73,39 @@ _SELECT_OPEN_SQL = """
                    """
 
 _SELECT_ALL_SQL = """
-    SELECT id, ticker, side, entry_price, entry_date,
-           stop_price, exit_price, exit_date, notes
-    FROM positions
-    ORDER BY entry_date DESC
-"""
+                  SELECT id,
+                         ticker,
+                         side,
+                         entry_price,
+                         entry_date,
+                         stop_price,
+                         exit_price,
+                         exit_date,
+                         notes
+                  FROM positions
+                  ORDER BY entry_date DESC \
+                  """
 
 _INSERT_SQL = """
-    INSERT INTO positions (ticker, side, entry_price, entry_date, stop_price, notes)
-    VALUES (%(ticker)s, %(side)s, %(entry_price)s, %(entry_date)s,
-            %(stop_price)s, %(notes)s)
-"""
+              INSERT INTO positions (ticker, side, entry_price, entry_date, stop_price, notes)
+              VALUES (%(ticker)s, %(side)s, %(entry_price)s, %(entry_date)s,
+                      %(stop_price)s, %(notes)s) \
+              """
 
 _CLOSE_SQL = """
-    UPDATE positions
-    SET    exit_price = %(exit_price)s,
-           exit_date  = %(exit_date)s
-    WHERE  id         = %(id)s
-      AND  exit_date IS NULL
-"""
+             UPDATE positions
+             SET exit_price = %(exit_price)s,
+                 exit_date  = %(exit_date)s
+             WHERE id = %(id)s
+               AND exit_date IS NULL \
+             """
 
 _UPDATE_STOP_SQL = """
-    UPDATE positions
-    SET    stop_price = %(stop_price)s
-    WHERE  id         = %(id)s
-      AND  exit_date IS NULL
-"""
+                   UPDATE positions
+                   SET stop_price = %(stop_price)s
+                   WHERE id = %(id)s
+                     AND exit_date IS NULL \
+                   """
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -113,7 +119,7 @@ def load_open_positions() -> dict[str, Position]:
     """
     conn = None
     try:
-        conn   = _connect()
+        conn = _connect()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(_SELECT_OPEN_SQL)
         rows = cursor.fetchall()
@@ -132,7 +138,7 @@ def list_all() -> list[Position]:
     """Return every position, newest first. Empty list on DB error."""
     conn = None
     try:
-        conn   = _connect()
+        conn = _connect()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(_SELECT_ALL_SQL)
         return [_row_to_position(r) for r in cursor.fetchall()]
@@ -145,27 +151,27 @@ def list_all() -> list[Position]:
 
 
 def open_position(
-    ticker:      str,
-    entry_price: float,
-    entry_date:  date,
-    side:        Side  = "long",
-    stop_price:  float | None = None,
-    notes:       str          = "",
+        ticker: str,
+        entry_price: float,
+        entry_date: date,
+        side: Side = "long",
+        stop_price: float | None = None,
+        notes: str = "",
 ) -> int | None:
     """
     Insert a new open position. Returns the new id, or None on DB error.
     """
     row = {
-        "ticker":      ticker.upper(),
-        "side":        side,
+        "ticker": ticker.upper(),
+        "side": side,
         "entry_price": entry_price,
-        "entry_date":  entry_date,
-        "stop_price":  stop_price,
-        "notes":       notes or None,
+        "entry_date": entry_date,
+        "stop_price": stop_price,
+        "notes": notes or None,
     }
     conn = None
     try:
-        conn   = _connect()
+        conn = _connect()
         cursor = conn.cursor()
         cursor.execute(_INSERT_SQL, row)
         conn.commit()
@@ -182,9 +188,9 @@ def open_position(
 
 
 def close_position(
-    position_id: int,
-    exit_price:  float,
-    exit_date:   date,
+        position_id: int,
+        exit_price: float,
+        exit_date: date,
 ) -> bool:
     """
     Mark an open position closed. Returns True when one row was updated.
@@ -192,12 +198,12 @@ def close_position(
     """
     conn = None
     try:
-        conn   = _connect()
+        conn = _connect()
         cursor = conn.cursor()
         cursor.execute(_CLOSE_SQL, {
             "exit_price": exit_price,
-            "exit_date":  exit_date,
-            "id":         position_id,
+            "exit_date": exit_date,
+            "id": position_id,
         })
         conn.commit()
         ok = cursor.rowcount == 1
@@ -220,11 +226,11 @@ def update_stop(position_id: int, stop_price: float | None) -> bool:
     """Update stop_price on an open position. Returns True on success."""
     conn = None
     try:
-        conn   = _connect()
+        conn = _connect()
         cursor = conn.cursor()
         cursor.execute(_UPDATE_STOP_SQL, {
             "stop_price": stop_price,
-            "id":         position_id,
+            "id": position_id,
         })
         conn.commit()
         ok = cursor.rowcount == 1
@@ -245,25 +251,25 @@ def update_stop(position_id: int, stop_price: float | None) -> bool:
 
 def _row_to_position(r: dict) -> Position:
     return Position(
-        id          = r["id"],
-        ticker      = r["ticker"],
-        side        = r["side"],
-        entry_price = float(r["entry_price"]),
-        entry_date  = r["entry_date"],
-        stop_price  = float(r["stop_price"]) if r["stop_price"] is not None else None,
-        exit_price  = float(r["exit_price"]) if r["exit_price"] is not None else None,
-        exit_date   = r["exit_date"],
-        notes       = r["notes"] or "",
+        id=r["id"],
+        ticker=r["ticker"],
+        side=r["side"],
+        entry_price=float(r["entry_price"]),
+        entry_date=r["entry_date"],
+        stop_price=float(r["stop_price"]) if r["stop_price"] is not None else None,
+        exit_price=float(r["exit_price"]) if r["exit_price"] is not None else None,
+        exit_date=r["exit_date"],
+        notes=r["notes"] or "",
     )
 
 
 def _connect():
     """Open a fresh MySQL connection. Returns ``MySQLConnectionAbstract | PooledMySQLConnection``."""
     return mysql.connector.connect(
-        host            = os.environ.get("DB_HOST", "localhost"),
-        port            = int(os.environ.get("DB_PORT", "3306")),
-        user            = os.environ["DB_USER"],
-        password        = os.environ["DB_PASSWORD"],
-        database        = os.environ["DB_NAME"],
-        connect_timeout = 5,
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", "3306")),
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        connect_timeout=5,
     )

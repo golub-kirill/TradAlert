@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 LOOKBACK_BARS: int = 90  # trading days shown — ~4 months
 _WEBP_QUALITY: int = 90  # 0–100; 90 = near-lossless
-_DPI:           int = 150       # 16×10 inch canvas @ 150 DPI → 2400×1500 px
-_FIGSIZE            = (16, 10)
+_DPI: int = 150  # 16×10 inch canvas @ 150 DPI → 2400×1500 px
+_FIGSIZE = (16, 10)
 
 DEFAULT_OUT_DIR = Path("data/screenshots")
 _FILTERS_PATH = Path("config/filters.yaml")
@@ -60,40 +60,40 @@ def _load_rsi_thresholds() -> tuple[float, float, float]:
 _RSI_OB, _RSI_OS, _RSI_MID = _load_rsi_thresholds()
 
 # ── Palette ─────────────────────────────────────────
-_C_BG       = "#131722"
-_C_GRID     = "#2a2e39"
-_C_TEXT     = "#9598a1"
-_C_UP       = "#26a69a"   # teal green
-_C_DOWN     = "#ef5350"   # red
-_C_MA50     = "#FF9800"   # orange
-_C_MA200    = "#F44336"   # deep red
-_C_RSI      = "#ce93d8"   # light purple
-_C_MACD     = "#42a5f5"   # blue
-_C_SIGNAL   = "#FF9800"   # orange (same as MA50 — signal line)
-_C_ZERO     = "#4a4e5e"   # muted grey for zero / mid-lines
+_C_BG = "#131722"
+_C_GRID = "#2a2e39"
+_C_TEXT = "#9598a1"
+_C_UP = "#26a69a"  # teal green
+_C_DOWN = "#ef5350"  # red
+_C_MA50 = "#FF9800"  # orange
+_C_MA200 = "#F44336"  # deep red
+_C_RSI = "#ce93d8"  # light purple
+_C_MACD = "#42a5f5"  # blue
+_C_SIGNAL = "#FF9800"  # orange (same as MA50 — signal line)
+_C_ZERO = "#4a4e5e"  # muted grey for zero / mid-lines
 
 _STYLE = mpf.make_mpf_style(
-    base_mpl_style = "dark_background",
-    marketcolors   = mpf.make_marketcolors(
-        up     = _C_UP,
-        down   = _C_DOWN,
-        edge   = "inherit",
-        wick   = "inherit",
-        volume = {"up": _C_UP + "66", "down": _C_DOWN + "66"},  # 40% alpha
+    base_mpl_style="dark_background",
+    marketcolors=mpf.make_marketcolors(
+        up=_C_UP,
+        down=_C_DOWN,
+        edge="inherit",
+        wick="inherit",
+        volume={"up": _C_UP + "66", "down": _C_DOWN + "66"},  # 40% alpha
     ),
-    facecolor  = _C_BG,
-    edgecolor  = _C_GRID,
-    figcolor   = _C_BG,
-    gridcolor  = _C_GRID,
-    gridstyle  = "--",
-    gridaxis   = "both",
-    y_on_right = True,
-    rc         = {
-        "font.size":        9,
-        "axes.labelcolor":  _C_TEXT,
-        "xtick.color":      _C_TEXT,
-        "ytick.color":      _C_TEXT,
-        "axes.titlecolor":  "#d1d4dc",
+    facecolor=_C_BG,
+    edgecolor=_C_GRID,
+    figcolor=_C_BG,
+    gridcolor=_C_GRID,
+    gridstyle="--",
+    gridaxis="both",
+    y_on_right=True,
+    rc={
+        "font.size": 9,
+        "axes.labelcolor": _C_TEXT,
+        "xtick.color": _C_TEXT,
+        "ytick.color": _C_TEXT,
+        "axes.titlecolor": "#d1d4dc",
     },
 )
 
@@ -101,11 +101,11 @@ _STYLE = mpf.make_mpf_style(
 # ── public API ────────────────────────────────────────────────────────────────
 
 def chart(
-    ticker:     str,
-    df:         pd.DataFrame,
-    signal:     SignalResult | None = None,
-    output_dir: Path | str          = DEFAULT_OUT_DIR,
-    lookback:   int                 = LOOKBACK_BARS,
+        ticker: str,
+        df: pd.DataFrame,
+        signal: SignalResult | None = None,
+        output_dir: Path | str = DEFAULT_OUT_DIR,
+        lookback: int = LOOKBACK_BARS,
 ) -> Path:
     """
     Generate and save a 4-panel swing trading chart as WebP.
@@ -140,32 +140,32 @@ def chart(
     # ── 1. Compute MAs on full df → slice to display window ───────────────────
     # Compute on the full series so the displayed window has accurate values
     # even at the left edge (no warmup NaN in the visible bars).
-    ma50  = df["close"].rolling(50,  min_periods=1).mean()
+    ma50 = df["close"].rolling(50, min_periods=1).mean()
     ma200 = df["close"].rolling(200, min_periods=1).mean()
 
     # ── 2. Slice to lookback window ───────────────────────────────────────────
     plot_df = df.tail(lookback).copy()
-    ma50    = ma50.tail(lookback)
-    ma200   = ma200.tail(lookback)
+    ma50 = ma50.tail(lookback)
+    ma200 = ma200.tail(lookback)
 
     # ── 3. Build mplfinance-compatible DataFrame (capitalised columns) ─────────
     mpf_df = plot_df.rename(columns={
-        "open":   "Open",
-        "high":   "High",
-        "low":    "Low",
-        "close":  "Close",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
         "volume": "Volume",
     })[["Open", "High", "Low", "Close", "Volume"]]
 
     # ── 4. Reference series ───────────────────────────────────────────────────
-    idx      = plot_df.index
-    rsi_ob   = pd.Series(_RSI_OB,  index=idx, dtype=float)
-    rsi_os   = pd.Series(_RSI_OS,  index=idx, dtype=float)
-    rsi_mid  = pd.Series(_RSI_MID, index=idx, dtype=float)
-    macd_zero= pd.Series(0.0,      index=idx, dtype=float)
+    idx = plot_df.index
+    rsi_ob = pd.Series(_RSI_OB, index=idx, dtype=float)
+    rsi_os = pd.Series(_RSI_OS, index=idx, dtype=float)
+    rsi_mid = pd.Series(_RSI_MID, index=idx, dtype=float)
+    macd_zero = pd.Series(0.0, index=idx, dtype=float)
 
     # ── 5. MACD histogram colouring ───────────────────────────────────────────
-    hist        = plot_df["macd_hist"]
+    hist = plot_df["macd_hist"]
     hist_colors = [_C_UP if v >= 0 else _C_DOWN for v in hist]
 
     # ── 6. Build addplots ─────────────────────────────────────────────────────
@@ -176,23 +176,23 @@ def chart(
 
     addplots = [
         # — price panel: moving averages —
-        mpf.make_addplot(ma50,  panel=0, color=_C_MA50,  width=1.2, label="MA50"),
+        mpf.make_addplot(ma50, panel=0, color=_C_MA50, width=1.2, label="MA50"),
         mpf.make_addplot(ma200, panel=0, color=_C_MA200, width=1.2, label="MA200"),
 
         # — RSI panel —
-        mpf.make_addplot(plot_df["rsi"], panel=2, color=_C_RSI,  width=1.3,
+        mpf.make_addplot(plot_df["rsi"], panel=2, color=_C_RSI, width=1.3,
                          ylabel="RSI"),
-        mpf.make_addplot(rsi_ob,  panel=2, color=_C_DOWN,  width=0.8,
+        mpf.make_addplot(rsi_ob, panel=2, color=_C_DOWN, width=0.8,
                          linestyle="--", secondary_y=False),
-        mpf.make_addplot(rsi_os,  panel=2, color=_C_UP,    width=0.8,
+        mpf.make_addplot(rsi_os, panel=2, color=_C_UP, width=0.8,
                          linestyle="--", secondary_y=False),
-        mpf.make_addplot(rsi_mid, panel=2, color=_C_ZERO,  width=0.6,
-                         linestyle=":",  secondary_y=False),
+        mpf.make_addplot(rsi_mid, panel=2, color=_C_ZERO, width=0.6,
+                         linestyle=":", secondary_y=False),
 
         # — MACD panel —
-        mpf.make_addplot(hist,              panel=3, type="bar",
+        mpf.make_addplot(hist, panel=3, type="bar",
                          color=hist_colors, ylabel="MACD"),
-        mpf.make_addplot(plot_df["macd"],        panel=3, color=_C_MACD,
+        mpf.make_addplot(plot_df["macd"], panel=3, color=_C_MACD,
                          width=1.0),
         mpf.make_addplot(plot_df["macd_signal"], panel=3, color=_C_SIGNAL,
                          width=1.0),
@@ -210,14 +210,14 @@ def chart(
 
     fig, axes = mpf.plot(
         mpf_df,
-        type         = "candle",
-        style        = _STYLE,
-        addplot      = addplots,
-        volume       = True,
-        panel_ratios = (4, 1, 1.5, 2),
-        figsize      = _FIGSIZE,
-        title        = title,
-        returnfig    = True,
+        type="candle",
+        style=_STYLE,
+        addplot=addplots,
+        volume=True,
+        panel_ratios=(4, 1, 1.5, 2),
+        figsize=_FIGSIZE,
+        title=title,
+        returnfig=True,
     )
 
     # axes[0] = price, axes[2] = volume, axes[4] = RSI, axes[6] = MACD
@@ -235,10 +235,10 @@ def chart(
     buf = io.BytesIO()
     fig.savefig(
         buf,
-        format      = "png",
-        dpi         = _DPI,
-        bbox_inches = "tight",
-        facecolor   = _C_BG,
+        format="png",
+        dpi=_DPI,
+        bbox_inches="tight",
+        facecolor=_C_BG,
     )
     buf.seek(0)
     plt.close(fig)
@@ -261,9 +261,9 @@ def _check_columns(df: pd.DataFrame) -> None:
 
 
 def _annotate_signal(
-    ax:     plt.Axes,
-    df:     pd.DataFrame,
-    signal: SignalResult,
+        ax: plt.Axes,
+        df: pd.DataFrame,
+        signal: SignalResult,
 ) -> None:
     """
     Annotate the last bar based on signal direction.
@@ -271,18 +271,18 @@ def _annotate_signal(
     Long entry  : ▲ LONG label + stop line + target zone.
     Long exit   : ✕ EXIT label only.
     """
-    last_x     = len(df) - 1
+    last_x = len(df) - 1
     last_close = df["close"].iloc[-1]
-    bar_date   = df.index[-1].strftime("%Y-%m-%d")
-    is_entry   = signal.direction == "long"
-    is_exit    = signal.direction == "exit_long"
+    bar_date = df.index[-1].strftime("%Y-%m-%d")
+    is_entry = signal.direction == "long"
+    is_exit = signal.direction == "exit_long"
 
     score_str = f"  score {signal.score:.0f}/100" if signal.score > 0 else ""
 
     if is_entry:
-        color     = _C_UP
+        color = _C_UP
         arrow_dir = 1
-        hold_str  = ""
+        hold_str = ""
         if hasattr(signal, "expected_hold_days") and signal.expected_hold_days:
             lo, hi = signal.expected_hold_days
             hold_str = f"\n~{lo}–{hi}d hold"
@@ -293,7 +293,7 @@ def _annotate_signal(
         )
         va = "bottom"
     elif is_exit:
-        color     = _C_DOWN
+        color = _C_DOWN
         arrow_dir = -1
         label = (
             f"✕ EXIT  {signal.signal_type}{score_str}"
@@ -305,14 +305,14 @@ def _annotate_signal(
 
     ax.annotate(
         label,
-        xy       = (last_x, last_close),
-        xytext   = (last_x - 4, last_close + arrow_dir * last_close * 0.025),
-        fontsize = 8,
-        color    = color,
-        fontweight = "bold",
-        arrowprops = dict(arrowstyle="->", color=color, lw=1.5),
-        ha       = "right",
-        va       = va,
+        xy=(last_x, last_close),
+        xytext=(last_x - 4, last_close + arrow_dir * last_close * 0.025),
+        fontsize=8,
+        color=color,
+        fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color=color, lw=1.5),
+        ha="right",
+        va=va,
     )
 
     if not is_entry:
@@ -324,11 +324,11 @@ def _annotate_signal(
     ax.text(
         0.01, signal.stop_price,
         f"  SL  {signal.stop_price:.2f}",
-        transform  = ax.get_yaxis_transform(),
-        fontsize   = 7.5,
-        color      = color,
-        alpha      = 0.85,
-        va         = "bottom",
+        transform=ax.get_yaxis_transform(),
+        fontsize=7.5,
+        color=color,
+        alpha=0.85,
+        va="bottom",
     )
 
     # Target line + fill zone
@@ -337,11 +337,11 @@ def _annotate_signal(
     ax.text(
         0.01, signal.target_price,
         f"  TP  {signal.target_price:.2f}",
-        transform  = ax.get_yaxis_transform(),
-        fontsize   = 7.5,
-        color      = color,
-        alpha      = 0.75,
-        va         = "bottom",
+        transform=ax.get_yaxis_transform(),
+        fontsize=7.5,
+        color=color,
+        alpha=0.75,
+        va="bottom",
     )
     ax.axhspan(
         min(last_close, signal.target_price),
@@ -354,19 +354,19 @@ def _add_legend(ax: plt.Axes) -> None:
     """Add MA50 / MA200 legend to the price panel."""
     from matplotlib.lines import Line2D
     handles = [
-        Line2D([0], [0], color=_C_MA50,  linewidth=1.2, label="MA 50"),
+        Line2D([0], [0], color=_C_MA50, linewidth=1.2, label="MA 50"),
         Line2D([0], [0], color=_C_MA200, linewidth=1.2, label="MA 200"),
     ]
     ax.legend(
-        handles  = handles,
-        loc      = "upper left",
-        fontsize = 8,
-        facecolor= _C_BG,
-        edgecolor= _C_GRID,
-        labelcolor= _C_TEXT,
+        handles=handles,
+        loc="upper left",
+        fontsize=8,
+        facecolor=_C_BG,
+        edgecolor=_C_GRID,
+        labelcolor=_C_TEXT,
     )
 
 
 def _file_size(path: Path) -> str:
     kb = path.stat().st_size / 1024
-    return f"{kb:.0f} KB" if kb < 1024 else f"{kb/1024:.1f} MB"
+    return f"{kb:.0f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"

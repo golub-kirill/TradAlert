@@ -18,7 +18,7 @@ from core.validators.dataframe_validator import REQUIRED_COLUMNS
 from core.validators.yf_tickerValidator import validate_ticker
 from exceptions import FetchError
 
-DEFAULT_LOOKBACK: int = 500  # calendar days — ~350 trading days, covers MA200 warmup
+DEFAULT_LOOKBACK: int = 5000  # calendar days — ~350 trading days, covers MA200 warmup
 DEFAULT_INTERVAL: str = "1d"  # daily bars — correct for swing trading
 
 

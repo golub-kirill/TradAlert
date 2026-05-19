@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 # ── constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_CACHE_DIR: Path = Path("data/fundamentals")
-_SETTINGS_PATH: Path = Path("config/settings.yaml")
+# Absolute path so this resolves correctly regardless of the working directory
+# at import time (MINOR-02 in TODO — previously used a CWD-relative path).
+_SETTINGS_PATH: Path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
 
 
 def staleness_for(section: str, fallback_hours: int) -> int:

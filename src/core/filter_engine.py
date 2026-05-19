@@ -57,10 +57,10 @@ def _type_name(expected: type | tuple[type, ...]) -> str:
 
 # ── type aliases ──────────────────────────────────────────────────────────────
 
-TrendState  = Literal["BULL", "BEAR", "CHOP"]
-VolState    = Literal["LOW", "NORMAL", "HIGH"]
+TrendState = Literal["BULL", "BEAR", "CHOP"]
+VolState = Literal["LOW", "NORMAL", "HIGH"]
 TickerTrend = Literal["UPTREND", "DOWNTREND", "CHOP"]
-Direction   = Literal["long", "exit_long", "none"]
+Direction = Literal["long", "exit_long", "none"]
 SignalType = Literal["momentum", "mean_reversion", "regime", "none"]
 
 
@@ -76,7 +76,7 @@ class MarketRegime:
     trend      : "BULL" | "BEAR" | "CHOP".
     volatility : "LOW" | "NORMAL" | "HIGH". Defaults to NORMAL when vix_df is None.
     """
-    trend:      TrendState
+    trend: TrendState
     volatility: VolState
 
     @property
@@ -109,19 +109,19 @@ class ScanResult:
     macd_signal  : MACD signal line on the last bar.
     macd_hist    : MACD histogram on the last bar.
     """
-    passed:      bool
-    reason:      str        = ""
+    passed: bool
+    reason: str = ""
 
     # ── last-bar snapshot (populated inside scan()) ──────────────────────────
-    close:       float | None = field(default=None, repr=False)
-    atr:         float | None = field(default=None, repr=False)
-    atr_pct:     float | None = field(default=None, repr=False)
-    dv20:        float | None = field(default=None, repr=False)
-    market_cap:  float | None = field(default=None, repr=False)
-    rsi:         float | None = field(default=None, repr=False)
-    macd:        float | None = field(default=None, repr=False)
+    close: float | None = field(default=None, repr=False)
+    atr: float | None = field(default=None, repr=False)
+    atr_pct: float | None = field(default=None, repr=False)
+    dv20: float | None = field(default=None, repr=False)
+    market_cap: float | None = field(default=None, repr=False)
+    rsi: float | None = field(default=None, repr=False)
+    macd: float | None = field(default=None, repr=False)
     macd_signal: float | None = field(default=None, repr=False)
-    macd_hist:   float | None = field(default=None, repr=False)
+    macd_hist: float | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -149,16 +149,16 @@ class SignalResult:
     watch_only         : True when triggered but ``score < min_score_to_alert``.
     description        : Multi-line detail block built by SignalScorer.
     """
-    passed:             bool
-    direction:          Direction  = "none"
-    signal_type:        SignalType = "none"
-    stop_price:         float      = 0.0
-    target_price:       float      = 0.0
-    min_rr:             float      = 0.0
-    size_mult:          float      = 1.0
-    market_regime:      str        = ""
-    ticker_trend:       str        = ""
-    reason:             str        = ""
+    passed: bool
+    direction: Direction = "none"
+    signal_type: SignalType = "none"
+    stop_price: float = 0.0
+    target_price: float = 0.0
+    min_rr: float = 0.0
+    size_mult: float = 1.0
+    market_regime: str = ""
+    ticker_trend: str = ""
+    reason: str = ""
     # ── enriched by SignalScorer ──────────────────────────────────────────────
     score: float = field(default=0.0, repr=False)
     score_components: dict[str, float] = field(default_factory=dict, repr=False)
@@ -183,6 +183,7 @@ class FilterEngine:
     _REQUIRED_CONFIG_KEYS: tuple[tuple[str, type | tuple[type, ...]], ...] = (
         ("price.min_price", _NUMERIC),
         ("liquidity.min_dollar_volume_20d", _NUMERIC),
+        ("market_cap.min_market_cap", _NUMERIC),
         ("volatility.min_atr_pct", _NUMERIC),
         ("volatility.max_atr_pct", _NUMERIC),
         ("trend.ma_fast", int),
@@ -204,9 +205,9 @@ class FilterEngine:
     _EARNINGS_BUFFER_DAYS_DEFAULT: int = 5
 
     def __init__(
-        self,
-        config_path: Path | str = "config/filters.yaml",
-        today:       date | None = None,
+            self,
+            config_path: Path | str = "config/filters.yaml",
+            today: date | None = None,
     ):
         with open(config_path, encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
@@ -272,10 +273,10 @@ class FilterEngine:
     # ── Stage 1 ───────────────────────────────────────────────────────────────
 
     def scan(
-        self,
-        ticker:     str,
-        df:         pd.DataFrame,
-        market_cap: float | None = None,
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            market_cap: float | None = None,
     ) -> ScanResult:
         """
         Structural quality check. Never blocked by stop_dates.
@@ -310,7 +311,7 @@ class FilterEngine:
         if len(df) < 20:
             raise InsufficientDataError(got=len(df), need=20, ticker=ticker)
 
-        row  = df.iloc[-1]
+        row = df.iloc[-1]
         dv20 = float((df["close"] * df["volume"]).tail(20).mean())
 
         # ── capture snapshot now so all exit paths can carry it ───────────────
@@ -320,13 +321,13 @@ class FilterEngine:
                 "PASS" if passed else "FAIL", ticker, reason,
             )
             return ScanResult(
-                passed      = passed,
-                reason      = reason,
-                close       = float(row["close"]),
-                atr         = float(row["atr"]),
-                atr_pct     = float(row["atr"] / row["close"] * 100),
-                dv20        = dv20,
-                market_cap  = market_cap,
+                passed=passed,
+                reason=reason,
+                close=float(row["close"]),
+                atr=float(row["atr"]),
+                atr_pct=float(row["atr"] / row["close"] * 100),
+                dv20=dv20,
+                market_cap=market_cap,
                 rsi=float(row["rsi"]),
                 macd=float(row["macd"]),
                 macd_signal=float(row["macd_signal"]),
@@ -363,13 +364,13 @@ class FilterEngine:
     # ── Stage 2 ───────────────────────────────────────────────────────────────
 
     def signal(
-        self,
-        ticker:        str,
-        df:            pd.DataFrame,
-        market_dfs:    dict[str, pd.DataFrame] | None = None,
-        vix_df:        pd.DataFrame | None = None,
-        earnings_date: date | None = None,
-        held_long:     bool = False,
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            market_dfs: dict[str, pd.DataFrame] | None = None,
+            vix_df: pd.DataFrame | None = None,
+            earnings_date: date | None = None,
+            held_long: bool = False,
     ) -> SignalResult:
         """
         Signal detection. Branches on ``held_long``.
@@ -430,11 +431,11 @@ class FilterEngine:
     # ── Stage 2: entry mode ──────────────────────────────────────────────────
 
     def _signal_entry(
-        self,
-        ticker:        str,
-        df:            pd.DataFrame,
-        regime:        MarketRegime,
-        earnings_date: date | None,
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            regime: MarketRegime,
+            earnings_date: date | None,
     ) -> SignalResult:
         """Long-entry signal detection with full gate chain."""
         # 1. stop_date blackout
@@ -456,7 +457,7 @@ class FilterEngine:
                 regime, ticker_trend,
             )
 
-        row  = df.iloc[-1]
+        row = df.iloc[-1]
         prev = df.iloc[-2]
 
         # 4. evaluate long-entry conditions
@@ -468,11 +469,11 @@ class FilterEngine:
             return self._fail_result(why, regime, ticker_trend)
 
         # 5. R:R sanity (longs only — direction is always "long" here)
-        atr_mult     = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
-        min_rr       = self._cfg["signals"]["stop_loss"]["min_rr"]
-        stop_dist    = row["atr"] * atr_mult
-        stop_price   = row["close"] - stop_dist
-        risk         = abs(row["close"] - stop_price)
+        atr_mult = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
+        min_rr = self._cfg["signals"]["stop_loss"]["min_rr"]
+        stop_dist = row["atr"] * atr_mult
+        stop_price = row["close"] - stop_dist
+        risk = abs(row["close"] - stop_price)
         target_price = row["close"] + risk * min_rr
 
         if not self._rr_ok(row["close"], stop_price, min_rr, is_long=True):
@@ -481,25 +482,25 @@ class FilterEngine:
             )
 
         return SignalResult(
-            passed        = True,
-            direction     = "long",
-            signal_type   = signal_type,
-            stop_price    = round(stop_price,   4),
-            target_price  = round(target_price, 4),
-            min_rr        = min_rr,
-            size_mult     = 1.0,
-            market_regime = regime.label,
-            ticker_trend  = ticker_trend,
-            reason        = "entry signal fired",
+            passed=True,
+            direction="long",
+            signal_type=signal_type,
+            stop_price=round(stop_price, 4),
+            target_price=round(target_price, 4),
+            min_rr=min_rr,
+            size_mult=1.0,
+            market_regime=regime.label,
+            ticker_trend=ticker_trend,
+            reason="entry signal fired",
         )
 
     # ── Stage 2: exit mode ───────────────────────────────────────────────────
 
     def _signal_exit(
-        self,
-        ticker: str,
-        df:     pd.DataFrame,
-        regime: MarketRegime,
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            regime: MarketRegime,
     ) -> SignalResult:
         """
         Exit-signal detection for held longs.
@@ -517,8 +518,8 @@ class FilterEngine:
         self._min_rows_guard(df, ticker)
 
         ticker_trend = self._ticker_trend(df)
-        row          = df.iloc[-1]
-        prev         = df.iloc[-2]
+        row = df.iloc[-1]
+        prev = df.iloc[-2]
 
         exit_cfg = self._cfg.get("signals", {}).get("exits", {})
 
@@ -563,9 +564,9 @@ class FilterEngine:
     # ── private — regime classifier ──────────────────────────────────────────
 
     def _market_regime(
-        self,
-        market_dfs: dict[str, pd.DataFrame] | None,
-        vix_df:     pd.DataFrame | None,
+            self,
+            market_dfs: dict[str, pd.DataFrame] | None,
+            vix_df: pd.DataFrame | None,
     ) -> MarketRegime:
         """
         Classify the broad market on trend and volatility.
@@ -590,8 +591,8 @@ class FilterEngine:
         volatility: VolState
         if vix_df is not None and not vix_df.empty:
             vix_close = float(vix_df["close"].iloc[-1])
-            vix_low   = rcfg.get("vix_low",  20)
-            vix_high  = rcfg.get("vix_high", 25)
+            vix_low = rcfg.get("vix_low", 20)
+            vix_high = rcfg.get("vix_high", 25)
             if vix_close < vix_low:
                 volatility = "LOW"
             elif vix_close > vix_high:
@@ -605,9 +606,9 @@ class FilterEngine:
         if market_dfs is None or not market_dfs:
             return MarketRegime(trend="BULL", volatility=volatility)
 
-        symbols     = rcfg.get("index_symbols", ["SPY", "QQQ"])
+        symbols = rcfg.get("index_symbols", ["SPY", "QQQ"])
         require_all = rcfg.get("require_all_indices", True)
-        ma_period   = self._cfg["trend"]["ma_fast"]
+        ma_period = self._cfg["trend"]["ma_fast"]
 
         votes_up = 0
         votes_dn = 0
@@ -615,7 +616,7 @@ class FilterEngine:
             idx_df = market_dfs.get(sym)
             if idx_df is None or len(idx_df) < ma_period:
                 continue
-            ma   = idx_df["close"].rolling(ma_period, min_periods=ma_period).mean().iloc[-1]
+            ma = idx_df["close"].rolling(ma_period, min_periods=ma_period).mean().iloc[-1]
             last = idx_df["close"].iloc[-1]
             if last > ma:
                 votes_up += 1
@@ -659,11 +660,11 @@ class FilterEngine:
     # ── private — entry evaluator (longs only) ───────────────────────────────
 
     def _evaluate_entry(
-        self,
+            self,
             row: Series,
             prev: Series,
-        regime:       MarketRegime,
-        ticker_trend: TickerTrend,
+            regime: MarketRegime,
+            ticker_trend: TickerTrend,
     ) -> tuple[Direction, SignalType, str]:
         """
         Evaluate long-entry conditions with regime and trend gating.
@@ -706,9 +707,9 @@ class FilterEngine:
         delta = row["macd_hist"] - prev["macd_hist"]
         threshold = cfg["min_hist_delta_atr"] * row["atr"]
         return (
-            prev["macd_hist"] < 0 < row["macd_hist"]
-            and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
-            and delta >= threshold
+                prev["macd_hist"] < 0 < row["macd_hist"]
+                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
+                and delta >= threshold
         )
 
     def _mean_rev_long(self, row: Series, prev: Series) -> bool:
@@ -742,9 +743,9 @@ class FilterEngine:
         delta = row["macd_hist"] - prev["macd_hist"]
         threshold = cfg["min_hist_delta_atr"] * row["atr"]
         return (
-            prev["macd_hist"] > 0 > row["macd_hist"]
-            and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
-            and delta <= -threshold
+                prev["macd_hist"] > 0 > row["macd_hist"]
+                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
+                and delta <= -threshold
         )
 
     def _mean_rev_exit(self, row: Series, prev: Series) -> bool:
@@ -833,10 +834,10 @@ class FilterEngine:
         )
 
     def _scan_pass_reason(
-        self,
-        df:   pd.DataFrame,
+            self,
+            df: pd.DataFrame,
             row: Series,
-        dv20: float,
+            dv20: float,
     ) -> str:
         """
         Build a one-line reason string for a passing scan result.
@@ -847,10 +848,10 @@ class FilterEngine:
         fast = self._cfg["trend"]["ma_fast"]
         slow = self._cfg["trend"]["ma_slow"]
 
-        last  = float(row["close"])
+        last = float(row["close"])
         trend = self._classify_trend(df["close"], fast, slow)
 
-        avg_vol  = float(df["volume"].tail(20).mean())
+        avg_vol = float(df["volume"].tail(20).mean())
         vol_mult = float(row["volume"]) / avg_vol if avg_vol > 0 else 0.0
 
         rsi_val = float(row["rsi"])
@@ -883,16 +884,18 @@ class FilterEngine:
     def _near_earnings(self, earnings_date: date | None) -> bool:
         """
         True when ``earnings_date`` is within ``events.earnings_buffer_days``
-        of today. Returns False when ``earnings_date`` is None or in the past.
+        of today. Returns False when ``earnings_date`` is None or already past.
         """
         if earnings_date is None or earnings_date < self._today:
             return False
         return (earnings_date - self._today).days <= self._earnings_buffer_days()
 
     def _earnings_buffer_days(self) -> int:
-        """Return ``events.earnings_buffer_days``, falling back to the default constant."""
-        return self._cfg.get("events", {}).get(
-            "earnings_buffer_days", self._EARNINGS_BUFFER_DAYS_DEFAULT,
+        """Return ``events.earnings_buffer_days``, falling back to the class default."""
+        return int(
+            self._cfg.get("events", {}).get(
+                "earnings_buffer_days", self._EARNINGS_BUFFER_DAYS_DEFAULT
+            )
         )
 
     @staticmethod
@@ -900,10 +903,10 @@ class FilterEngine:
         """
         Structural R:R sanity check.
 
-        Long  — always valid when ``risk != 0``; the target is derived from
-                ``min_rr``, so it's structurally guaranteed.
-        Short — additionally requires ``risk * min_rr < entry`` so target
-                stays positive.
+        Long  -- always valid when risk != 0; target is derived from min_rr so
+                 the ratio is structurally guaranteed.
+        Short -- additionally requires ``risk * min_rr < entry`` so the target
+                 price stays positive.
         """
         risk = abs(entry - stop)
         if risk == 0:
@@ -911,3 +914,27 @@ class FilterEngine:
         if is_long:
             return True
         return (risk * min_rr) < entry
+
+    # ---- dict-based constructor (used by sweep engine) ----------------------
+
+    @classmethod
+    def from_dict(cls, cfg: dict, today: date | None = None) -> "FilterEngine":
+        """
+        Construct a FilterEngine directly from a config dict.
+
+        Bypasses filesystem I/O entirely -- the sweep engine supplies a
+        deep-copied, mutated copy of the base config for each parameter
+        combination without writing a temp file.
+
+        Parameters
+        ----------
+        cfg   : Full filters.yaml structure as a nested dict.
+        today : Override ``_today``; defaults to ``date.today()``.
+        """
+        import copy
+        obj = object.__new__(cls)
+        obj._cfg = copy.deepcopy(cfg)
+        obj._today = today or date.today()
+        obj._validate_config()
+        obj._stop_dates = obj._build_stop_dates_index()
+        return obj

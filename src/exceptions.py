@@ -54,10 +54,10 @@ class StaleDataError(ValidationError):
     """
 
     def __init__(
-        self,
-        hours_old: float,
-        threshold: int,
-        ticker: str = "",
+            self,
+            hours_old: float,
+            threshold: int,
+            ticker: str = "",
     ) -> None:
         self.hours_old = hours_old
         self.threshold = threshold
@@ -78,7 +78,7 @@ class InsufficientDataError(ValidationError):
     """
 
     def __init__(self, got: int, need: int, ticker: str = "") -> None:
-        self.got  = got
+        self.got = got
         self.need = need
         detail = f"need at least {need} rows, got {got}"
         super().__init__(detail=detail, ticker=ticker)
@@ -123,3 +123,7 @@ class ConfigError(TradAlertError):
         self.reason = reason
         self.missing_key = dotted
         super().__init__(f"config key {dotted}: {reason}")
+
+
+d}: {reason}
+")

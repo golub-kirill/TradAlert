@@ -19,8 +19,10 @@ from exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR:    Path = Path("data/prices")
-_SETTINGS_PATH = Path("config/settings.yaml")
+DEFAULT_CACHE_DIR: Path = Path("data/prices")
+# Absolute path so this resolves correctly regardless of the working directory
+# at import time (MINOR-02 in TODO — previously used a CWD-relative path).
+_SETTINGS_PATH: Path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
 
 
 def load_default_staleness_h() -> int:
@@ -37,9 +39,9 @@ DEFAULT_STALENESS_H: int = load_default_staleness_h()
 # ── public API ────────────────────────────────────────────────────────────────
 
 def is_fresh(
-    ticker:          str,
-    cache_dir:       Path | str = DEFAULT_CACHE_DIR,
-    staleness_hours: int = DEFAULT_STALENESS_H,
+        ticker: str,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        staleness_hours: int = DEFAULT_STALENESS_H,
 ) -> bool:
     """
     Return True when a cache file exists and is younger than staleness_hours.
@@ -59,7 +61,7 @@ def is_fresh(
         return False
 
     mtime = datetime.fromtimestamp(path.stat().st_mtime)
-    age   = datetime.now() - mtime
+    age = datetime.now() - mtime
     fresh = age < timedelta(hours=staleness_hours)
 
     if not fresh:
@@ -74,10 +76,10 @@ def is_fresh(
 
 
 def load(
-    ticker:    str,
-    start:     str | None = None,
-    end:       str | None = None,
-    cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        ticker: str,
+        start: str | None = None,
+        end: str | None = None,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
 ) -> pd.DataFrame:
     """
     Load a cached DataFrame, optionally trimmed to [start, end].
@@ -110,9 +112,9 @@ def load(
 
 
 def save(
-    df:        pd.DataFrame,
-    ticker:    str,
-    cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        df: pd.DataFrame,
+        ticker: str,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
 ) -> None:
     """
     Validate structure and write a standardised OHLCV DataFrame to parquet.
@@ -136,13 +138,13 @@ def save(
 
 
 def get_or_fetch(
-    ticker:          str,
-    fetcher,                              # callable(ticker) -> pd.DataFrame
-    start:           str | None = None,
-    end:             str | None = None,
-    cache_dir:       Path | str = DEFAULT_CACHE_DIR,
-    staleness_hours: int = DEFAULT_STALENESS_H,
-    force:           bool = False,
+        ticker: str,
+        fetcher,  # callable(ticker) -> pd.DataFrame
+        start: str | None = None,
+        end: str | None = None,
+        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        staleness_hours: int = DEFAULT_STALENESS_H,
+        force: bool = False,
 ) -> pd.DataFrame:
     """
     Return cached data when fresh; otherwise fetch, validate, cache, return.

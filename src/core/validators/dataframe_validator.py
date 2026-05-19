@@ -41,8 +41,8 @@ REQUIRED_COLUMNS: list[str] = ["open", "high", "low", "close", "volume"]
 # ── public API ────────────────────────────────────────────────────────────────
 
 def validate_ohlcv(
-    df:     pd.DataFrame,
-    ticker: str = "",
+        df: pd.DataFrame,
+        ticker: str = "",
 ) -> pd.DataFrame:
     """
     Validate and auto-correct a standardised OHLCV DataFrame.

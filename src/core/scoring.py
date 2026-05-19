@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-_TIMEFRAME         = "daily"
-_DEFAULT_HOLD_LOW  = 10
+_TIMEFRAME = "daily"
+_DEFAULT_HOLD_LOW = 10
 _DEFAULT_HOLD_HIGH = 15
 _DEFAULT_MIN_SCORE = 60
 
@@ -131,24 +131,24 @@ class SignalScorer:
         mh = settings.get("market_hours", {})
 
         self._entry_weights: dict[str, int] = sc.get("weights", {})
-        self._exit_weights:  dict[str, int] = sc.get("exit_weights", {})
-        self._min_score:     int            = sc.get("min_score_to_alert", _DEFAULT_MIN_SCORE)
-        self._hold_low:      int            = mh.get("expected_hold_days_low",  _DEFAULT_HOLD_LOW)
-        self._hold_high:     int            = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)
-        self._filters_cfg:   dict           = filters_cfg
+        self._exit_weights: dict[str, int] = sc.get("exit_weights", {})
+        self._min_score: int = sc.get("min_score_to_alert", _DEFAULT_MIN_SCORE)
+        self._hold_low: int = mh.get("expected_hold_days_low", _DEFAULT_HOLD_LOW)
+        self._hold_high: int = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)
+        self._filters_cfg: dict = filters_cfg
         self._entry_thr: EntryThresholds = _load_entry_thresholds(settings)
         self._exit_thr: ExitThresholds = _load_exit_thresholds(settings)
 
     def enrich(
-        self,
-        signal:        SignalResult,
-        df:            pd.DataFrame,
-        regime:        MarketRegime,
-        earnings_date: date | None         = None,
-        position:      Position | None     = None,
-        market_dfs:    dict | None         = None,
-        vix_df:        pd.DataFrame | None = None,
-        current_price: float | None        = None,
+            self,
+            signal: SignalResult,
+            df: pd.DataFrame,
+            regime: MarketRegime,
+            earnings_date: date | None = None,
+            position: Position | None = None,
+            market_dfs: dict | None = None,
+            vix_df: pd.DataFrame | None = None,
+            current_price: float | None = None,
     ) -> None:
         """
         Mutate signal in-place: add ``score``, ``score_components``,
@@ -179,11 +179,11 @@ class SignalScorer:
         else:
             score, components = 0.0, {}
 
-        signal.score              = round(score, 1)
-        signal.score_components   = components
-        signal.timeframe          = _TIMEFRAME
+        signal.score = round(score, 1)
+        signal.score_components = components
+        signal.timeframe = _TIMEFRAME
         signal.expected_hold_days = (self._hold_low, self._hold_high)
-        signal.watch_only         = signal.passed and signal.score < self._min_score
+        signal.watch_only = signal.passed and signal.score < self._min_score
 
         signal.description = _build_description(
             signal, df, regime, earnings_date, position,
@@ -200,23 +200,23 @@ class SignalScorer:
 # ── entry sub-scores ──────────────────────────────────────────────────────────
 
 def _score_entry(
-    df:            pd.DataFrame,
-    regime:        MarketRegime,
-    earnings_date: date | None,
-    weights:       dict[str, int],
-    filters_cfg:   dict,
+        df: pd.DataFrame,
+        regime: MarketRegime,
+        earnings_date: date | None,
+        weights: dict[str, int],
+        filters_cfg: dict,
         thr: EntryThresholds,
-    market_dfs:    dict | None = None,
-    signal_type:   str         = "momentum",
+        market_dfs: dict | None = None,
+        signal_type: str = "momentum",
 ) -> tuple[float, dict[str, float]]:
     """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
-    row  = df.iloc[-1]
+    row = df.iloc[-1]
     prev = df.iloc[-2]
 
     components: dict[str, float] = {}
 
     # 1. trend_up — close > MA50 > MA200
-    ma50  = df["close"].rolling(50,  min_periods=50).mean().iloc[-1]
+    ma50 = df["close"].rolling(50, min_periods=50).mean().iloc[-1]
     ma200 = df["close"].rolling(200, min_periods=200).mean().iloc[-1]
     close = float(row["close"])
     if close > ma50 > ma200:
@@ -266,9 +266,9 @@ def _score_entry(
         components["breakout_20d"] = 0.5
 
     # 6. macd_bullish — histogram sign and direction
-    hist      = float(row["macd_hist"])  if "macd_hist"  in row.index else 0.0
+    hist = float(row["macd_hist"]) if "macd_hist" in row.index else 0.0
     prev_hist = float(prev["macd_hist"]) if "macd_hist" in prev.index else 0.0
-    pos     = hist > 0
+    pos = hist > 0
     growing = hist > prev_hist
     if pos and growing:
         components["macd_bullish"] = 1.0
@@ -284,7 +284,7 @@ def _score_entry(
     if earnings_date is None:
         components["no_earnings_risk"] = 1.0
     else:
-        today = date.today()
+        today = df.index[-1].date()  # use bar date, not wall-clock date
         days_to = (earnings_date - today).days
         if days_to <= 0:
             components["no_earnings_risk"] = 1.0
@@ -311,14 +311,14 @@ def _score_entry(
 # ── exit sub-scores ───────────────────────────────────────────────────────────
 
 def _score_exit(
-    df:         pd.DataFrame,
-    regime:     MarketRegime,
-    weights:    dict[str, int],
+        df: pd.DataFrame,
+        regime: MarketRegime,
+        weights: dict[str, int],
         thr: ExitThresholds,
-    market_dfs: dict | None = None,
+        market_dfs: dict | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
-    row      = df.iloc[-1]
+    row = df.iloc[-1]
     prev_row = df.iloc[-2]
     components: dict[str, float] = {}
 
@@ -326,8 +326,8 @@ def _score_exit(
     components["regime_flip"] = 1.0 if regime.trend != "BULL" else 0.0
 
     # 2. multi_bar_decay — consecutive negative macd_hist bars
-    hist_tail   = df["macd_hist"].tail(5).values
-    neg_streak  = 0
+    hist_tail = df["macd_hist"].tail(5).values
+    neg_streak = 0
     for h in reversed(hist_tail):
         if h < 0:
             neg_streak += 1
@@ -343,18 +343,18 @@ def _score_exit(
     )
 
     # 4. macd_cross_down — histogram crossing below zero
-    hist      = float(row["macd_hist"])  if "macd_hist"  in row.index else 0.0
+    hist = float(row["macd_hist"]) if "macd_hist" in row.index else 0.0
     prev_hist = float(prev_row["macd_hist"]) if "macd_hist" in prev_row.index else 0.0
     if prev_hist > 0 and hist < 0:
-        components["macd_cross_down"] = 1.0   # just crossed this bar
+        components["macd_cross_down"] = 1.0  # just crossed this bar
     elif hist < 0:
-        components["macd_cross_down"] = 0.5   # already below
+        components["macd_cross_down"] = 0.5  # already below
     else:
         components["macd_cross_down"] = 0.0
 
     # 5. vol_expansion — ATR today vs 5-bar average
-    atr_today   = float(row["atr"])
-    atr_5d_avg  = float(df["atr"].tail(6).iloc[:-1].mean())
+    atr_today = float(row["atr"])
+    atr_5d_avg = float(df["atr"].tail(6).iloc[:-1].mean())
     if atr_5d_avg > 0:
         atr_ratio = atr_today / atr_5d_avg
         components["vol_expansion"] = max(
@@ -374,8 +374,8 @@ def _score_exit(
 # ── sub-score helpers ─────────────────────────────────────────────────────────
 
 def _score_rs_entry(
-    df:         pd.DataFrame,
-    market_dfs: dict | None,
+        df: pd.DataFrame,
+        market_dfs: dict | None,
 ) -> float:
     """
     Relative strength vs SPY over 20 and 60 trading days.
@@ -397,10 +397,10 @@ def _score_rs_entry(
         return 0.5
 
     try:
-        t0  = float(df["close"].iloc[-1])
+        t0 = float(df["close"].iloc[-1])
         t20 = float(df["close"].iloc[-21])
         t60 = float(df["close"].iloc[-61])
-        s0  = float(spy["close"].iloc[-1])
+        s0 = float(spy["close"].iloc[-1])
         s20 = float(spy["close"].iloc[-21])
         s60 = float(spy["close"].iloc[-61])
 
@@ -420,8 +420,8 @@ def _score_rs_entry(
 
 
 def _score_rs_exit(
-    df:         pd.DataFrame,
-    market_dfs: dict | None,
+        df: pd.DataFrame,
+        market_dfs: dict | None,
 ) -> float:
     """
     Exit signal from relative-strength divergence vs SPY over 20 days.
@@ -437,9 +437,9 @@ def _score_rs_exit(
         return 0.5
 
     try:
-        t0  = float(df["close"].iloc[-1])
+        t0 = float(df["close"].iloc[-1])
         t20 = float(df["close"].iloc[-21])
-        s0  = float(spy["close"].iloc[-1])
+        s0 = float(spy["close"].iloc[-1])
         s20 = float(spy["close"].iloc[-21])
         if s20 <= 0 or t20 <= 0:
             return 0.5
@@ -465,7 +465,7 @@ def _score_weekly_trend(df: pd.DataFrame) -> float:
     0.0   A fails
     0.5   < 14 weekly bars
     """
-    if len(df) < 70:   # need ~14 weeks at minimum
+    if len(df) < 70:  # need ~14 weeks at minimum
         return 0.5
 
     try:
@@ -479,10 +479,10 @@ def _score_weekly_trend(df: pd.DataFrame) -> float:
             return 0.5
 
         last_close = float(weekly.iloc[-1])
-        above_sma  = last_close > float(last_sma)
+        above_sma = last_close > float(last_sma)
 
         # SMA rising: compare to SMA value 4 weeks ago
-        sma_valid  = sma10.dropna()
+        sma_valid = sma10.dropna()
         if len(sma_valid) >= 5:
             sma_rising = float(sma_valid.iloc[-1]) > float(sma_valid.iloc[-5])
         else:
@@ -531,14 +531,14 @@ def _score_bb_zscore(df: pd.DataFrame, signal_type: str) -> float:
 # ── description builder ───────────────────────────────────────────────────────
 
 def _build_description(
-    signal:        SignalResult,
-    df:            pd.DataFrame,
-    regime:        MarketRegime,
-    earnings_date: date | None,
-    position:      Position | None,
-    market_dfs:    dict | None,
-    vix_df:        pd.DataFrame | None,
-    current_price: float | None = None,
+        signal: SignalResult,
+        df: pd.DataFrame,
+        regime: MarketRegime,
+        earnings_date: date | None,
+        position: Position | None,
+        market_dfs: dict | None,
+        vix_df: pd.DataFrame | None,
+        current_price: float | None = None,
 ) -> str:
     """
     Build a multi-line human-readable description attached to every signal.
@@ -552,15 +552,15 @@ def _build_description(
         Line 5: score component breakdown
         Line 6: position P&L (exits only)
     """
-    row       = df.iloc[-1]
-    prev_row  = df.iloc[-2]
-    close     = float(row["close"])
-    rsi_val   = float(row["rsi"])        if "rsi"       in row.index else float("nan")
-    hist      = float(row["macd_hist"])  if "macd_hist" in row.index else float("nan")
+    row = df.iloc[-1]
+    prev_row = df.iloc[-2]
+    close = float(row["close"])
+    rsi_val = float(row["rsi"]) if "rsi" in row.index else float("nan")
+    hist = float(row["macd_hist"]) if "macd_hist" in row.index else float("nan")
     prev_hist = float(prev_row["macd_hist"]) if "macd_hist" in prev_row.index else float("nan")
     hist_delta = hist - prev_hist
-    atr_val   = float(row["atr"])
-    atr_pct   = atr_val / close * 100 if close > 0 else 0.0
+    atr_val = float(row["atr"])
+    atr_pct = atr_val / close * 100 if close > 0 else 0.0
     vol_ratio = _vol_ratio(df)
 
     lines: list[str] = []
@@ -600,7 +600,8 @@ def _build_description(
 
     # Line 4: earnings (entries only)
     if signal.direction == "long" and earnings_date is not None:
-        days_to = (earnings_date - date.today()).days
+        bar_date_d = df.index[-1].date()
+        days_to = (earnings_date - bar_date_d).days
         if days_to > 0:
             lines.append(f"earnings: {earnings_date.isoformat()} ({days_to}d away)")
 
@@ -614,7 +615,7 @@ def _build_description(
     # Line 6: position P&L for exits
     if signal.direction == "exit_long" and position is not None:
         pnl_pct = (close - position.entry_price) / position.entry_price * 100
-        hold_days = (date.today() - position.entry_date).days
+        hold_days = (df.index[-1].date() - position.entry_date).days
         pnl_sign = "+" if pnl_pct >= 0 else ""
         lines.append(
             f"position: opened {position.entry_date.isoformat()}"
@@ -629,8 +630,8 @@ def _build_description(
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _weighted_average(
-    components: dict[str, float],
-    weights:    dict[str, int],
+        components: dict[str, float],
+        weights: dict[str, int],
 ) -> float:
     """
     Weighted average of component scores scaled to [0, 100].
@@ -656,9 +657,9 @@ def _vol_ratio(df: pd.DataFrame) -> float:
 
 
 def _regime_detail(
-    regime:     MarketRegime,
-    market_dfs: dict | None,
-    vix_df:     pd.DataFrame | None,
+        regime: MarketRegime,
+        market_dfs: dict | None,
+        vix_df: pd.DataFrame | None,
 ) -> str:
     """Human-readable regime summary with index distances and VIX."""
     parts: list[str] = [regime.label]
@@ -667,8 +668,8 @@ def _regime_detail(
         for sym, idx_df in market_dfs.items():
             if idx_df is None or len(idx_df) < 50:
                 continue
-            last  = float(idx_df["close"].iloc[-1])
-            ma50  = float(idx_df["close"].rolling(50, min_periods=50).mean().iloc[-1])
+            last = float(idx_df["close"].iloc[-1])
+            ma50 = float(idx_df["close"].rolling(50, min_periods=50).mean().iloc[-1])
             if ma50 > 0:
                 dist = (last - ma50) / ma50 * 100
                 sign = "+" if dist >= 0 else ""

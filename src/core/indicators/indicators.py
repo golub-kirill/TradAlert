@@ -1,5 +1,15 @@
 """
 Pure indicator functions on pandas Series / DataFrame.
+
+Public helpers
+--------------
+atr(df)                  Average True Range (Wilder EMA)
+rsi(close)               Relative Strength Index (Wilder EMA)
+macd(close)              MACD line, signal line, histogram
+bollinger_bands(close)   BB mid/upper/lower/bandwidth/Z-score
+attach_indicators(df)    Attach all of the above to a copy of df
+                         (single canonical implementation used by both
+                          the live pipeline and the backtester)
 """
 
 from __future__ import annotations
@@ -24,9 +34,9 @@ def atr(df: pd.DataFrame, period: int = 14) -> Series:
         ATR values aligned to df.index, named 'atr'.
         First (period - 1) values are NaN.
     """
-    _df   = df.rename(columns=str.lower)
-    high  = _df["high"]
-    low   = _df["low"]
+    _df = df.rename(columns=str.lower)
+    high = _df["high"]
+    low = _df["low"]
     close = _df["close"]
 
     prev_close = close.shift(1)
@@ -35,7 +45,7 @@ def atr(df: pd.DataFrame, period: int = 14) -> Series:
         [
             high - low,
             (high - prev_close).abs(),
-            (low  - prev_close).abs(),
+            (low - prev_close).abs(),
         ],
         axis=1,
     ).max(axis=1)
@@ -71,7 +81,7 @@ def rsi(close: Series, period: int = 14) -> Series:
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
-    rs        = avg_gain / avg_loss.where(avg_loss > 1e-10, np.nan)
+    rs = avg_gain / avg_loss.where(avg_loss > 1e-10, np.nan)
     rsi_value = 100 - 100 / (1 + rs)
     rsi_value = rsi_value.where(avg_loss > 1e-10, 100.0)
     rsi_value = rsi_value.where(avg_loss.notna(), np.nan)
@@ -81,9 +91,9 @@ def rsi(close: Series, period: int = 14) -> Series:
 
 def macd(
         close: Series,
-    fast:   int = 12,
-    slow:   int = 26,
-    signal: int = 9,
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9,
 ) -> tuple[Series, Series, Series]:
     """
     MACD line, signal line, and histogram.
@@ -105,7 +115,7 @@ def macd(
     ema_fast = close.ewm(span=fast, min_periods=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, min_periods=slow, adjust=False).mean()
 
-    macd_line   = (ema_fast - ema_slow).rename("macd")
+    macd_line = (ema_fast - ema_slow).rename("macd")
     signal_line = (
         macd_line
         .ewm(span=signal, min_periods=signal, adjust=False)
@@ -119,8 +129,8 @@ def macd(
 
 def bollinger_bands(
         close: Series,
-    period: int   = 20,
-    n_std:  float = 2.0,
+        period: int = 20,
+        n_std: float = 2.0,
 ) -> pd.DataFrame:
     """
     Bollinger Bands — middle, upper, lower, bandwidth, and Z-score.
@@ -142,18 +152,61 @@ def bollinger_bands(
         bb_z     : (close − bb_mid) / σ
         First (period − 1) rows are NaN. Uses population std (ddof=0).
     """
-    sma   = close.rolling(period, min_periods=period).mean()
+    sma = close.rolling(period, min_periods=period).mean()
     sigma = close.rolling(period, min_periods=period).std(ddof=0)
 
     upper = sma + n_std * sigma
     lower = sma - n_std * sigma
-    bw    = (upper - lower) / sma.where(sma > 0, np.nan) * 100
-    z     = (close - sma) / sigma.where(sigma > 1e-10, np.nan)
+    bw = (upper - lower) / sma.where(sma > 0, np.nan) * 100
+    z = (close - sma) / sigma.where(sigma > 1e-10, np.nan)
 
     return pd.DataFrame({
-        "bb_mid":   sma.rename("bb_mid"),
+        "bb_mid": sma.rename("bb_mid"),
         "bb_upper": upper.rename("bb_upper"),
         "bb_lower": lower.rename("bb_lower"),
-        "bb_bw":    bw.rename("bb_bw"),
-        "bb_z":     z.rename("bb_z"),
+        "bb_bw": bw.rename("bb_bw"),
+        "bb_z": z.rename("bb_z"),
     }, index=close.index)
+
+
+def attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of *df* with all standard indicator columns attached.
+
+    Added columns
+    -------------
+    atr, rsi, macd, macd_signal, macd_hist,
+    bb_mid, bb_upper, bb_lower, bb_bw, bb_z
+
+    This is the single canonical implementation shared by the live pipeline
+    (main.py) and the backtester (backtest/backtester.py).  Both previously
+    kept their own copies which had diverged (the backtest version was
+    missing Bollinger Bands — see BUG-03 in TODO).
+
+    Parameters
+    ----------
+    df : Validated OHLCV DataFrame with columns open/high/low/close/volume.
+
+    Returns
+    -------
+    pd.DataFrame
+        New DataFrame; the original is not mutated.
+    """
+    df = df.copy()
+
+    df["atr"] = atr(df)
+    df["rsi"] = rsi(df["close"])
+
+    macd_line, signal_line, histogram = macd(df["close"])
+    df["macd"] = macd_line
+    df["macd_signal"] = signal_line
+    df["macd_hist"] = histogram
+
+    bb = bollinger_bands(df["close"])
+    df["bb_mid"] = bb["bb_mid"]
+    df["bb_upper"] = bb["bb_upper"]
+    df["bb_lower"] = bb["bb_lower"]
+    df["bb_bw"] = bb["bb_bw"]
+    df["bb_z"] = bb["bb_z"]
+
+    return df

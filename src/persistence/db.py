@@ -29,81 +29,74 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
 _INSERT_SCAN_RUN_SQL = """
-    INSERT INTO scan_runs (
-        forced,
-        tickers_attempted,
-        tickers_fetched,
-        tickers_scanned,
-        scan_passed,
-        signals_fired,
-        market_regime,
-        notes
-    ) VALUES (
-        %(forced)s,
-        %(tickers_attempted)s,
-        %(tickers_fetched)s,
-        %(tickers_scanned)s,
-        %(scan_passed)s,
-        %(signals_fired)s,
-        %(market_regime)s,
-        %(notes)s
-    )
-"""
+                       INSERT INTO scan_runs (forced,
+                                              tickers_attempted,
+                                              tickers_fetched,
+                                              tickers_scanned,
+                                              scan_passed,
+                                              signals_fired,
+                                              market_regime,
+                                              notes)
+                       VALUES (%(forced)s,
+                               %(tickers_attempted)s,
+                               %(tickers_fetched)s,
+                               %(tickers_scanned)s,
+                               %(scan_passed)s,
+                               %(signals_fired)s,
+                               %(market_regime)s,
+                               %(notes)s) \
+                       """
 
 _INSERT_SCAN_RESULT_SQL = """
-    INSERT INTO scan_results (
-        run_id,
-        ticker,
-        passed,
-        signal_kind,
-        score,
-        reason,
-        close,
-        atr,
-        atr_pct,
-        dv20,
-        market_cap,
-        rsi,
-        macd,
-        macd_signal,
-        macd_hist,
-        error
-    ) VALUES (
-        %(run_id)s,
-        %(ticker)s,
-        %(passed)s,
-        %(signal_kind)s,
-        %(score)s,
-        %(reason)s,
-        %(close)s,
-        %(atr)s,
-        %(atr_pct)s,
-        %(dv20)s,
-        %(market_cap)s,
-        %(rsi)s,
-        %(macd)s,
-        %(macd_signal)s,
-        %(macd_hist)s,
-        %(error)s
-    )
-"""
+                          INSERT INTO scan_results (run_id,
+                                                    ticker,
+                                                    passed,
+                                                    signal_kind,
+                                                    score,
+                                                    reason,
+                                                    close,
+                                                    atr,
+                                                    atr_pct,
+                                                    dv20,
+                                                    market_cap,
+                                                    rsi,
+                                                    macd,
+                                                    macd_signal,
+                                                    macd_hist,
+                                                    error)
+                          VALUES (%(run_id)s,
+                                  %(ticker)s,
+                                  %(passed)s,
+                                  %(signal_kind)s,
+                                  %(score)s,
+                                  %(reason)s,
+                                  %(close)s,
+                                  %(atr)s,
+                                  %(atr_pct)s,
+                                  %(dv20)s,
+                                  %(market_cap)s,
+                                  %(rsi)s,
+                                  %(macd)s,
+                                  %(macd_signal)s,
+                                  %(macd_hist)s,
+                                  %(error)s) \
+                          """
 
 
 # ── public API ────────────────────────────────────────────────────────────────
 
 def save_scan_run(
-    forced:             bool,
-    tickers_attempted:  int,
-    tickers_fetched:    int,
-    tickers_scanned:    int,
-    scan_passed:        int,
-    signals_fired:      int,
-    market_regime:      str | None = None,
-    notes:              str | None = None,
+        forced: bool,
+        tickers_attempted: int,
+        tickers_fetched: int,
+        tickers_scanned: int,
+        scan_passed: int,
+        signals_fired: int,
+        market_regime: str | None = None,
+        notes: str | None = None,
 ) -> int | None:
     """
     Insert one row into scan_runs and return the new auto-increment id.
@@ -128,14 +121,14 @@ def save_scan_run(
         Auto-increment id of the inserted row, or None on error.
     """
     row = {
-        "forced":             int(forced),
-        "tickers_attempted":  tickers_attempted,
-        "tickers_fetched":    tickers_fetched,
-        "tickers_scanned":    tickers_scanned,
-        "scan_passed":        scan_passed,
-        "signals_fired":      signals_fired,
-        "market_regime":      market_regime,
-        "notes":              notes,
+        "forced": int(forced),
+        "tickers_attempted": tickers_attempted,
+        "tickers_fetched": tickers_fetched,
+        "tickers_scanned": tickers_scanned,
+        "scan_passed": scan_passed,
+        "signals_fired": signals_fired,
+        "market_regime": market_regime,
+        "notes": notes,
     }
 
     conn = None
@@ -158,8 +151,8 @@ def save_scan_run(
 
 
 def save_scan_results(
-    run_id:  int,
-    results: list[TickerResult],
+        run_id: int,
+        results: list[TickerResult],
 ) -> int:
     """
     Bulk-insert one row per TickerResult into scan_results.
@@ -180,7 +173,7 @@ def save_scan_results(
     """
     rows = [_result_to_row(run_id, r) for r in results]
 
-    conn     = None
+    conn = None
     inserted = 0
     try:
         conn = _connect()
@@ -203,40 +196,84 @@ def save_scan_results(
 
 def _result_to_row(run_id: int, r: TickerResult) -> dict:
     """Map one TickerResult to a flat dict matching _INSERT_SCAN_RESULT_SQL."""
-    scan        = r.scan
-    sig         = r.signal
+    scan = r.scan
+    sig = r.signal
     signal_kind = "none"
     if sig and sig.passed:
-        if   sig.direction == "long":      signal_kind = "entry_long"
-        elif sig.direction == "exit_long": signal_kind = "exit_long"
+        if sig.direction == "long":
+            signal_kind = "entry_long"
+        elif sig.direction == "exit_long":
+            signal_kind = "exit_long"
 
     return {
-        "run_id":      run_id,
-        "ticker":      r.ticker,
-        "passed":      int(scan.passed),
+        "run_id": run_id,
+        "ticker": r.ticker,
+        "passed": int(scan.passed),
         "signal_kind": signal_kind,
-        "score":       sig.score if sig and sig.score > 0 else None,
-        "reason":      scan.reason or None,
-        "close":       scan.close,
-        "atr":         scan.atr,
-        "atr_pct":     scan.atr_pct,
-        "dv20":        scan.dv20,
-        "market_cap":  scan.market_cap,
-        "rsi":         scan.rsi,
-        "macd":        scan.macd,
+        "score": sig.score if sig and sig.score > 0 else None,
+        "reason": scan.reason or None,
+        "close": scan.close,
+        "atr": scan.atr,
+        "atr_pct": scan.atr_pct,
+        "dv20": scan.dv20,
+        "market_cap": scan.market_cap,
+        "rsi": scan.rsi,
+        "macd": scan.macd,
         "macd_signal": scan.macd_signal,
-        "macd_hist":   scan.macd_hist,
-        "error":       r.error or None,
+        "macd_hist": scan.macd_hist,
+        "error": r.error or None,
     }
 
 
 def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
     """Open a MySQL connection. Raises MySQLError on failure."""
     return mysql.connector.connect(
-        host            = os.environ.get("DB_HOST", "localhost"),
-        port            = int(os.environ.get("DB_PORT", "3306")),
-        user            = os.environ["DB_USER"],
-        password        = os.environ["DB_PASSWORD"],
-        database        = os.environ["DB_NAME"],
-        connect_timeout = 5,
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", "3306")),
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        connect_timeout=5,
+    )
+
+
+lt_to_row(run_id: int, r: "TickerResult") -> dict:
+"""Map one TickerResult to a flat dict matching _INSERT_SCAN_RESULT_SQL."""
+scan = r.scan
+sig = r.signal
+signal_kind = "none"
+if sig and sig.passed:
+    if sig.direction == "long":
+        signal_kind = "entry_long"
+    elif sig.direction == "exit_long":
+        signal_kind = "exit_long"
+return {
+    "run_id": run_id,
+    "ticker": r.ticker,
+    "passed": int(scan.passed),
+    "signal_kind": signal_kind,
+    "score": sig.score if sig and sig.score > 0 else None,
+    "reason": scan.reason or None,
+    "close": scan.close,
+    "atr": scan.atr,
+    "atr_pct": scan.atr_pct,
+    "dv20": scan.dv20,
+    "market_cap": scan.market_cap,
+    "rsi": scan.rsi,
+    "macd": scan.macd,
+    "macd_signal": scan.macd_signal,
+    "macd_hist": scan.macd_hist,
+    "error": r.error or None,
+}
+
+
+def _connect() -> "PooledMySQLConnection | MySQLConnectionAbstract":
+    """Open a MySQL connection. Raises MySQLError on failure."""
+    return mysql.connector.connect(
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", "3306")),
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        connect_timeout=5,
     )
