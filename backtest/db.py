@@ -20,6 +20,8 @@ from typing import Iterable
 
 import mysql.connector
 from mysql.connector import Error as MySQLError
+from mysql.connector.abstracts import MySQLConnectionAbstract
+from mysql.connector.pooling import PooledMySQLConnection
 
 from backtest.stats import Stats
 from backtest.trade import Trade
@@ -164,7 +166,7 @@ def _trade_to_row(run_id: int, t: Trade) -> dict:
     }
 
 
-def _connect() -> mysql.connector.MySQLConnection:
+def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
     """Open a MySQL connection from env vars. Same env keys as core.db."""
     return mysql.connector.connect(
         host=os.environ.get("DB_HOST", "localhost"),
@@ -174,10 +176,3 @@ def _connect() -> mysql.connector.MySQLConnection:
         database=os.environ["DB_NAME"],
         connect_timeout=5,
     )
-
-
-environ["DB_USER"],
-password = os.environ["DB_PASSWORD"],
-database = os.environ["DB_NAME"],
-connect_timeout = 5,
-)

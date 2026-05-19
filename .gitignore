@@ -1,10 +1,5 @@
 /config/secrets.env
 /.venv/
-/data/earnings_dates/
-/data/info/
-/data/prices/
-/data/prices_live/
-/data/screenshots/
-/data/tradealert.log
 /.idea/
 /tests/
+/data/
