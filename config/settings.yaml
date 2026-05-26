@@ -26,18 +26,17 @@ storage: # block: paths + cache freshness + logging
 # Parallel watchlist fetch via ThreadPoolExecutor.
 
 fetcher: # block: concurrency
-  max_workers: 8                        # yfinance is network-bound; more threads ≠ faster [8]
+  max_workers: 12
 
 
 # ── MARKET HOURS ──────────────────────────────────────────────────────────────
 # Expected hold horizon for swing entries; surfaced in signal descriptions.
 
 market_hours: # block: trade horizon
-  expected_hold_days_low: 5            # low end of "~N–Md hold" shown in signal description
+  expected_hold_days_low: 10           # low end of "~N–Md hold" shown in signal description
   # code default (scoring.py): 10  |  backtest avg: 10 bars
-  expected_hold_days_high: 15          # high end of the range
-  # code default (scoring.py): 15  |  was 20 — tightened to
-  # bracket actual avg hold of 10 bars (range: 5–15 td)
+  expected_hold_days_high: 20          # high end of the range
+  # code default (scoring.py): 15  |
 
 
 # ── SCANNER ───────────────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ market_hours: # block: trade horizon
 
 scanner: # block: scoring + alerting
 
-  min_score_to_alert: 60                # entries below this score are watch_only [60]
+  min_score_to_alert: 50                # entries below this score are watch_only (sweep: 55 → +0.191 R)
 
   # ── ENTRY WEIGHTS ──────────────────────────────────────────────────────────
   # Weighted-averaged in scoring._weighted_average(); units are arbitrary,
@@ -54,6 +53,7 @@ scanner: # block: scoring + alerting
   weights: # block: long-entry sub-score weights
     trend_up: 3                # close > MA50 > MA200 stack alignment
     ma50_slope: 2                # MA50 % change over last 20 bars
+    ma200_slope: 2                # MA200 % change over last 20 bars (Phase 3 — Minervini's #10; sweep: 2 → +0.191 R)
     volume_spike: 2                # today_vol / 20d avg
     rsi_healthy: 2                # RSI proximity to ideal trend-confirm centre
     breakout_20d: 3                # close vs prior 20-bar high
@@ -62,6 +62,9 @@ scanner: # block: scoring + alerting
     relative_strength: 2                # ticker vs SPY over 20d + 60d
     weekly_trend: 2                # weekly close > 10w SMA + rising
     bb_zscore: 2                # Bollinger Z-score positioning; signal-type-aware
+    near_52w_high: 2                # proximity to trailing 252-bar high (Phase 1 — Minervini #9)
+    far_from_52w_low: 2                # advance above trailing 252-bar low (Phase 1 — Minervini #8)
+    rp_percentile: 3                # cross-sectional RP rank (Phase 2 — Minervini #1)
 
   # ── EXIT WEIGHTS ──────────────────────────────────────────────────────────
   # Same mechanic as weights; used only when direction == "exit_long".
@@ -72,6 +75,7 @@ scanner: # block: scoring + alerting
     macd_cross_down: 3                  # macd_hist crosses below zero
     vol_expansion: 2                  # atr today / atr 5d avg
     rs_divergence: 2                  # ticker underperforming SPY over 20d
+    vbp_resistance: 2                  # overhead high-volume node resistance (Phase 4)
 
   # ── ENTRY THRESHOLDS ──────────────────────────────────────────────────────
   # Tunables loaded into scoring.EntryThresholds; passed to _score_entry().
@@ -79,8 +83,11 @@ scanner: # block: scoring + alerting
     rsi_healthy_center: 52.5            # RSI mapped to rsi_healthy score 1.0 [52.5]
     rsi_healthy_half_w: 12.5            # half-width of the band; score 0.0 at ±half_w [12.5]
     ma50_slope_scale: 2.0             # MA50 % slope scaled by (slope+s)/(2*s) [2.0]
+    ma200_slope_scale: 0.5             # MA200 % slope; smaller scale since MA200 moves slower [0.5]
     breakout_band_pct: 3.0             # below prior 20d high by this % → score 0 [3.0]
     volume_spike_ratio: 2.0             # today_vol/avg_vol_20 saturating score at 1.0 [2.0]
+    near_52w_high_pct_band: 25.0             # distance below 52w high (%) → score 0 [25.0]
+    far_from_52w_low_pct_floor: 30.0             # % above 52w low saturating score at 1.0 [30.0]
 
   # ── EXIT THRESHOLDS ───────────────────────────────────────────────────────
   # Tunables loaded into scoring.ExitThresholds; passed to _score_exit().
@@ -89,3 +96,118 @@ scanner: # block: scoring + alerting
     rsi_overbought_range: 10.0          # delta over floor saturating score at 1.0 [10.0]
     multi_bar_decay_max: 3.0           # consecutive negative macd_hist bars → score 1.0 [3.0]
     vol_expansion_ratio: 0.5           # (atr_today/atr_5d_avg − 1) saturating score at 1.0 [0.5]
+    vbp_near_atr_mult: 0.5             # VBP node within this ATR distance → score 1.0 [0.5]
+    vbp_far_atr_mult: 3.0             # VBP node at this ATR distance → score 0.0 [3.0]
+
+  # ── VBP (Volume-by-Price) ────────────────────────────────────────────────
+  # Used for exit placement; computed from OHLCV, no external data needed.
+  vbp: # block: VBP histogram parameters
+    lookback: 120                       # trailing bars for volume profile [120]
+    n_bins: 24                          # number of price bins [24]
+    volume_percentile: 70               # min percentile to qualify as "high volume" node [70]
+
+  # ── Chart settings  ──────────────────────────────────────────────
+  chart: # block: chart rendering options
+    signal_history: true                # render historical signal markers on charts
+    scorecard_panel: true               # render Minervini-style scorecard panel
+
+
+# ── MACRO DATA LAYER ──────────────────────────────────────────────
+# FRED, BoC Valet, and yfinance macro series.  Fetched once per pipeline run.
+# Each series cached as parquet in series_dir.
+
+macro: # block: macro data configuration
+  enabled: true                         # master toggle; false → no macro regime
+  fred_api_key_env: "FRED_API_KEY"      # env var name for the FRED API key
+  staleness_hours: 24                   # re-fetch interval for all macro series
+  series_dir: "data/macro"              # parquet cache directory
+  series_subset: null                   # null = all series; or list of series IDs
+
+  # ── FRED series ────────────────────────────────────────────────────────────
+  fred_series:
+    - FEDFUNDS                          # Effective Federal Funds Rate
+    - DFEDTAR                           # Federal Funds Target Range - Upper Limit
+    - DGS3MO                            # 3-Month Treasury Constant Maturity Rate
+    - DGS2                              # 2-Year Treasury Constant Maturity Rate
+    - DGS10                             # 10-Year Treasury Constant Maturity Rate
+    - DFII10                            # 10-Year Treasury Inflation-Indexed Sec
+    - CPIAUCSL                          # Consumer Price Index for All Urban
+    - PCEPILFE                          # Personal Consumption Expenditures Excl
+    - BAMLH0A0HYM2                      # ICE BofA US High Yield Index OAS
+    - BAMLC0A0CM                        # ICE BofA US Corp Index OAS
+    - WALCL                             # Assets: Total Assets, Total Assets
+    - WTREGEN                           # Treasury General Account
+    - RRPONTSYD                         # Overnight Reverse Repurchase Agreements
+
+  # ── BoC Valet series ───────────────────────────────────────────────────────
+  boc_series:
+    - V39079                            # BoC overnight rate target
+    - V39055                            # GoC 2-year bond yield
+    - V39056                            # GoC 5-year bond yield
+    - V39057                            # GoC 10-year bond yield
+
+  # ── yfinance macro tickers ─────────────────────────────────────────────────
+  yf_series:
+    - DX-Y.NYB                          # US Dollar Index (DXY)
+    - CAD=X                             # USD/CAD exchange rate
+    - CL=F                              # WTI crude oil
+    - NG=F                              # Natural gas
+    - BZ=F                              # Brent crude (WCS spread proxy)
+
+  # ── Macro regime classifier ──────────────────────────────────────
+  size_mult_floor: 0.25                 # minimum position size when fully risk-off
+  size_mult_ceiling: 1.0                # maximum position size when fully risk-on
+
+  risk_on_weights: # per-axis state → [0, 1] risk value
+    policy_stance_us: { HIKING: 0.0, HOLD: 0.5, CUTTING: 1.0 }
+    policy_stance_ca: { HIKING: 0.0, HOLD: 0.5, CUTTING: 1.0 }
+    curve_state: { INVERTED: 0.3, STEEPENING_FROM_INVERTED: 0.0, FLAT: 0.6, NORMAL: 1.0 }
+    credit_state: { WIDE: 0.0, WIDENING: 0.2, NORMAL: 0.7, TIGHT: 1.0 }
+    liquidity_trend: { CONTRACTING: 0.2, FLAT: 0.6, EXPANDING: 1.0 }
+    inflation_state: { ACCELERATING: 0.4, STABLE: 0.7, DECELERATING: 1.0 }
+    real_yield_state: { HIGH_POSITIVE: 0.4, NORMAL: 0.8, NEGATIVE: 1.0 }
+    dollar_state: { STRONG_RISING: 0.4, STABLE: 0.8, WEAK_FALLING: 1.0 }
+    oil_state: { RISING: 0.5, STABLE: 0.7, FALLING: 0.8 }
+    wcs_spread_state: { WIDE: 0.3, NORMAL: 0.7 }
+    earnings_breadth: { DETERIORATING: 0.2, STABLE: 0.7, IMPROVING: 1.0 }
+
+  axis_weights: # how much each axis counts in composite
+    policy_stance_us: 3
+    curve_state: 4
+    credit_state: 4
+    liquidity_trend: 3
+    inflation_state: 2
+    real_yield_state: 2
+    dollar_state: 1
+    oil_state: 1
+    earnings_breadth: 2
+
+
+# ── BEHAVIORAL DATA LAYER ─────────────────────────────────────────
+# COT, NAAIM, AAII, breadth, sector rotation, Form 4, short interest.
+# Fetched once per pipeline run.  Stale data > 14 days treated as missing.
+
+behavioral: # block: behavioral data configuration
+  enabled: true                         # master toggle; false → no behavioral regime
+  data_dir: "data/behavioral"           # cache directory
+  stale_window_days: 14                 # days before data is treated as missing
+
+  # P0-6: size-multiplier mapping mirrors the macro block. Behavioral score
+  # in [0, 1] maps linearly to [floor, ceiling]; combined with the macro
+  # multiplier via geometric mean inside MarketRegime.size_multiplier.
+  size_mult_floor: 0.25                 # minimum position size when behavioral risk is fully off
+  size_mult_ceiling: 1.0                # maximum position size when fully on
+
+  behavioral_weights: # per-axis state → [0, 1] behavioral value
+    breadth_state: { WEAK: 0.0, DETERIORATING: 0.2, NEUTRAL: 0.6, STRONG: 1.0 }
+    sector_cycle: { DEFENSIVE_LEAD: 0.2, LATE: 0.4, MID: 0.7, EARLY: 1.0 }
+    positioning_state: { CROWDED_LONG: 0.3, NEUTRAL: 1.0, CROWDED_SHORT: 0.8 }
+    sentiment_state: { EUPHORIA: 0.3, NORMAL: 1.0, FEAR: 0.7, PANIC: 0.9 }
+
+  axis_weights: # how much each axis counts in composite
+    breadth_state: 4
+    sector_cycle: 2
+    positioning_state: 2
+    sentiment_state: 1
+
+  breadth_divergence_penalty: 0.2       # subtracted from behavioral_score when True

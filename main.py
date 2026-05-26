@@ -35,7 +35,7 @@ from persistence.cache import load as cache_load  # noqa: E402
 from core.indicators.chart import chart  # noqa: E402
 from persistence.db import save_scan_run, save_scan_results  # noqa: E402
 from core.filter_engine import FilterEngine, ScanResult, SignalResult  # noqa: E402
-from core.fetchers.fetcher import FetchSummary, fetch_watchlist  # noqa: E402
+from core.fetchers.fetcher import FetchSummary, fetch_watchlist, fetch_tier_b  # noqa: E402
 from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
 from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
 from core.fetchers.live_price import get_live_price  # noqa: E402
@@ -43,6 +43,26 @@ from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
 from core.scoring import SignalScorer  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
+
+# Phase 2/5/6/8/9 imports (fail-open — modules exist but data may not)
+try:
+    from core.fetchers.macro import fetch_all_macro_series  # noqa: E402
+    from core.macro import classify_macro_state, MacroState  # noqa: E402
+    from core.macro.calendar import get_calendar_events  # noqa: E402
+    from core.indicators.rp_rank import build_rp_rank_table  # noqa: E402
+    from core.indicators.chart_signal_history import collect_signal_history  # noqa: E402
+
+    _PHASE_MODULES_AVAILABLE = True
+except ImportError:
+    _PHASE_MODULES_AVAILABLE = False
+
+# Phase 7 behavioral fetcher (fail-open)
+try:
+    from core.fetchers.behavioral import fetch_all_behavioral  # noqa: E402
+
+    _BEHAVIORAL_AVAILABLE = True
+except ImportError:
+    _BEHAVIORAL_AVAILABLE = False
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
@@ -102,13 +122,112 @@ def main() -> None:
         logger.error("No tickers fetched successfully — aborting pipeline.")
         sys.exit(1)
 
+    # ── 1b. fetch tier_b universe (S&P 500 / TSX 60 constituents) ────────────
+    try:
+        tier_b_summary = fetch_tier_b(
+            watchlist_path=_WATCHLIST,
+            settings_path=_SETTINGS,
+            force=args.force,
+        )
+        if tier_b_summary.total > 0:
+            logger.info("[tier_b] %d / %d succeeded | %d failed | %.1fs",
+                        tier_b_summary.n_succeeded, tier_b_summary.total,
+                        tier_b_summary.n_failed, tier_b_summary.duration)
+    except Exception as exc:
+        logger.warning("[tier_b] fetch failed — proceeding without: %s", exc)
+
     # ── 2 – 6. context → enrich → scan → signal → score ─────────────────────
     # Parse filters.yaml once; pass the dict to both the engine and the scorer
     # so the file is not read and parsed a second time inside FilterEngine.__init__.
-    filters_cfg = yaml.safe_load(_FILTERS.read_text())
+    filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
+
+    # Phase 5/6: Fetch macro series once (market-wide, reused across tickers)
+    macro_series = {}
+    macro_state = None
+    if _PHASE_MODULES_AVAILABLE and settings.get("macro", {}).get("enabled", True):
+        try:
+            macro_series = fetch_all_macro_series(_SETTINGS, force=args.force)
+            if macro_series:
+                macro_state = classify_macro_state(macro_series, settings=settings)
+                logger.info("[macro] risk_on=%.2f confidence=%.0f%%",
+                            macro_state.risk_on_score, macro_state.confidence * 100)
+        except Exception as exc:
+            logger.warning("[macro] classification failed — proceeding without: %s", exc)
+
+    # Phase 7/8: Fetch behavioral data once (market-wide, reused across tickers)
+    behavioral_data = {}
+    behavioral_state = None
+    if _BEHAVIORAL_AVAILABLE and settings.get("behavioral", {}).get("enabled", True):
+        try:
+            behavioral_data = fetch_all_behavioral(_SETTINGS, force=args.force)
+            if behavioral_data:
+                from core.behavioral import classify_behavioral_state
+                behavioral_state = classify_behavioral_state(
+                    behavioral_data, settings=settings)
+                logger.info("[behavioral] score=%.2f confidence=%.0f%%",
+                            behavioral_state.behavioral_score,
+                            behavioral_state.confidence * 100)
+        except Exception as exc:
+            logger.warning("[behavioral] classification failed — proceeding without: %s", exc)
+
+    # Phase 8: Wire calendar events into engine (in-memory only)
+    if _PHASE_MODULES_AVAILABLE:
+        try:
+            cal_events = get_calendar_events()
+            # Extend engine._stop_dates with calendar events
+            # (done after engine construction below)
+        except Exception:
+            cal_events = []
+    else:
+        cal_events = []
+
     engine = FilterEngine.from_dict(filters_cfg)
+
+    # Inject calendar events into engine's stop_dates index
+    if cal_events:
+        import hashlib  # P1-8 FIX: deterministic IDs (hash() is per-run salt-randomized)
+        for evt in cal_events:
+            date_str = evt.date.isoformat()
+            if date_str not in engine._stop_dates:
+                stable_id = int(hashlib.sha256(date_str.encode()).hexdigest()[:8], 16) % 1000
+                engine._stop_dates[date_str] = {
+                    "id": 9000 + stable_id,
+                    "date": date_str,
+                    "description": f"{evt.category}: {evt.description}",
+                    "action": evt.action,
+                }
+
     scorer = SignalScorer(settings=settings, filters_cfg=filters_cfg)
-    results = _run_pipeline(fetch_summary.succeeded, engine, scorer)
+
+    # Phase 2: Build RP rank table (cross-sectional, computed once)
+    rp_ranks = {}
+    if _PHASE_MODULES_AVAILABLE:
+        try:
+            rp_universe = {}
+            wl_raw = yaml.safe_load(_WATCHLIST.read_text(encoding="utf-8"))
+            # Load tier_a tickers for RP ranking
+            tier_a = wl_raw.get("tier_a", []) if "tier_a" in wl_raw else wl_raw.get("tickers", [])
+            for t in tier_a:
+                if not isinstance(t, str):
+                    continue
+                if t in _CONTEXT_ONLY:
+                    continue
+                try:
+                    rp_universe[t] = cache_load(t)
+                except Exception:
+                    pass
+            if rp_universe:
+                rp_ranks = build_rp_rank_table(rp_universe)
+                logger.info("[rp_rank] built table for %d tickers", len(rp_ranks))
+        except Exception as exc:
+            logger.warning("[rp_rank] rank table build failed: %s", exc)
+
+    results = _run_pipeline(
+        fetch_summary.succeeded, engine, scorer,
+        settings=settings,
+        macro_state=macro_state, behavioral_state=behavioral_state,
+        rp_ranks=rp_ranks,
+    )
 
     elapsed = time.perf_counter() - t0
 
@@ -118,6 +237,9 @@ def main() -> None:
     # ── 8. report ─────────────────────────────────────────────────────────────
     _print_report(fetch_summary, results, total_seconds=elapsed)
 
+    # ── 9. P1.9: alpha-decay watch ────────────────────────────────────────────
+    _print_alpha_decay_watch()
+
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
@@ -125,6 +247,10 @@ def _run_pipeline(
         tickers: list[str],
         engine: FilterEngine,
         scorer: SignalScorer,
+        settings: dict | None = None,
+        macro_state: object | None = None,
+        behavioral_state: object | None = None,
+        rp_ranks: dict[str, float] | None = None,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal → score for every fetched ticker.
@@ -147,9 +273,12 @@ def _run_pipeline(
 
     Parameters
     ----------
-    tickers : Symbols successfully fetched (FetchSummary.succeeded).
-    engine  : Shared FilterEngine instance.
-    scorer  : Shared SignalScorer instance.
+    tickers          : Symbols successfully fetched (FetchSummary.succeeded).
+    engine           : Shared FilterEngine instance.
+    scorer           : Shared SignalScorer instance.
+    macro_state      : MacroState for regime size multiplier (Phase 6).
+    behavioral_state : BehavioralState for regime size multiplier (Phase 8).
+    rp_ranks         : Ticker → RP percentile rank [0, 99] (Phase 2).
 
     Returns
     -------
@@ -158,6 +287,7 @@ def _run_pipeline(
     """
     logger = logging.getLogger(__name__)
     results: list[TickerResult] = []
+    settings = settings or {}
 
     # ── load market context and open positions once per run ──────────────────
     market_dfs, vix_df = _load_market_context(tickers)
@@ -262,12 +392,23 @@ def _run_pipeline(
                                ticker, exc)
 
         try:
+            # Compute and enrich regime BEFORE signal() so behavioral gate applies
+            regime = engine.market_regime(market_dfs, vix_df)
+            if macro_state is not None or behavioral_state is not None:
+                from dataclasses import replace
+                regime = replace(
+                    regime,
+                    macro=macro_state,
+                    behavioral=behavioral_state,
+                )
+
             signal = engine.signal(
                 ticker, df,
                 market_dfs=market_dfs,
                 vix_df=vix_df,
                 earnings_date=earnings_date,
                 held_long=held_long,
+                regime=regime,
             )
         except InsufficientDataError as exc:
             logger.info("[%s] signal skipped — %s", ticker, exc)
@@ -298,7 +439,7 @@ def _run_pipeline(
             except Exception as exc:
                 logger.debug("[%s] live price fetch failed — %s", ticker, exc)
 
-            regime = engine.market_regime(market_dfs, vix_df)
+            # regime already computed and enriched above
             scorer.enrich(
                 signal=signal,
                 df=df,
@@ -308,11 +449,35 @@ def _run_pipeline(
                 market_dfs=market_dfs,
                 vix_df=vix_df,
                 current_price=live_price,
+                rp_ranks=rp_ranks,
+                ticker=ticker,
             )
             # Chart only for fire signals (score ≥ threshold, not watch-only)
             if not signal.watch_only:
-                chart(ticker, df, signal=signal,
-                      output_dir=_ROOT / "data" / "screenshots")
+                # Phase 9: Collect historical signals for chart overlay
+                hist_signals = []
+                if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
+                                                                                                 False):
+                    try:
+                        hist_signals = collect_signal_history(
+                            ticker, df, engine, scorer,
+                            market_dfs=market_dfs, vix_df=vix_df,
+                            lookback=90,
+                        )
+                    except Exception as exc:
+                        logger.debug("[%s] signal history collection failed: %s", ticker, exc)
+
+                # Phase 9: Extract RP rank for scorecard
+                ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
+
+                chart(
+                    ticker, df, signal=signal,
+                    output_dir=_ROOT / "data" / "screenshots",
+                    historical_signals=hist_signals,
+                    regime=regime,
+                    score_components=getattr(signal, "score_components", None),
+                    rp_rank=ticker_rp,
+                )
         else:
             logger.debug("[%s] no signal — %s", ticker, signal.reason)
 
@@ -464,7 +629,7 @@ def _load_settings() -> dict:
     """
     if not _SETTINGS.exists():
         raise FileNotFoundError(f"Settings file not found: {_SETTINGS}")
-    return yaml.safe_load(_SETTINGS.read_text())
+    return yaml.safe_load(_SETTINGS.read_text(encoding="utf-8"))
 
 
 def _setup_logging(settings: dict) -> None:
@@ -604,6 +769,54 @@ def _print_report(
 def _score_label(signal: SignalResult) -> str:
     """Return compact score string, e.g. '78/100'."""
     return f"{signal.score:.0f}/100"
+
+
+def _print_alpha_decay_watch() -> None:
+    """P1.9: Compute and display 6-month rolling E[R] from backtest trade CSV."""
+    logger = logging.getLogger(__name__)
+    try:
+        import csv
+        from datetime import date as _date
+        from pathlib import Path
+
+        csv_path = Path(__file__).parent / "data" / "backtest_out" / "trades.csv"
+        if not csv_path.exists():
+            logger.info("[alpha-decay] No trades.csv found — run a backtest first")
+            return
+
+        six_months_ago = _date.today() - __import__("datetime").timedelta(days=180)
+        rs = []
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    exit_dt = _date.fromisoformat(row["exit_date"])
+                    if exit_dt >= six_months_ago:
+                        rs.append(float(row["r_multiple"]))
+                except (ValueError, KeyError):
+                    continue
+
+        if not rs:
+            logger.info("[alpha-decay] No trades in last 6 months — skipping")
+            return
+
+        rolling_er = sum(rs) / len(rs)
+        logger.info(
+            "[alpha-decay] 6-month rolling E[R]: %+.3f R (%d trades)",
+            rolling_er, len(rs),
+        )
+        if rolling_er < 0:
+            logger.warning(
+                "[alpha-decay] CRITICAL: rolling E[R] < 0 — "
+                "stop trading pending re-validation",
+            )
+        elif rolling_er < 0.05:
+            logger.warning(
+                "[alpha-decay] WARNING: rolling E[R] < +0.05 R — "
+                "halve position size if sustained >8 weeks",
+            )
+    except Exception as exc:
+        logger.debug("[alpha-decay] Could not compute rolling E[R]: %s", exc)
 
 
 # ── run ───────────────────────────────────────────────────────────────────────

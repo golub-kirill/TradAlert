@@ -65,6 +65,10 @@ class Trade:
     ticker_trend: str = ""
     entry_score: float = 0.0
     entry_score_components: dict[str, float] = field(default_factory=dict)
+    # P0-6 FIX: portfolio-level size multiplier from macro/behavioral regime.
+    # The raw r_multiple is the per-unit-risk strategy edge; effective_r
+    # below is what actually contributes to portfolio cumulative R.
+    size_mult: float = 1.0
 
     # ── helpers ────────────────────────────────────────────────────────────
 
@@ -84,6 +88,11 @@ class Trade:
         meaningfully computed.
         """
         return self.entry_price - self.initial_stop
+
+    @property
+    def effective_r(self) -> float:
+        """R-multiple scaled by position-size multiplier (portfolio bookkeeping)."""
+        return self.r_multiple * self.size_mult
 
     def compute_r(self) -> float:
         """

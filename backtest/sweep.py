@@ -128,12 +128,62 @@ PARAM_GRID: list[ParamSpec] = [
     ParamSpec("regime.vix_high",
               (20, 23, 25, 28, 30),
               "VIX high threshold", "regime"),
+    ParamSpec("regime.require_ma_short_alignment",
+              (False, True),
+              "Require MA20 alignment", "regime"),
+    ParamSpec("signals.momentum.long.max_bars_since_cross",
+              (1, 2, 3, 5, 8),
+              "Max bars since MACD cross", "momentum_entry",
+              fmt="{:.0f}"),
+    ParamSpec("signals.gap_risk.max_prev_bar_range_atr",
+              (1.5, 2.0, 2.5, 3.0, 4.0),
+              "Max prev bar range (ATR)", "gap_risk",
+              fmt="{:.1f}"),
 
     # Events
     ParamSpec("events.earnings_buffer_days",
               (2, 3, 5, 7, 10),
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
+
+    # Phase 1 — 52-week proximity
+    ParamSpec("scanner.weights.near_52w_high",
+              (0, 1, 2, 3, 4),
+              "Near 52w high weight", "phase1"),
+    ParamSpec("scanner.weights.far_from_52w_low",
+              (0, 1, 2, 3, 4),
+              "Far from 52w low weight", "phase1"),
+
+    # Phase 2 — RP percentile
+    ParamSpec("scanner.weights.rp_percentile",
+              (0, 1, 2, 3, 4, 5),
+              "RP percentile weight", "phase2"),
+
+    # Phase 3 — MA200 slope
+    ParamSpec("scanner.weights.ma200_slope",
+              (0, 1, 2),
+              "MA200 slope weight", "phase3"),
+
+    # Phase 4 — VBP exit
+    ParamSpec("scanner.exit_weights.vbp_resistance",
+              (0, 1, 2, 3),
+              "VBP resistance weight", "phase4"),
+
+    # Global
+    ParamSpec("scanner.min_score_to_alert",
+              (55, 60, 65, 70, 75),
+              "Min score to alert", "global",
+              fmt="{:.0f}"),
+
+    # Phase 8 — Behavioral breadth divergence penalty
+    ParamSpec("behavioral.breadth_divergence_penalty",
+              (0.0, 0.1, 0.2, 0.3),
+              "Breadth divergence pen.", "phase8"),
+
+    # Phase 8 — Behavioral size multiplier floor
+    ParamSpec("behavioral.size_multiplier_floor",
+              (0.25, 0.35, 0.50, 0.65),
+              "Behavioral size floor", "phase8"),
 ]
 
 PORTFOLIO_GRID: list[ParamSpec] = [
@@ -149,6 +199,10 @@ PORTFOLIO_GRID: list[ParamSpec] = [
               (0.0, 0.003, 0.005, 0.010),
               "Commission (R units)", "portfolio",
               fmt="{:.4f}"),
+    ParamSpec("portfolio.max_drawdown_r",
+              (6.0, 8.0, 10.0, 12.0),
+              "Max portfolio drawdown (R)", "portfolio",
+              fmt="{:.1f}"),
 ]
 
 # ── mean-reversion focused grid ───────────────────────────────────────────────
@@ -170,6 +224,99 @@ MEAN_REV_GRID: list[ParamSpec] = [
     ParamSpec("signals.mean_reversion.short.rsi_min",
               (50, 55, 60, 65, 70, 75),
               "MR exit RSI floor", "mean_rev_exit"),
+]
+
+# ── scoring system focused grid ───────────────────────────────────────────────
+# Used by --scoring-sweep to tune the SignalScorer: entry/exit thresholds
+# and sub-score weights that gate trade selection via min_score_to_alert.
+# All paths map to settings.yaml via _SETTINGS_ALIASES.
+
+SCORING_GRID: list[ParamSpec] = [
+    # ── Entry thresholds (shape the scoring curves) ───────────────────────
+    ParamSpec("scanner.entry_thresholds.rsi_healthy_center",
+              (45, 50, 52.5, 55, 60),
+              "RSI healthy center", "scoring_entry", fmt="{:.1f}"),
+    ParamSpec("scanner.entry_thresholds.rsi_healthy_half_w",
+              (8, 10, 12.5, 15, 20),
+              "RSI healthy half-width", "scoring_entry", fmt="{:.1f}"),
+    ParamSpec("scanner.entry_thresholds.ma50_slope_scale",
+              (1.0, 1.5, 2.0, 3.0, 4.0),
+              "MA50 slope scale", "scoring_entry", fmt="{:.1f}"),
+    ParamSpec("scanner.entry_thresholds.breakout_band_pct",
+              (1.5, 2.0, 3.0, 4.0, 5.0),
+              "Breakout band %", "scoring_entry", fmt="{:.1f}"),
+    ParamSpec("scanner.entry_thresholds.volume_spike_ratio",
+              (1.5, 2.0, 2.5, 3.0),
+              "Volume spike ratio", "scoring_entry", fmt="{:.1f}"),
+    ParamSpec("scanner.entry_thresholds.near_52w_high_pct_band",
+              (15, 20, 25, 30, 35),
+              "52w high band %", "scoring_entry", fmt="{:.0f}"),
+    ParamSpec("scanner.entry_thresholds.far_from_52w_low_pct_floor",
+              (20, 25, 30, 35, 40),
+              "52w low floor %", "scoring_entry", fmt="{:.0f}"),
+
+    # ── Entry weights (relative importance of sub-scores) ──────────────────
+    ParamSpec("scanner.weights.trend_up",
+              (1, 2, 3, 4, 5),
+              "Trend-up weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.ma50_slope",
+              (1, 2, 3, 4),
+              "MA50 slope weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.volume_spike",
+              (1, 2, 3, 4),
+              "Volume spike weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.rsi_healthy",
+              (1, 2, 3, 4),
+              "RSI healthy weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.breakout_20d",
+              (1, 2, 3, 4, 5),
+              "Breakout 20d weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.macd_bullish",
+              (1, 2, 3, 4, 5),
+              "MACD bullish weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.relative_strength",
+              (0, 1, 2, 3, 4),
+              "Relative strength weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.weekly_trend",
+              (0, 1, 2, 3, 4),
+              "Weekly trend weight", "scoring_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.weights.bb_zscore",
+              (0, 1, 2, 3, 4),
+              "BB Z-score weight", "scoring_weights", fmt="{:.0f}"),
+
+    # ── Exit thresholds ────────────────────────────────────────────────────
+    ParamSpec("scanner.exit_thresholds.rsi_overbought_floor",
+              (55, 60, 65, 70),
+              "RSI overbought floor", "scoring_exit", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_thresholds.rsi_overbought_range",
+              (5, 8, 10, 15, 20),
+              "RSI overbought range", "scoring_exit", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_thresholds.multi_bar_decay_max",
+              (2, 3, 4, 5),
+              "Multi-bar decay max", "scoring_exit", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_thresholds.vol_expansion_ratio",
+              (0.3, 0.5, 0.8, 1.0, 1.5),
+              "Vol expansion ratio", "scoring_exit", fmt="{:.1f}"),
+
+    # ─ Exit weights ───────────────────────────────────────────────────────
+    ParamSpec("scanner.exit_weights.regime_flip",
+              (2, 3, 4, 5, 6),
+              "Regime flip weight", "scoring_exit_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_weights.multi_bar_decay",
+              (1, 2, 3, 4, 5),
+              "Multi-bar decay weight", "scoring_exit_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_weights.rsi_overbought",
+              (1, 2, 3, 4),
+              "RSI overbought weight", "scoring_exit_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_weights.macd_cross_down",
+              (1, 2, 3, 4, 5),
+              "MACD cross-down weight", "scoring_exit_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_weights.vol_expansion",
+              (1, 2, 3, 4),
+              "Vol expansion weight", "scoring_exit_weights", fmt="{:.0f}"),
+    ParamSpec("scanner.exit_weights.rs_divergence",
+              (0, 1, 2, 3, 4),
+              "RS divergence weight", "scoring_exit_weights", fmt="{:.0f}"),
 ]
 
 
@@ -599,14 +746,32 @@ class SweepEngine:
 
         # Wire scorer so min_score_to_alert gate is applied in backtesting
         scorer = None
+        _settings = None
         try:
             import yaml as _yaml
             _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
             with open(_settings_path, encoding="utf-8") as _f:
                 _settings = _yaml.safe_load(_f)
+
+            # Mutate _settings for sweep params that live in settings.yaml
+            # (scanner weights, exit_weights, min_score_to_alert, behavioral params)
+            if not is_baseline:
+                _apply_settings_mutation(_settings, param_name, param_value)
+
             scorer = SignalScorer(_settings, cfg)
         except Exception as exc:
             logger.debug("SignalScorer init failed — running without score gate: %s", exc)
+            # Still load settings for behavioral classification even if scorer fails
+            if _settings is None:
+                try:
+                    import yaml as _yaml
+                    _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
+                    with open(_settings_path, encoding="utf-8") as _f:
+                        _settings = _yaml.safe_load(_f)
+                    if not is_baseline:
+                        _apply_settings_mutation(_settings, param_name, param_value)
+                except Exception:
+                    pass
 
         bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
         result = bt.run_prepped(
@@ -614,6 +779,10 @@ class SweepEngine:
             self._universe.skipped,
             self._universe.market_dfs,
             self._universe.vix_df,
+            macro_series=self._universe.macro_series,
+            behavioral_data=self._universe.behavioral_data,
+            spy_df=self._universe.spy_df,
+            settings=_settings,
         )
 
         trades = result.trades
@@ -740,6 +909,65 @@ def _get_nested(d: dict, dotted: str, default: Any = None) -> Any:
             return default
         node = node[part]
     return node
+
+
+# Mapping from filters.yaml dotted paths → settings.yaml dotted paths.
+# These params live in settings.yaml (read by SignalScorer) but were
+# historically specified as filters.yaml paths in the sweep grid.
+_SETTINGS_ALIASES: dict[str, str] = {
+    # Original PARAM_GRID aliases
+    "scanner.weights.near_52w_high": "scanner.weights.near_52w_high",
+    "scanner.weights.far_from_52w_low": "scanner.weights.far_from_52w_low",
+    "scanner.weights.rp_percentile": "scanner.weights.rp_percentile",
+    "scanner.weights.ma200_slope": "scanner.weights.ma200_slope",
+    "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
+    "scanner.min_score_to_alert": "scanner.min_score_to_alert",
+    "behavioral.breadth_divergence_penalty": "behavioral.breadth_divergence_penalty",
+    "behavioral.size_multiplier_floor": "behavioral.size_multiplier_floor",
+    # SCORING_GRID — entry thresholds
+    "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",
+    "scanner.entry_thresholds.rsi_healthy_half_w": "scanner.entry_thresholds.rsi_healthy_half_w",
+    "scanner.entry_thresholds.ma50_slope_scale": "scanner.entry_thresholds.ma50_slope_scale",
+    "scanner.entry_thresholds.breakout_band_pct": "scanner.entry_thresholds.breakout_band_pct",
+    "scanner.entry_thresholds.volume_spike_ratio": "scanner.entry_thresholds.volume_spike_ratio",
+    "scanner.entry_thresholds.near_52w_high_pct_band": "scanner.entry_thresholds.near_52w_high_pct_band",
+    "scanner.entry_thresholds.far_from_52w_low_pct_floor": "scanner.entry_thresholds.far_from_52w_low_pct_floor",
+    # SCORING_GRID — entry weights
+    "scanner.weights.trend_up": "scanner.weights.trend_up",
+    "scanner.weights.ma50_slope": "scanner.weights.ma50_slope",
+    "scanner.weights.volume_spike": "scanner.weights.volume_spike",
+    "scanner.weights.rsi_healthy": "scanner.weights.rsi_healthy",
+    "scanner.weights.breakout_20d": "scanner.weights.breakout_20d",
+    "scanner.weights.macd_bullish": "scanner.weights.macd_bullish",
+    "scanner.weights.relative_strength": "scanner.weights.relative_strength",
+    "scanner.weights.weekly_trend": "scanner.weights.weekly_trend",
+    "scanner.weights.bb_zscore": "scanner.weights.bb_zscore",
+    # SCORING_GRID — exit thresholds
+    "scanner.exit_thresholds.rsi_overbought_floor": "scanner.exit_thresholds.rsi_overbought_floor",
+    "scanner.exit_thresholds.rsi_overbought_range": "scanner.exit_thresholds.rsi_overbought_range",
+    "scanner.exit_thresholds.multi_bar_decay_max": "scanner.exit_thresholds.multi_bar_decay_max",
+    "scanner.exit_thresholds.vol_expansion_ratio": "scanner.exit_thresholds.vol_expansion_ratio",
+    # SCORING_GRID — exit weights
+    "scanner.exit_weights.regime_flip": "scanner.exit_weights.regime_flip",
+    "scanner.exit_weights.multi_bar_decay": "scanner.exit_weights.multi_bar_decay",
+    "scanner.exit_weights.rsi_overbought": "scanner.exit_weights.rsi_overbought",
+    "scanner.exit_weights.macd_cross_down": "scanner.exit_weights.macd_cross_down",
+    "scanner.exit_weights.vol_expansion": "scanner.exit_weights.vol_expansion",
+    "scanner.exit_weights.rs_divergence": "scanner.exit_weights.rs_divergence",
+}
+
+
+def _apply_settings_mutation(settings: dict, param_name: str, value: Any) -> None:
+    """
+    Mutate the settings.yaml dict for sweep params that live there.
+
+    The SignalScorer reads weights, min_score_to_alert, and behavioral params
+    from settings.yaml — NOT from filters.yaml. This function bridges the gap
+    so that OFAT sweep params correctly affect scoring behavior.
+    """
+    settings_path = _SETTINGS_ALIASES.get(param_name)
+    if settings_path is not None:
+        _set_nested(settings, settings_path, value)
 
 
 def _empty_point(

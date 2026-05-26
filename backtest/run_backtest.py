@@ -13,11 +13,14 @@ Usage
     python backtest/run_backtest.py --tickers MSFT GOOGL TSLA  # subset
     python backtest/run_backtest.py --walk-forward          # IS/OOS validation
     python backtest/run_backtest.py --mean-rev-tune         # mean-rev sweep
+    python backtest/run_backtest.py --scoring-sweep         # scorer thresholds + weights
+    python backtest/run_backtest.py --workers=8             # parrallel running
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import sys
 import time
@@ -42,9 +45,9 @@ def main() -> None:
         print_baseline, print_report, save_html, save_csv,
         print_walk_forward, print_mean_rev_tune,
     )
-    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID
+    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID, SCORING_GRID
     from backtest.equity_curve import build_curve, attribution_table
-    from backtest.stats_utils import bootstrap_all, kelly_fraction, consecutive_loss_stats
+    from backtest.stats_utils import bootstrap_all, kelly_fraction, consecutive_loss_stats, monte_carlo_drawdown
     from backtest.walk_forward import WalkForwardEngine
 
     cfg_path = _ROOT / "config" / "filters.yaml"
@@ -55,7 +58,13 @@ def main() -> None:
     with open(cfg_path, encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
     with open(wl_path, encoding="utf-8") as f:
-        wl_tickers = yaml.safe_load(f)["tickers"]
+        wl_raw = yaml.safe_load(f)
+
+    # Support both legacy flat list and two-tier structure
+    if "tier_a" in wl_raw:
+        wl_tickers = [t for t in wl_raw["tier_a"] if isinstance(t, str)]
+    else:
+        wl_tickers = wl_raw.get("tickers", [])
 
     if args.tickers:
         ctx = [t for t in wl_tickers if t.upper() in ("SPY", "QQQ", "^VIX")]
@@ -110,7 +119,7 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_concurrent": 5,
+        "max_concurrent": 6,  # 6 × 5% = 30% aggregate open risk cap (P1.10)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
@@ -128,7 +137,7 @@ def main() -> None:
     def _progress(msg: str) -> None:
         print(f"  ▸ {msg}", flush=True)
 
-    # ── mean-reversion focused sweep ───────────────────────────────────────
+    # ── mean-reversion focused sweep ──────────────────────────────────────
     if args.mean_rev_tune:
         print(f"\n  Mean-reversion tuning sweep: {len(MEAN_REV_GRID)} params\n")
         bl = engine.baseline()
@@ -141,8 +150,21 @@ def main() -> None:
             hp = save_html(report, out_dir / "mean_rev_report.html")
             print(f"  Saved: {hp}")
 
+    # ── scoring system focused sweep ───────────────────────────────────────
+    elif args.scoring_sweep:
+        print(f"\n  Scoring system sweep: {len(SCORING_GRID)} params\n")
+        report = engine.run_ofat(grid=SCORING_GRID, port_grid=[], progress=_progress)
+        print_report(report)
+        if not args.no_csv:
+            sp, tp = save_csv(report, out_dir)
+            print(f"  Saved: {sp}")
+            print(f"  Saved: {tp}")
+        if not args.no_html:
+            hp = save_html(report, out_dir / "scoring_report.html")
+            print(f"  Saved: {hp}")
+
     # ── baseline only ──────────────────────────────────────────────────────
-    elif not args.sweep:
+    elif not args.sweep and not args.robustness:
         print("\n  Running baseline…", end="", flush=True)
         t0 = time.time()
         pt = engine.baseline()
@@ -157,6 +179,7 @@ def main() -> None:
                               abs(pt.stats.avg_loser_r))
                if rs else None)
         stks = consecutive_loss_stats(rs) if rs else None
+        mc_dd = monte_carlo_drawdown(rs) if len(rs) >= 10 else None
         attr = attribution_table(trades) if trades else None
 
         wf_report = None
@@ -169,11 +192,13 @@ def main() -> None:
                 is_years=3,
                 oos_years=1,
                 step_months=6,
+                re_tune=True,  # P0.3: re-tune per IS window
             )
             wf_report = wfe.run(progress=_progress)
 
         print_baseline(pt, equity=ec, bootstrap=boots,
-                       kelly=kel, attribution=attr, streaks=stks)
+                       kelly=kel, attribution=attr, streaks=stks,
+                       mc_dd=mc_dd)
         if wf_report:
             print_walk_forward(wf_report)
 
@@ -199,6 +224,56 @@ def main() -> None:
                            bootstrap=boots, kelly=kel,
                            attribution=attr, streaks=stks)
             print(f"  Saved: {hp}")
+
+    # ── robustness sweep ───────────────────────────────────────────────────
+    elif args.robustness:
+        from backtest.report import print_robustness
+        from backtest.sweep import PARAM_GRID, _set_nested
+
+        print(f"\n  Robustness sweep: perturb each param ±10%, ±20%\n")
+        bl = engine.baseline()
+        base_er = bl.stats.expectancy_r
+
+        robust_results = []
+        for spec in PARAM_GRID:
+            baseline_val = engine._resolve_baseline(spec)
+            if baseline_val is None or not isinstance(baseline_val, (int, float)):
+                continue
+            if baseline_val == 0:
+                continue
+
+            perturbations = {}
+            for pct in [-0.20, -0.10, +0.10, +0.20]:
+                perturbed_val = baseline_val * (1 + pct)
+                if spec.fmt == "{:.0f}":
+                    perturbed_val = round(perturbed_val)
+                perturbations[pct] = perturbed_val
+
+            for pct, val in perturbations.items():
+                cfg = copy.deepcopy(base_cfg)
+                port_params = dict(base_port)
+                _set_nested(cfg, spec.dotted, val)
+
+                pt = engine._run_one(
+                    cfg=cfg,
+                    port_params=port_params,
+                    param_name=spec.dotted,
+                    param_value=val,
+                    param_label=spec.label,
+                    group=spec.group,
+                    is_baseline=False,
+                )
+                robust_results.append({
+                    "param": spec.label,
+                    "group": spec.group,
+                    "baseline": baseline_val,
+                    "pct": pct,
+                    "value": val,
+                    "er": pt.stats.expectancy_r,
+                    "trades": pt.stats.trades_count,
+                })
+
+        print_robustness(robust_results, base_er)
 
     # ── full OFAT sweep ────────────────────────────────────────────────────
     else:
@@ -285,8 +360,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--quick", action="store_true")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
+    p.add_argument("--scoring-sweep", action="store_true",
+                   help="SignalScorer thresholds + weights sweep (settings.yaml)")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
+    p.add_argument("--robustness", action="store_true",
+                   help="Perturb each param plus/minus 10pct/20pct and report E[R] sensitivity")
     p.add_argument("--start", default=None, metavar="YYYY-MM-DD")
     p.add_argument("--end", default=None, metavar="YYYY-MM-DD")
     p.add_argument("--tickers", nargs="+", metavar="TICKER")

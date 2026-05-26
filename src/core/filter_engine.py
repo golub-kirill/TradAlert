@@ -75,9 +75,13 @@ class MarketRegime:
     ----------
     trend      : "BULL" | "BEAR" | "CHOP".
     volatility : "LOW" | "NORMAL" | "HIGH". Defaults to NORMAL when vix_df is None.
+    macro      : Optional MacroState from Phase 6 (default None).
+    behavioral : Optional BehavioralState from Phase 8 (default None).
     """
     trend: TrendState
     volatility: VolState
+    macro: object | None = None
+    behavioral: object | None = None
 
     @property
     def label(self) -> str:
@@ -88,6 +92,26 @@ class MarketRegime:
     def allows_longs(self) -> bool:
         """True when trend is BULL and volatility is not HIGH."""
         return self.trend == "BULL" and self.volatility != "HIGH"
+
+    @property
+    def size_multiplier(self) -> float:
+        """P0-6: composite position-size multiplier from macro × behavioral.
+
+        Geometric mean preserves the property that if either axis says
+        zero-risk, the composite goes to zero. Missing axes contribute 1.0
+        (neutral). Result clamped to [0.0, 1.0].
+        """
+        m = getattr(self.macro, "size_multiplier", 1.0) if self.macro else 1.0
+        b = getattr(self.behavioral, "size_multiplier", 1.0) if self.behavioral else 1.0
+        try:
+            m = float(m);
+            b = float(b)
+        except (TypeError, ValueError):
+            return 1.0
+        if m <= 0 or b <= 0:
+            return 0.0
+        composite = (m * b) ** 0.5  # geometric mean
+        return max(0.0, min(1.0, composite))
 
 
 @dataclass
@@ -138,7 +162,8 @@ class SignalResult:
     stop_price         : ``close − ATR × atr_multiplier`` on entry. 0.0 on exit.
     target_price       : ``close + risk × min_rr`` on entry. 0.0 on exit.
     min_rr             : Minimum risk:reward ratio from config. 0.0 on exit.
-    size_mult          : Position-size multiplier. Always 1.0 (reserved).
+    size_mult          : Position-size multiplier ∈ [0, 1] from macro/behavioral
+                         regime. 1.0 = full size, 0.5 = half size, 0.0 = block.
     market_regime      : Regime label at signal time, e.g. ``"BULL_NORMAL"``.
     ticker_trend       : "UPTREND" | "DOWNTREND" | "CHOP" | "N/A".
     reason             : Explanation string; always populated.
@@ -188,6 +213,8 @@ class FilterEngine:
         ("volatility.max_atr_pct", _NUMERIC),
         ("trend.ma_fast", int),
         ("trend.ma_slow", int),
+        ("regime.ma_short", int),
+        ("regime.require_ma_short_alignment", bool),
         ("signals.momentum.long.rsi_min", _NUMERIC),
         ("signals.momentum.long.rsi_max", _NUMERIC),
         ("signals.momentum.long.min_hist_delta_atr", _NUMERIC),
@@ -214,6 +241,8 @@ class FilterEngine:
         self._validate_config()
         self._today = today or date.today()
         self._stop_dates = self._build_stop_dates_index()
+        self._sector_map = self._load_sector_map()
+        self._quarantine: set[str] = set()  # P1.6: pre-computed quarantine list
 
     # ── private — config validation ──────────────────────────────────────────
 
@@ -269,6 +298,19 @@ class FilterEngine:
                     )
             index[str(entry["date"])] = entry
         return index
+
+    def _load_sector_map(self) -> dict[str, str | None]:
+        sg = self._cfg.get("signals", {}).get("sector_gate", {})
+        if not sg.get("enabled", False):
+            return {}
+        map_path = sg.get("sector_map_path", "config/sector_map.yaml")
+        path = Path(map_path) if not Path(map_path).is_absolute() else Path(map_path)
+        if not path.exists():
+            logger.warning("sector map not found at %s — sector gate disabled", path)
+            return {}
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        return dict(raw.get("sector_map", {}))
 
     # ── Stage 1 ───────────────────────────────────────────────────────────────
 
@@ -371,6 +413,7 @@ class FilterEngine:
             vix_df: pd.DataFrame | None = None,
             earnings_date: date | None = None,
             held_long: bool = False,
+            regime: MarketRegime | None = None,
     ) -> SignalResult:
         """
         Signal detection. Branches on ``held_long``.
@@ -411,12 +454,14 @@ class FilterEngine:
             When ``len(df) < trend.ma_slow``.
         """
         # Regime is computed in both modes so it can be reported.
-        regime = self._market_regime(market_dfs, vix_df)
+        # If a pre-computed regime is provided, use it instead of recomputing.
+        if regime is None:
+            regime = self._market_regime(market_dfs, vix_df)
 
         result = (
             self._signal_exit(ticker, df, regime)
             if held_long
-            else self._signal_entry(ticker, df, regime, earnings_date)
+            else self._signal_entry(ticker, df, regime, earnings_date, market_dfs)
         )
 
         if result.passed:
@@ -436,6 +481,7 @@ class FilterEngine:
             df: pd.DataFrame,
             regime: MarketRegime,
             earnings_date: date | None,
+            market_dfs: dict[str, pd.DataFrame] | None = None,
     ) -> SignalResult:
         """Long-entry signal detection with full gate chain."""
         # 1. stop_date blackout
@@ -460,9 +506,34 @@ class FilterEngine:
         row = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # 4. evaluate long-entry conditions
+        # 4b. gap risk filter
+        gr = self._cfg.get("signals", {}).get("gap_risk", {})
+        if gr.get("enabled", False):
+            max_range = gr.get("max_prev_bar_range_atr", 3.0)
+            prev_range = prev["high"] - prev["low"]
+            if prev_range > max_range * prev["atr"]:
+                return self._fail_result(
+                    f"prev bar range {prev_range:.2f} > {max_range:.1f}*ATR ({prev['atr']:.2f})",
+                    regime, ticker_trend,
+                )
+
+        # 4c. sector-relative strength gate
+        sg = self._cfg.get("signals", {}).get("sector_gate", {})
+        if sg.get("enabled", False):
+            ok, reason = self._sector_strength_ok(ticker, market_dfs)
+            if not ok:
+                return self._fail_result(reason, regime, ticker_trend)
+
+        # 4d. P1.6: per-ticker quarantine gate
+        if ticker in self._quarantine:
+            return self._fail_result(
+                "ticker quarantined (negative rolling expectancy)",
+                regime, ticker_trend,
+            )
+
+        # 5. evaluate long-entry conditions
         direction, signal_type, why = self._evaluate_entry(
-            row, prev, regime, ticker_trend,
+            row, prev, df, regime, ticker_trend,
         )
 
         if direction == "none":
@@ -481,6 +552,9 @@ class FilterEngine:
                 f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
+        # P0-6 FIX: stamp the regime composite size_multiplier onto the
+        # SignalResult. Previously hardcoded 1.0 — the macro/behavioral
+        # multiplier was computed but never reached execution.
         return SignalResult(
             passed=True,
             direction="long",
@@ -488,7 +562,7 @@ class FilterEngine:
             stop_price=round(stop_price, 4),
             target_price=round(target_price, 4),
             min_rr=min_rr,
-            size_mult=1.0,
+            size_mult=round(regime.size_multiplier, 4),
             market_regime=regime.label,
             ticker_trend=ticker_trend,
             reason="entry signal fired",
@@ -604,7 +678,15 @@ class FilterEngine:
 
         # ── trend ────────────────────────────────────────────────────────────
         if market_dfs is None or not market_dfs:
-            return MarketRegime(trend="BULL", volatility=volatility)
+            # P0-3 FIX: previously defaulted to BULL, which silently allowed
+            # long entries when SPY/QQQ caches were missing. Default to CHOP
+            # so allows_longs == False and the entry gate blocks until data
+            # is restored. Logged at ERROR so it's visible in ops.
+            logger.error(
+                "market_regime: no index data supplied — defaulting to CHOP "
+                "to block new entries (was BULL fail-open)."
+            )
+            return MarketRegime(trend="CHOP", volatility=volatility)
 
         symbols = rcfg.get("index_symbols", ["SPY", "QQQ"])
         require_all = rcfg.get("require_all_indices", True)
@@ -642,6 +724,20 @@ class FilterEngine:
             else:
                 trend = "CHOP"
 
+        # Secondary short-term MA alignment gate
+        if trend == "BULL":
+            ma_short_ok = rcfg.get("require_ma_short_alignment", False)
+            if ma_short_ok:
+                ma_short = rcfg.get("ma_short", 20)
+                for sym in symbols:
+                    idx_df = market_dfs.get(sym)
+                    if idx_df is None or len(idx_df) < ma_short:
+                        continue
+                    ma_s = idx_df["close"].rolling(ma_short, min_periods=ma_short).mean().iloc[-1]
+                    if idx_df["close"].iloc[-1] < ma_s:
+                        trend = "CHOP"
+                        break
+
         return MarketRegime(trend=trend, volatility=volatility)
 
     # ── private — ticker trend classifier ────────────────────────────────────
@@ -657,12 +753,29 @@ class FilterEngine:
         slow = self._cfg["trend"]["ma_slow"]
         return self._classify_trend(df["close"], fast, slow)
 
+    def _sector_strength_ok(self, ticker, market_dfs):
+        sector = self._sector_map.get(ticker)
+        if sector is None:
+            return True, ""
+        if market_dfs is None or sector not in market_dfs:
+            return True, ""
+        sector_df = market_dfs[sector]
+        if len(sector_df) < self._cfg["trend"]["ma_fast"]:
+            return True, ""
+        fast = self._cfg["trend"]["ma_fast"]
+        ma = sector_df["close"].rolling(fast, min_periods=fast).mean().iloc[-1]
+        last = sector_df["close"].iloc[-1]
+        if last < ma:
+            return False, f"sector {sector} below MA({fast}) ({last:.2f} < {ma:.2f})"
+        return True, ""
+
     # ── private — entry evaluator (longs only) ───────────────────────────────
 
     def _evaluate_entry(
             self,
             row: Series,
             prev: Series,
+            df: pd.DataFrame,
             regime: MarketRegime,
             ticker_trend: TickerTrend,
     ) -> tuple[Direction, SignalType, str]:
@@ -676,7 +789,7 @@ class FilterEngine:
         Returns ``(direction, signal_type, reason)``.
         """
         if regime.allows_longs:
-            if ticker_trend == "UPTREND" and self._momentum_long(row, prev):
+            if ticker_trend == "UPTREND" and self._momentum_long(row, prev, df):
                 return "long", "momentum", "momentum long"
             if ticker_trend != "DOWNTREND" and self._mean_rev_long(row, prev):
                 return "long", "mean_reversion", "mean-reversion long"
@@ -690,27 +803,27 @@ class FilterEngine:
 
     # ── private — entry triggers ─────────────────────────────────────────────
 
-    def _momentum_long(self, row: Series, prev: Series) -> bool:
-        """
-        Momentum-long entry trigger.
-
-        Fires when all hold:
-            - ``prev["macd_hist"] < 0 < row["macd_hist"]``   (zero-crossing up)
-            - ``rsi_min <= row["rsi"] <= rsi_max``           (RSI band)
-            - ``row["macd_hist"] - prev["macd_hist"] >= min_hist_delta_atr * row["atr"]``
-              (magnitude gate: the crossing must be a real push, not a
-              hair-cross from noise)
-
-        Config keys live under ``signals.momentum.long``.
-        """
+    def _momentum_long(self, row: Series, prev: Series, df: pd.DataFrame) -> bool:
         cfg = self._cfg["signals"]["momentum"]["long"]
+        max_bars = cfg.get("max_bars_since_cross", 3)
+
+        if row["macd_hist"] <= 0:
+            return False
+        if not (cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]):
+            return False
+
         delta = row["macd_hist"] - prev["macd_hist"]
         threshold = cfg["min_hist_delta_atr"] * row["atr"]
-        return (
-                prev["macd_hist"] < 0 < row["macd_hist"]
-                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
-                and delta >= threshold
-        )
+        if delta < threshold:
+            return False
+
+        hist = df["macd_hist"].iloc[-(max_bars + 3):]
+        for i in range(len(hist) - 2, -1, -1):
+            if hist.iloc[i] < 0 <= hist.iloc[i + 1]:
+                bars_ago = len(hist) - 2 - i
+                return bars_ago <= max_bars
+
+        return False
 
     def _mean_rev_long(self, row: Series, prev: Series) -> bool:
         """
@@ -917,6 +1030,11 @@ class FilterEngine:
 
     # ---- dict-based constructor (used by sweep engine) ----------------------
 
+    def set_quarantine(self, tickers: set[str]) -> None:
+        """P1.6: Set pre-computed quarantine list. Quarantined tickers are
+        suppressed in _signal_entry() regardless of signal quality."""
+        self._quarantine = tickers
+
     @classmethod
     def from_dict(cls, cfg: dict, today: date | None = None) -> "FilterEngine":
         """
@@ -937,4 +1055,6 @@ class FilterEngine:
         obj._today = today or date.today()
         obj._validate_config()
         obj._stop_dates = obj._build_stop_dates_index()
+        obj._sector_map = obj._load_sector_map()
+        obj._quarantine = set()  # P1.6
         return obj

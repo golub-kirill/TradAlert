@@ -14,6 +14,18 @@ Split the full date range into overlapping IS/OOS windows:
 With 8 years of data and a 6-month step, this yields ~9 windows,
 each with an independent OOS period.
 
+Walk-forward modes
+──────────────────
+  baseline (re_tune=False):  Run the *current* config on IS and OOS.
+      Validates temporal stability but does not defeat parameter-tuning
+      data-snooping.
+
+  re-tune (re_tune=True, P0.3):  For each IS window, run an OFAT sweep
+      via SweepEngine.run_ofat(), pick the best-by-E[R] config, then
+      apply *that* config to the OOS window.  The OOS cell is then a
+      true "if I had only seen up to IS_end, what would I have shipped"
+      test.  Sweep results are cached in-memory for fast re-runs.
+
 The key insight: the pre-loaded UniverseData is reused across every
 window.  Only the PortfolioConfig date-window changes, so no I/O
 occurs after initial data load.
@@ -21,7 +33,7 @@ occurs after initial data load.
 Public API
 ──────────
     WalkForwardEngine(universe, base_cfg, base_port_cfg,
-                      is_years, oos_years, step_months)
+                      is_years, oos_years, step_months, re_tune, grid)
         .run(progress)  → WalkForwardReport
 
     WalkForwardReport
@@ -37,14 +49,14 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable
 
 import pandas as pd
 
 from backtest.loader import UniverseData
-from backtest.sweep import SweepEngine, SweepPoint
+from backtest.sweep import SweepEngine, SweepPoint, PARAM_GRID, ParamSpec
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +91,7 @@ class WFResult:
     window: WFWindow
     is_point: SweepPoint
     oos_point: SweepPoint
+    tuned_params: dict = field(default_factory=dict)  # P0.3: params chosen from IS sweep
 
     @property
     def is_er(self) -> float: return self.is_point.stats.expectancy_r
@@ -101,6 +114,7 @@ class WalkForwardReport:
     is_years: float
     oos_years: float
     step_months: int
+    re_tune: bool = False  # P0.3: whether re-tuning was used
 
     @property
     def oos_er_values(self) -> list[float]:
@@ -155,8 +169,9 @@ class WalkForwardReport:
         return pd.DataFrame(rows)
 
     def summary_lines(self) -> list[str]:
+        mode_tag = " [RE-TUNE]" if self.re_tune else ""
         lines = [
-            f"  Walk-Forward: {len(self.results)} windows  "
+            f"  Walk-Forward{mode_tag}: {len(self.results)} windows  "
             f"({self.is_years:.0f}yr IS / {self.oos_years:.0f}yr OOS / "
             f"{self.step_months}mo step)",
             "",
@@ -186,6 +201,17 @@ class WalkForwardReport:
             f"  Degradation IS→OOS : {self.degradation:+.3f} E[R]",
             f"  OOS profitable     : {self.pct_oos_positive:.0%} of windows",
         ]
+        if self.re_tune:
+            lines.append("")
+            lines.append("  Re-tuning: IS sweep → best config → OOS (P0.3)")
+            for r in self.results:
+                if r.tuned_params:
+                    params_str = ", ".join(
+                        f"{k}={v}" for k, v in list(r.tuned_params.items())[:4]
+                    )
+                    lines.append(
+                        f"    W{r.window.index:02d} tuned: {params_str}"
+                    )
         return lines
 
 
@@ -207,6 +233,8 @@ class WalkForwardEngine:
     is_years      : In-sample window length in years.  Default 3.
     oos_years     : Out-of-sample window length in years.  Default 1.
     step_months   : Months to slide each window forward.  Default 6.
+    re_tune       : If True, run OFAT sweep on IS and apply best to OOS (P0.3).
+    grid          : ParamSpec list for the OFAT sweep. Defaults to PARAM_GRID.
     """
 
     def __init__(
@@ -217,6 +245,8 @@ class WalkForwardEngine:
             is_years: float = 3.0,
             oos_years: float = 1.0,
             step_months: int = 6,
+            re_tune: bool = False,
+            grid: list[ParamSpec] | None = None,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
@@ -224,6 +254,11 @@ class WalkForwardEngine:
         self._is_years = is_years
         self._oos_years = oos_years
         self._step_months = step_months
+        self._re_tune = re_tune
+        self._grid = grid if grid is not None else PARAM_GRID
+
+        # In-memory sweep cache keyed by (is_start, is_end) (P0.3)
+        self._sweep_cache: dict[tuple[date, date], SweepPoint] = {}
 
         # Reuse SweepEngine's _run_one logic
         self._engine = SweepEngine(
@@ -278,7 +313,15 @@ class WalkForwardEngine:
             progress: Callable[[str], None] | None = None,
     ) -> WalkForwardReport:
         """
-        Run IS + OOS baseline for every rolling window.
+        Run IS + OOS for every rolling window.
+
+        If re_tune=True (P0.3):
+          1. Run OFAT sweep on IS window (cached in-memory).
+          2. Pick best config by E[R].
+          3. Apply that config to OOS window.
+
+        If re_tune=False (baseline):
+          Run the base config on both IS and OOS.
 
         Returns WalkForwardReport with per-window results.
         """
@@ -289,8 +332,12 @@ class WalkForwardEngine:
             if progress:
                 progress(f"Window {win.index:02d}  IS={win.is_start}→{win.is_end}")
 
-            is_pt = self._run_window(win.is_start, win.is_end, win)
-            oos_pt = self._run_window(win.oos_start, win.oos_end, win)
+            if self._re_tune:
+                is_pt, oos_pt, tuned = self._run_window_with_tuning(win, progress)
+            else:
+                is_pt = self._run_window(win.is_start, win.is_end, win)
+                oos_pt = self._run_window(win.oos_start, win.oos_end, win)
+                tuned = {}
 
             if progress:
                 progress(
@@ -300,13 +347,17 @@ class WalkForwardEngine:
                     f"E[R]={oos_pt.stats.expectancy_r:+.3f}"
                 )
 
-            results.append(WFResult(window=win, is_point=is_pt, oos_point=oos_pt))
+            results.append(WFResult(
+                window=win, is_point=is_pt, oos_point=oos_pt,
+                tuned_params=tuned,
+            ))
 
         return WalkForwardReport(
             results=results,
             is_years=self._is_years,
             oos_years=self._oos_years,
             step_months=self._step_months,
+            re_tune=self._re_tune,
         )
 
     # ── private ───────────────────────────────────────────────────────────────
@@ -328,6 +379,101 @@ class WalkForwardEngine:
             param_name="walk_forward",
             param_value=f"{start}:{end}",
             param_label=f"W{window.index:02d}",
+            group="walk_forward",
+            is_baseline=False,
+        )
+
+    def _run_window_with_tuning(
+            self,
+            window: WFWindow,
+            progress: Callable[[str], None] | None = None,
+    ) -> tuple[SweepPoint, SweepPoint, dict]:
+        """
+        P0.3: Run OFAT sweep on IS, pick best config, apply to OOS.
+
+        Returns (is_point, oos_point, tuned_params_dict).
+        The IS point is the sweep baseline (un-tuned config on IS).
+        The OOS point uses the best-tuned config from the IS sweep.
+        """
+        cache_key = (window.is_start, window.is_end)
+
+        # Check in-memory cache
+        if cache_key in self._sweep_cache:
+            best_is = self._sweep_cache[cache_key]
+        else:
+            # Run OFAT sweep restricted to IS date window
+            if progress:
+                progress(f"    Sweing IS {window.is_start}→{window.is_end}...")
+
+            sweep_engine = SweepEngine(
+                universe=self._universe,
+                base_cfg=copy.deepcopy(self._base_cfg),
+                base_port_cfg=dict(self._base_port_cfg),
+                n_workers=0,
+            )
+
+            # Override port params to restrict to IS window
+            original_port = sweep_engine._base_port
+            sweep_engine._base_port = dict(original_port)
+            sweep_engine._base_port["start_date"] = window.is_start
+            sweep_engine._base_port["end_date"] = window.is_end
+
+            sweep_report = sweep_engine.run_ofat(
+                grid=self._grid,
+                port_grid=[],
+                progress=None,  # suppress individual sweep progress
+            )
+
+            # Pick best by E[R]
+            all_pts = sweep_report.all_points
+            best_is = max(all_pts, key=lambda p: p.stats.expectancy_r)
+            self._sweep_cache[cache_key] = best_is
+
+        # Extract tuned params from the best sweep point
+        tuned_params = {}
+        if not best_is.is_baseline:
+            tuned_params[best_is.param_name] = best_is.param_value
+
+        # Run OOS with the best-tuned config
+        oos_pt = self._run_window_with_config(
+            window.oos_start, window.oos_end, window,
+            best_is.param_name, best_is.param_value,
+        )
+
+        # IS point: use the baseline config on IS (for comparison)
+        is_pt = self._run_window(window.is_start, window.is_end, window)
+
+        return is_pt, oos_pt, tuned_params
+
+    def _run_window_with_config(
+            self,
+            start: date,
+            end: date,
+            window: WFWindow,
+            param_name: str,
+            param_value: object,
+    ) -> SweepPoint:
+        """Run OOS with a specific parameter mutation."""
+        from backtest.sweep import _set_nested
+
+        cfg = copy.deepcopy(self._base_cfg)
+        if not param_name.startswith("portfolio."):
+            _set_nested(cfg, param_name, param_value)
+
+        port_params = dict(self._base_port_cfg)
+        port_params["start_date"] = start
+        port_params["end_date"] = end
+
+        if param_name.startswith("portfolio."):
+            key = param_name[len("portfolio."):]
+            port_params[key] = param_value
+
+        return self._engine._run_one(
+            cfg=cfg,
+            port_params=port_params,
+            param_name="wf_tuned",
+            param_value=f"{param_name}={param_value}",
+            param_label=f"W{window.index:02d}-tuned",
             group="walk_forward",
             is_baseline=False,
         )

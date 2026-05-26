@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────────────────────────
 # TradAlert — filters.yaml
 # Read by FilterEngine (src/core/filter_engine.py) and chart.py (RSI bands).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -33,8 +33,10 @@ regime: # block: broad-market regime classifier
   index_symbols: [ SPY, QQQ ]      # indices voted for trend; vs each MA(ma_fast)
   vix_symbol: ^VIX            # volatility series; resolved by fetcher
   vix_low: 20              # VIX close below → volatility = LOW
-  vix_high: 25              # VIX close above → volatility = HIGH
+  vix_high: 28              # VIX close above → volatility = HIGH
   require_all_indices: true            # true: unanimous vote; false: majority vote
+  ma_short: 20                         # secondary short-term MA for regime alignment
+  require_ma_short_alignment: false     # true: all indices must also be above MA(ma_short)
 
 
 # ── EVENTS ────────────────────────────────────────────────────────────────────
@@ -70,13 +72,22 @@ signals: # block: trigger configuration
 
   momentum: # block: trend-following triggers
     long: # entry: macd_hist crosses up + RSI in band + delta gate
-      rsi_min: 45                       # inclusive floor for momentum long
+      rsi_min: 50                       # inclusive floor for momentum long
       rsi_max: 65                       # inclusive ceiling for momentum long
-      min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) >= this * atr
+      min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) >= this * atr
+      max_bars_since_cross: 3           # block entries if MACD zero-cross happened >N bars ago (stale signal)
     short: # held-long exit: fade trigger; reused by _momentum_fade_exit
       rsi_min: 30                       # inclusive floor for fade trigger
       rsi_max: 65                       # was 45 — widened; MACD zero-cross after a run lands at RSI 45-65, so 45 silently blocked all fades
       min_hist_delta_atr: 0.18          # ATR-multiple; (row - prev) <= -this * atr
+
+  gap_risk: # block: overnight gap risk filter
+    enabled: true                       # true: block entries when prev bar range is too wide
+    max_prev_bar_range_atr: 3.0         # block if prev (high-low) > N * ATR (elevated overnight risk)
+
+  sector_gate: # block: sector-relative strength filter
+    enabled: true                       # true: block entries when sector ETF < MA(ma_fast)
+    sector_map_path: "config/sector_map.yaml"  # path to sector_map.yaml relative to project root
 
   mean_reversion: # block: counter-trend triggers
     long: # entry: RSI < rsi_max + macd_hist rising
@@ -92,5 +103,11 @@ signals: # block: trigger configuration
     mean_rev: true                 # exit on overbought mean-reversion trigger
 
   stop_loss: # block: position-sizing & R:R structure
-    atr_multiplier: 2.0                 # stop = close - atr*atr_multiplier (long entry)
-    min_rr: 2.0                         # target = close + risk*min_rr; ratio gate
+    atr_multiplier: 2.5                 # stop = close - atr*atr_multiplier (sweep: 2.5 â†’ +0.112 R, wider stops survive noise)
+    min_rr: 2.5                         # target = close + risk*min_rr; ratio gate (balanced: better than 2.0, not as sparse as 3.0)
+
+
+# ── BEHAVIORAL GATE ────────────────────────────────────────────────────────────
+
+behavioral: # block: macro/behavioral entry gate
+  size_multiplier_floor: 0.25           # block entries when size_multiplier < this

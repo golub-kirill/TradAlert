@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,7 @@ def staleness_for(section: str, fallback_hours: int) -> int:
     """
     if not _SETTINGS_PATH.exists():
         return fallback_hours
-    storage = (yaml.safe_load(_SETTINGS_PATH.read_text()) or {}).get("storage", {})
+    storage = (yaml.safe_load(_SETTINGS_PATH.read_text(encoding="utf-8")) or {}).get("storage", {})
     section_key = f"staleness_{section}"
     if section_key in storage:
         return int(storage[section_key])
@@ -190,7 +191,12 @@ def save_section(
     }
 
     try:
-        path.write_text(json.dumps(payload, indent=2))
+        # P2-5 FIX: atomic write so a kill mid-write doesn't corrupt the file
+        # (json_cache.load_fresh_section would otherwise quarantine the whole
+        # file, losing all sections, not just the one we were writing).
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        os.replace(tmp, path)
     except OSError as exc:
         logger.warning("Failed to write cache %s — %s", path, exc)
 

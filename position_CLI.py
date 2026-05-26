@@ -9,7 +9,7 @@ Subcommands
 
 Examples
     python position_CLI.py list
-    python position_CLI.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
+python position_CLI.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
     python position_CLI.py close 7 8.20
     python position_CLI.py stop  3 35.00
 """
@@ -93,7 +93,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_open = sub.add_parser("open", help="open a new position")
     p_open.add_argument("ticker", type=str)
     p_open.add_argument("price", type=float)
-    p_open.add_argument("--side", choices=("long", "short"), default="long")
+    # P1-5 FIX: removed "short" until short-trading is implemented end-to-end.
+    # The signal engine treats only side=="long" as held; a short position
+    # would never get an exit signal. Re-add when _signal_exit and the
+    # backtester support shorts.
+    p_open.add_argument("--side", choices=("long",), default="long")
     p_open.add_argument("--stop", type=float, default=None)
     p_open.add_argument("--notes", type=str, default="")
     p_open.set_defaults(func=_cmd_open)

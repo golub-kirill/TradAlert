@@ -16,7 +16,11 @@ from typing import Literal
 import mysql.connector
 from mysql.connector import Error as MySQLError
 
+from exceptions import ConfigError
+
 logger = logging.getLogger(__name__)
+
+_DB_OPTIONAL_KEYS = ("DB_USER", "DB_PASSWORD", "DB_NAME")
 
 Side = Literal["long", "short"]
 
@@ -126,7 +130,7 @@ def load_open_positions() -> dict[str, Position]:
         positions = {r["ticker"]: _row_to_position(r) for r in rows}
         logger.info("Loaded %d open position(s) from positions table", len(positions))
         return positions
-    except MySQLError as exc:
+    except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to load open positions — %s", exc)
         return {}
     finally:
@@ -142,7 +146,7 @@ def list_all() -> list[Position]:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(_SELECT_ALL_SQL)
         return [_row_to_position(r) for r in cursor.fetchall()]
-    except MySQLError as exc:
+    except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to list positions — %s", exc)
         return []
     finally:
@@ -179,7 +183,7 @@ def open_position(
         logger.info("positions ← opened id=%d  %s %s @ %.4f",
                     new_id, side.upper(), ticker.upper(), entry_price)
         return new_id
-    except MySQLError as exc:
+    except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to open position for %s — %s", ticker, exc)
         return None
     finally:
@@ -214,7 +218,7 @@ def close_position(
             logger.warning("close_position id=%d affected %d rows",
                            position_id, cursor.rowcount)
         return ok
-    except MySQLError as exc:
+    except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to close position id=%d — %s", position_id, exc)
         return False
     finally:
@@ -239,7 +243,7 @@ def update_stop(position_id: int, stop_price: float | None) -> bool:
                         position_id,
                         f"{stop_price:.4f}" if stop_price is not None else "NULL")
         return ok
-    except MySQLError as exc:
+    except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to update stop id=%d — %s", position_id, exc)
         return False
     finally:
@@ -264,7 +268,13 @@ def _row_to_position(r: dict) -> Position:
 
 
 def _connect():
-    """Open a fresh MySQL connection. Returns ``MySQLConnectionAbstract | PooledMySQLConnection``."""
+    """Open a fresh MySQL connection. Raises MySQLError or ConfigError."""
+    missing = [k for k in _DB_OPTIONAL_KEYS if not os.environ.get(k)]
+    if missing:
+        raise ConfigError(
+            ", ".join(missing),
+            reason="DB env var(s) not set — position tracking disabled",
+        )
     return mysql.connector.connect(
         host=os.environ.get("DB_HOST", "localhost"),
         port=int(os.environ.get("DB_PORT", "3306")),

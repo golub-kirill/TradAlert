@@ -272,18 +272,24 @@ class BarReplayBacktester:
 
             # ── 1. Execute pending fills at this bar's open ──────────────
             if pending_entry is not None and open_trade is None:
-                open_trade = Trade(
-                    ticker=ticker,
-                    signal_type=pending_entry.signal_type,
-                    direction="long",
-                    entry_date=today,
-                    entry_price=float(bar["open"]),
-                    initial_stop=float(pending_entry.stop_price),
-                    initial_target=float(pending_entry.target_price),
-                    market_regime=pending_entry.market_regime,
-                    ticker_trend=pending_entry.ticker_trend,
-                )
-                pending_entry = None
+                # P0-6: skip the entry if regime says zero-size; equivalent to
+                # "don't trade at all" for the simple backtester.
+                if getattr(pending_entry, "size_mult", 1.0) <= 0:
+                    pending_entry = None
+                else:
+                    open_trade = Trade(
+                        ticker=ticker,
+                        signal_type=pending_entry.signal_type,
+                        direction="long",
+                        entry_date=today,
+                        entry_price=float(bar["open"]),
+                        initial_stop=float(pending_entry.stop_price),
+                        initial_target=float(pending_entry.target_price),
+                        market_regime=pending_entry.market_regime,
+                        ticker_trend=pending_entry.ticker_trend,
+                        size_mult=float(getattr(pending_entry, "size_mult", 1.0)),
+                    )
+                    pending_entry = None
 
             if pending_exit and open_trade is not None:
                 _close_trade(
@@ -478,12 +484,16 @@ def call_engine_slice(
         vix_t,
         earnings_history,
         held_long,
+        regime=None,
 ):
     """Module-level engine.signal wrapper used by PortfolioBacktester.
 
     Slices every context frame to bar T, sets engine._today, calls
     engine.signal(), and restores _today in a finally clause.
     Never raises: exceptions are caught and returned as blocked results.
+
+    If a pre-computed regime is provided (enriched with macro/behavioral),
+    it is passed through to engine.signal().
     """
     from backtest.earnings_history import next_earnings_from as _nef
     from core.filter_engine import SignalResult
@@ -498,6 +508,7 @@ def call_engine_slice(
             vix_df=vix_t,
             earnings_date=next_earn,
             held_long=held_long,
+            regime=regime,
         )
     except Exception as exc:
         logger.debug("[%s] engine.signal raised at %s: %s", ticker, today, exc)

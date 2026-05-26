@@ -159,6 +159,124 @@ def fetch_watchlist(
     return summary
 
 
+def fetch_tier_b(
+        watchlist_path: Path | str = _WATCHLIST_PATH,
+        settings_path: Path | str = _SETTINGS_PATH,
+        force: bool = False,
+) -> FetchSummary:
+    """
+    Fetch and cache OHLCV for tier_b universe constituents.
+
+    Resolves ``sp500: true`` and ``tsx60: true`` markers in the tier_b
+    section of watchlist.yaml into actual ticker lists, excludes any
+    names already present in tier_a, and fetches OHLCV for the remainder.
+
+    Parameters
+    ----------
+    watchlist_path : Path to watchlist.yaml.
+    settings_path  : Path to settings.yaml.
+    force          : When True, bypass staleness check and always re-fetch.
+
+    Returns
+    -------
+    FetchSummary
+    """
+    watchlist = yaml.safe_load(Path(watchlist_path).read_text(encoding="utf-8"))
+    settings = yaml.safe_load(Path(settings_path).read_text(encoding="utf-8"))
+
+    if "tier_b" not in watchlist:
+        logger.debug("[tier_b] no tier_b section in watchlist")
+        return FetchSummary()
+
+    tier_a = set(_flatten_tier(watchlist.get("tier_a", [])))
+    tier_b_entries = watchlist.get("tier_b", [])
+
+    # Resolve tier_b markers into actual ticker lists
+    all_constituents: list[str] = []
+    for entry in tier_b_entries:
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if not value:
+                continue
+            if key == "sp500":
+                try:
+                    from core.fetchers.sp500_constituents import get_sp500_constituents
+                    all_constituents.extend(get_sp500_constituents())
+                except Exception as exc:
+                    logger.warning("[tier_b] sp500 resolve failed: %s", exc)
+            elif key == "tsx60":
+                try:
+                    from core.fetchers.tsx60_constituents import get_tsx60_constituents
+                    all_constituents.extend(get_tsx60_constituents())
+                except Exception as exc:
+                    logger.warning("[tier_b] tsx60 resolve failed: %s", exc)
+
+    # Deduplicate and exclude tier_a
+    exclude = tier_a
+    tickers = sorted(set(all_constituents) - tier_a)
+
+    # Also check for explicit exclude list in tier_b
+    for entry in tier_b_entries:
+        if isinstance(entry, dict) and "exclude" in entry:
+            tickers = [t for t in tickers if t not in entry["exclude"]]
+
+    if not tickers:
+        logger.info("[tier_b] no constituents to fetch after tier_a exclusion")
+        return FetchSummary()
+
+    max_workers = settings.get("fetcher", {}).get("max_workers", _DEFAULT_MAX_WORKERS)
+    staleness_hours = settings.get("storage", {}).get("staleness_hours", DEFAULT_STALENESS_H)
+    cache_dir = Path(settings.get("storage", {}).get("cache_dir", "data/prices"))
+
+    start_str = (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
+    fetcher_fn = partial(
+        yf_fetchOne.fetch,
+        start=start_str,
+        interval=DEFAULT_INTERVAL,
+    )
+
+    summary = FetchSummary(total=len(tickers))
+    t0 = time.perf_counter()
+
+    logger.info(
+        "[tier_b] fetch started | tickers=%d | workers=%d",
+        len(tickers), max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _fetch_one,
+                ticker,
+                fetcher_fn,
+                cache_dir,
+                staleness_hours,
+                force,
+            ): ticker
+            for ticker in tickers
+        }
+
+        for future in as_completed(futures):
+            ticker = futures[future]
+            exc = future.exception()
+
+            if exc is None:
+                summary.succeeded.append(ticker)
+            else:
+                summary.failed[ticker] = str(exc)
+                logger.warning("[tier_b] ✗ %s — %s", ticker, exc)
+
+    summary.duration = time.perf_counter() - t0
+
+    logger.info(
+        "[tier_b] fetch complete | %d/%d succeeded | %d failed | %.1fs",
+        summary.n_succeeded, summary.total, summary.n_failed, summary.duration,
+    )
+
+    return summary
+
+
 # ── internals ─────────────────────────────────────────────────────────────────
 
 def _fetch_one(
@@ -187,9 +305,15 @@ def _load_config(
     """
     Load and validate config from watchlist.yaml and settings.yaml.
 
+    Supports both the legacy flat ``tickers:`` list and the two-tier
+    ``tier_a:`` / ``tier_b:`` structure (Phase 2).  When ``tier_a`` is
+    present, only those tickers are fetched; ``tier_b`` entries are
+    ignored by the OHLCV fetcher (they are consumed later by the RP
+    ranking pipeline).
+
     Returns
     -------
-    tickers         : list[str]   All symbols from watchlist.yaml → tickers.
+    tickers         : list[str]   Symbols to fetch (tier_a or legacy tickers).
     max_workers     : int         Thread pool size.
     staleness_hours : int         Cache freshness threshold in hours.
     cache_dir       : Path        Directory for parquet files.
@@ -207,10 +331,16 @@ def _load_config(
     if not settings_path.exists():
         raise FileNotFoundError(f"Settings config not found: {settings_path}")
 
-    watchlist = yaml.safe_load(watchlist_path.read_text())
-    settings = yaml.safe_load(settings_path.read_text())
+    watchlist = yaml.safe_load(watchlist_path.read_text(encoding="utf-8"))
+    settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
 
-    tickers = watchlist.get("tickers", [])
+    # Two-tier structure (Phase 2): use tier_a for OHLCV fetch.
+    # Legacy flat list: fall back to tickers.
+    if "tier_a" in watchlist:
+        tickers = _flatten_tier(watchlist["tier_a"])
+    else:
+        tickers = watchlist.get("tickers", [])
+
     if not tickers:
         raise ConfigError("tickers", reason=f"empty list in {watchlist_path}")
 
@@ -219,3 +349,20 @@ def _load_config(
     cache_dir = Path(settings.get("storage", {}).get("cache_dir", "data/prices"))
 
     return tickers, max_workers, staleness_hours, cache_dir
+
+
+def _flatten_tier(tier: list) -> list[str]:
+    """
+    Flatten a tier list that may contain plain strings and dict entries
+    like ``sp500: true`` into a list of ticker strings.
+
+    Dict entries (e.g. ``sp500: true``) are filtered out — they are
+    consumed by the RP ranking pipeline, not the OHLCV fetcher.
+    """
+    out: list[str] = []
+    for entry in tier:
+        if isinstance(entry, str):
+            out.append(entry)
+        # Dict entries like {sp500: true} are tier_b universe markers;
+        # skip them in the OHLCV fetch path.
+    return out

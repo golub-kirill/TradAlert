@@ -22,12 +22,20 @@ from mysql.connector import Error as MySQLError
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 
+from exceptions import ConfigError
+
 if TYPE_CHECKING:
     # Imported for type hints only — avoids a circular import at runtime
     # since main.py already imports from this module.
     from main import TickerResult
 
 logger = logging.getLogger(__name__)
+
+# P1-7 FIX: a missing DB_USER/DB_PASSWORD/DB_NAME used to raise KeyError
+# from _connect(), bypassing the surrounding `except MySQLError` and
+# crashing the whole pipeline. We now raise ConfigError, and callers
+# catch (MySQLError, ConfigError) to degrade gracefully.
+_DB_OPTIONAL_KEYS = ("DB_USER", "DB_PASSWORD", "DB_NAME")
 
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
@@ -141,8 +149,8 @@ def save_scan_run(
         logger.info("scan_runs ← inserted id=%d  regime=%s", new_id, market_regime or "—")
         return new_id
 
-    except MySQLError as exc:
-        logger.warning("scan_runs write failed — %s", exc)
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("scan_runs write skipped — %s", exc)
         return None
 
     finally:
@@ -185,8 +193,8 @@ def save_scan_results(
             "scan_results ← inserted %d row(s) for run_id=%d",
             inserted, run_id,
         )
-    except MySQLError as exc:
-        logger.warning("scan_results bulk insert failed — %s", exc)
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("scan_results bulk insert skipped — %s", exc)
     finally:
         if conn and conn.is_connected():
             conn.close()
@@ -226,7 +234,14 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
 
 
 def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
-    """Open a MySQL connection. Raises MySQLError on failure."""
+    """Open a MySQL connection. Raises MySQLError or ConfigError on failure."""
+    missing = [k for k in _DB_OPTIONAL_KEYS if not os.environ.get(k)]
+    if missing:
+        # P1-7 FIX: surface a clean ConfigError instead of KeyError.
+        raise ConfigError(
+            ", ".join(missing),
+            reason="DB env var(s) not set — DB writes disabled",
+        )
     return mysql.connector.connect(
         host=os.environ.get("DB_HOST", "localhost"),
         port=int(os.environ.get("DB_PORT", "3306")),

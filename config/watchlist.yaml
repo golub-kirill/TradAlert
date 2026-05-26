@@ -1,85 +1,160 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# TradAlert — watchlist.yaml
+# TradAlert — watchlist.yaml (v2 — diversified universe)
 # Master ticker list. Loaded by core.fetchers.fetcher._load_config().
+#
+# Replaces v1 (watchlist_v1_survivors.yaml) to kill survivorship bias.
+# ~130 tier_a tickers split across asset classes; no single bucket > 15%.
 #
 # Suffix conventions
 #   .TO   Toronto Stock Exchange (TSX)
-#   .V    TSX Venture Exchange
 #   (none) US exchanges (NYSE / NASDAQ)
+#
+# Two-tier structure
+#   tier_a  — scanned + tradeable (current watchlist)
+#   tier_b  — fetched for RP ranking only; promoted when RP rank ≥ threshold
+#             AND signal fires (Phase 2 universe expansion)
 # ─────────────────────────────────────────────────────────────────────────────
 
-tickers: # list: order does not affect pipeline order
+# ── Tier A: scanned + tradeable ──────────────────────────────────────────────
+tier_a:
 
-  # ── Market context (used by FilterEngine regime check) ────────────────────
-  - SPY                                 # S&P 500 ETF; tradeable, scanned, vote member
-  - QQQ                                 # NASDAQ-100 ETF; tradeable, scanned, vote member
-  - ^VIX                                # CBOE Volatility Index; context-only, no scan
+  # ── Market context (engine regime — do not remove) ────────────────────────
+  - SPY                                 # S&P 500
+  - QQQ                                 # Nasdaq 100
+  - ^VIX                                # context only
 
-  # ── Canadian (TSX) ────────────────────────────────────────────────────────
-  - ZQQ.TO                              # BMO NASDAQ-100 hedged-CAD ETF
-  - SHOP.TO                             # Shopify
+  # ── US broad indices (size/style sweep) ───────────────────────────────────
+  - DIA                                 # Dow 30
+  - IWM                                 # Russell 2000 small caps
+  - IWB                                 # Russell 1000 large caps
+  - MDY                                 # S&P 400 mid caps
+  - IJR                                 # S&P 600 small caps
+  - VTI                                 # total market
+
+  # ── US sectors (full 11, equal weight) ────────────────────────────────────
+  - XLK                                 # tech
+  - XLF                                 # financials
+  - XLE                                 # energy
+  - XLV                                 # health care
+  - XLI                                 # industrials
+  - XLP                                 # consumer staples
+  - XLY                                 # consumer discretionary
+  - XLU                                 # utilities
+  - XLB                                 # materials
+  - XLRE                                # real estate
+  - XLC                                 # communication services
+
+  # ── Factor / style ────────────────────────────────────────────────────────
+  - MTUM                                # momentum
+  - QUAL                                # quality
+  - USMV                                # low volatility
+  - VLUE                                # value
+  - SIZE                                # size
+  - SPLV                                # low vol large
+  - SPHB                                # high beta
+  - VIG                                 # dividend growth
+
+  # ── International equity ──────────────────────────────────────────────────
+  - EFA                                 # developed ex-US
+  - VEA                                 # developed ex-US (alt)
+  - EEM                                 # emerging markets
+  - VWO                                 # emerging markets (alt)
+  - EWJ                                 # Japan
+  - EWG                                 # Germany
+  - EWU                                 # UK
+  - EWZ                                 # Brazil
+  - INDA                                # India
+  - FXI                                 # China large
+  - MCHI                                # China broad
+  - EWY                                 # South Korea
+  - EWT                                 # Taiwan
+
+  # ── Bonds / rates ─────────────────────────────────────────────────────────
+  - TLT                                 # 20+ year Treasuries
+  - IEF                                 # 7-10 year Treasuries
+  - SHY                                 # 1-3 year Treasuries
+  - TIP                                 # TIPS
+  - LQD                                 # investment grade corp
+  - HYG                                 # high yield corp
+  - EMB                                 # emerging market debt
+  - MUB                                 # munis
+
+  # ── Commodities ───────────────────────────────────────────────────────────
+  - GLD                                 # gold
+  - SLV                                 # silver
+  - USO                                 # WTI crude
+  - UNG                                 # natural gas
+  - DBC                                 # broad commodity
+  - DBA                                 # agriculture
+  - CPER                                # copper
+  - URA                                 # uranium
+
+  # ── Currencies ────────────────────────────────────────────────────────────
+  - UUP                                 # USD bull
+  - FXE                                 # euro
+  - FXY                                 # yen
+
+  # ── Real estate ───────────────────────────────────────────────────────────
+  - VNQ                                 # US REITs
+  - VNQI                                # ex-US REITs
+  - REM                                 # mortgage REITs
+
+  # ── Themes (long enough history to backtest) ──────────────────────────────
+  - SOXX                                # semis index (trade the THEME)
+  - SMH                                 # alt semis
+  - IBB                                 # biotech
+  - XBI                                 # biotech equal-weight
+  - KRE                                 # regional banks
+  - KWEB                                # China internet
+  - ICLN                                # clean energy
+  - TAN                                 # solar
+  - LIT                                 # lithium / batteries
+  - JETS                                # airlines
+  - ITA                                 # aerospace & defense
+  - PHO                                 # water
+  - ARKK                                # disruptive innovation (stress test)
+
+  # ── Canadian (TSX) — keep what you actually trade ─────────────────────────
+  - ZQQ.TO                              # Nasdaq-100 hedged CAD
+  - XIU.TO                              # TSX 60
+  - XIC.TO                              # TSX composite
   - ENB.TO                              # Enbridge
-  - RY.TO                               # Royal Bank of Canada
-  - CNQ.TO                              # Canadian Natural Resources
-  - SU.TO                               # Suncor Energy
-  - TD.TO                               # Toronto-Dominion Bank
+  - RY.TO                               # Royal Bank
+  - TD.TO                               # TD Bank
+  - CNQ.TO                              # Canadian Natural
+  - SU.TO                               # Suncor
+  - SHOP.TO                             # Shopify
 
-  # ── US Sector ETFs ────────────────────────────────────────────────────────
-  - XLE                                 # Energy Select Sector SPDR
-  - XLK                                 # Technology Select Sector SPDR
-  - SMH                                 # VanEck Semiconductor ETF
-  - GLD                                 # SPDR Gold Shares
+  # ── Individual stocks — 16 with explicit thesis ───────────────────────────
+  # mega-cap stable: MSFT, JPM, JNJ, KO
+  # cyclicals: CAT, DE
+  # defensives: PG, WMT
+  # volatile growth stress test: NVDA, TSLA
+  # energy: XOM, CVX
+  # tech: GOOGL, AAPL, AMZN, META
+  - MSFT
+  - GOOGL
+  - AAPL
+  - AMZN
+  - META
+  - NVDA
+  - JPM
+  - JNJ
+  - KO
+  - PG
+  - WMT
+  - XOM
+  - CVX
+  - CAT
+  - TSLA
 
-  # ── Semiconductors ────────────────────────────────────────────────────────
-  - NVDA                                # NVIDIA
-  - AMD                                 # Advanced Micro Devices
-  - AVGO                                # Broadcom
-  - TSM                                 # Taiwan Semiconductor ADR
-  - SMCI                                # Super Micro Computer
-  - MU                                  # Micron Technology
+# ── Tier B: RP ranking only ────────────────────
+tier_b:
+  - sp500: true                         # auto-fetch full S&P 500 constituent list
+  - tsx60: true                         # auto-fetch full TSX 60 constituent list
 
-  # ── Tech / Cloud ──────────────────────────────────────────────────────────
-  - PLTR                                # Palantir Technologies
-  - CRWD                                # CrowdStrike
-  - NET                                 # Cloudflare
-  - SNOW                                # Snowflake
-  - MSFT                                # Microsoft
-  - GOOGL                               # Alphabet (Class A)
-  - AAPL                                # Apple
-  - AMZN                                # Amazon
-  - META                                # Meta Platforms
-
-  # ── Consumer / EV ─────────────────────────────────────────────────────────
-  - TSLA                                # Tesla
-
-  # ── Energy ────────────────────────────────────────────────────────────────
-  - XOM                                 # Exxon Mobil
-  - CVX                                 # Chevron
-  - SLB                                 # Schlumberger
-
-  # ── AI / Small-Cap ────────────────────────────────────────────────────────
-  - SOUN                                # SoundHound AI
-
-  # ── AI Storage ────────────────────────────────────────────────────────────
-  - SNDK                                # Sandisk
-  - WDC                                 # Western Digital
-  - STX                                 # Seagate Technology
-
-  # ── Semiconductors (additional) ───────────────────────────────────────────
-  - INTC                                # Intel
-  - MRVL                                # Marvell Technology
-  - ANET                                # Arista Networks
-  - QCOM                                # Qualcomm
-
-  # ── Chip Equipment ────────────────────────────────────────────────────────
-  - ASML                                # ASML Holding
-  - KLAC                                # KLA Corporation
-  - LRCX                                # Lam Research
-
-  # ── Gold ──────────────────────────────────────────────────────────────────
-  - GOLD                                # Barrick Gold (US-listed)
-  - NEM                                 # Newmont
-  - ABX.TO                              # Barrick Gold (TSX-listed)
-
-  # ── Finance ───────────────────────────────────────────────────────────────
-  - JPM                                 # JPMorgan Chase
+# ── RP promotion rules ──────────────────────────────────────────────────────
+rp_promotion:
+  min_rp_rank: 85                       # promote only when RP rank ≥ 85
+  min_score: 70                         # AND signal score ≥ 70
+  max_promotions_per_day: 5             # cap new exposure per scan

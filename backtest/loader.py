@@ -40,10 +40,16 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path("data/prices")
 EARNINGS_DIR = Path("data/earnings_history")
+MACRO_DIR = Path("data/macro")
+BEHAVIORAL_DIR = Path("data/behavioral")
 INDICATOR_COLS = ["atr", "rsi", "macd", "macd_signal", "macd_hist"]
 
 # Symbols treated as market context only — not traded
 CONTEXT_SYMBOLS = frozenset({"SPY", "QQQ", "^VIX"})
+SECTOR_ETFS = frozenset({
+    "XLE", "XLK", "GLD", "XLI", "XLF", "XLP", "XLU", "SMH",
+    "XLV", "XLY", "XLB", "XLRE", "XLC",
+})
 
 
 # ── result types ──────────────────────────────────────────────────────────────
@@ -60,13 +66,16 @@ class UniverseData:
 
     Attributes
     ----------
-    prepped     : Per-ticker DataFrames with indicators warm + trimmed,
-                  plus earnings history lists.  Ready for PortfolioBacktester.
-    market_dfs  : Market-context frames (SPY, QQQ) for regime detection.
-    vix_df      : VIX frame for volatility axis; None if unavailable.
-    skipped     : Tickers that failed to load, with the failure reason.
-    date_range  : (first, last) trading-day dates across all valid tickers.
-    tickers     : Tradeable ticker list (context symbols excluded).
+    prepped         : Per-ticker DataFrames with indicators warm + trimmed,
+                      plus earnings history lists.  Ready for PortfolioBacktester.
+    market_dfs      : Market-context frames (SPY, QQQ) for regime detection.
+    vix_df          : VIX frame for volatility axis; None if unavailable.
+    skipped         : Tickers that failed to load, with the failure reason.
+    date_range      : (first, last) trading-day dates across all valid tickers.
+    tickers         : Tradeable ticker list (context symbols excluded).
+    macro_series    : Macro data series for point-in-time MacroState classification.
+    behavioral_data : Raw behavioral fetcher output for BehavioralState classification.
+    spy_df          : SPY OHLCV for breadth divergence detection.
     """
     prepped: dict[str, _TickerPrep]
     market_dfs: dict[str, pd.DataFrame]
@@ -74,6 +83,9 @@ class UniverseData:
     skipped: dict[str, str]
     date_range: DateRange
     tickers: list[str]
+    macro_series: dict[str, pd.DataFrame] | None = None
+    behavioral_data: dict | None = None
+    spy_df: pd.DataFrame | None = None
 
     @property
     def n_tradeable(self) -> int:
@@ -101,6 +113,8 @@ def load_universe(
         earnings_aware: bool = True,
         cache_dir: Path = CACHE_DIR,
         earnings_dir: Path = EARNINGS_DIR,
+        macro_dir: Path = MACRO_DIR,
+        behavioral_dir: Path = BEHAVIORAL_DIR,
         start_date: date | None = None,
         end_date: date | None = None,
 ) -> UniverseData:
@@ -187,6 +201,11 @@ def load_universe(
             logger.debug("loaded %-6s  (%d bars)", upper, len(df))
             continue
 
+        if upper in SECTOR_ETFS:
+            market_dfs[upper] = df
+            logger.debug("loaded sector %-6s  (%d bars)", upper, len(df))
+            continue
+
         # Tradeable ticker
         eh: list[date] = []
         if earnings_aware:
@@ -198,6 +217,49 @@ def load_universe(
         prepped[ticker] = _TickerPrep(df=df, earnings_history=eh)
         logger.debug("loaded %-12s  (%d bars, %d earnings dates)",
                      ticker, len(df), len(eh))
+
+    # ── load macro series from parquet cache ────────────────────────────
+    macro_series: dict[str, pd.DataFrame] | None = None
+    if macro_dir.exists():
+        macro_series = {}
+        for pf in macro_dir.glob("*.parquet"):
+            sid = pf.stem
+            try:
+                df_m = pd.read_parquet(pf)
+                if "value" in df_m.columns:
+                    # Ensure tz-naive index for backtest compatibility
+                    if df_m.index.tz is not None:
+                        df_m.index = df_m.index.tz_localize(None)
+                    macro_series[sid] = df_m
+            except Exception as exc:
+                logger.warning("[macro] failed to load %s: %s", sid, exc)
+        if not macro_series:
+            macro_series = None
+        else:
+            logger.info("[macro] loaded %d series from cache", len(macro_series))
+
+    # ── load behavioral data from parquet cache ─────────────────────────
+    behavioral_data: dict | None = None
+    if behavioral_dir.exists():
+        behavioral_data = {}
+        for pf in behavioral_dir.glob("*.parquet"):
+            key = pf.stem
+            try:
+                df_b = pd.read_parquet(pf)
+                behavioral_data[key] = df_b
+            except Exception as exc:
+                logger.warning("[behavioral] failed to load %s: %s", key, exc)
+        # Load subdirectories (form4, short_interest)
+        for sub in behavioral_dir.iterdir():
+            if sub.is_dir():
+                behavioral_data[sub.name] = sub
+        if not behavioral_data:
+            behavioral_data = None
+        else:
+            logger.info("[behavioral] loaded %d datasets from cache", len(behavioral_data))
+
+    # ── segregate SPY for breadth divergence detection ──────────────────
+    spy_df = market_dfs.get("SPY", None)
 
     # ── build date range from tradeable universe ───────────────────────────
     if prepped:
@@ -221,6 +283,9 @@ def load_universe(
         skipped=skipped,
         date_range=dr,
         tickers=tradeable,
+        macro_series=macro_series,
+        behavioral_data=behavioral_data,
+        spy_df=spy_df,
     )
 
 

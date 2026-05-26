@@ -155,15 +155,31 @@ class ConsecutiveLossStats:
 
 # ── bootstrap CI ─────────────────────────────────────────────────────────────
 
+def _profit_factor(r: np.ndarray) -> float:
+    """P1-3 FIX: previously returned inf for all-loss runs (no winners but
+    losers exist). Correct semantics:
+        winners=0, losers>0  → 0.0   (terrible — all losses)
+        winners>0, losers=0  → +inf  (no losses to divide by)
+        both empty           → nan   (no trades)
+        mixed                → sum(wins) / abs(sum(losses))
+    """
+    pos = float(r[r > 0].sum())
+    neg = float(-r[r < 0].sum())  # positive magnitude of losses
+    if pos > 0 and neg > 0:
+        return pos / neg
+    if pos > 0 and neg == 0:
+        return float("inf")
+    if pos == 0 and neg > 0:
+        return 0.0
+    return float("nan")
+
+
 _METRIC_FN: dict[str, Callable[[np.ndarray], float]] = {
     "expectancy": lambda r: float(r.mean()),
     "win_rate": lambda r: float((r > 0).mean()),
     "total_r": lambda r: float(r.sum()),
     "median_r": lambda r: float(np.median(r)),
-    "profit_factor": lambda r: (
-        float(r[r > 0].sum() / -r[r < 0].sum())
-        if (r < 0).any() and (r > 0).any() else float("inf")
-    ),
+    "profit_factor": _profit_factor,
 }
 
 
@@ -441,3 +457,62 @@ def monthly_r_series(
         key = f"{d.year:04d}-{d.month:02d}"
         monthly[key] += r
     return dict(sorted(monthly.items()))
+
+
+# ── Monte-Carlo drawdown simulation ──────────────────────────────────────────
+
+@dataclass(frozen=True)
+class MCDrawdownResult:
+    """Monte-Carlo drawdown percentiles from trade-order shuffling."""
+    p5: float
+    p50: float
+    p95: float
+    n_sim: int
+
+    def __str__(self) -> str:
+        return (
+            f"MC MaxDD: p5={self.p5:.2f}R  p50={self.p50:.2f}R  "
+            f"p95={self.p95:.2f}R  (n={self.n_sim})"
+        )
+
+
+def monte_carlo_drawdown(
+        rs: Sequence[float],
+        n_sim: int = 10_000,
+        seed: int = 42,
+) -> MCDrawdownResult:
+    """
+    Shuffle trade order N times, compute max DD each time, return percentiles.
+
+    The 95th percentile is the drawdown you should size for — not the
+    realized one from a single path through the trades.
+
+    Parameters
+    ----------
+    rs      : R-multiples from closed trades.
+    n_sim   : Number of shuffle simulations.
+    seed    : RNG seed for reproducibility.
+
+    Returns
+    -------
+    MCDrawdownResult with 5/50/95th percentile max drawdowns.
+    """
+    if len(rs) < 3:
+        return MCDrawdownResult(p5=0.0, p50=0.0, p95=0.0, n_sim=0)
+
+    rng = np.random.default_rng(seed)
+    arr = np.array(rs, dtype=float)
+    max_dds = np.empty(n_sim)
+
+    for i in range(n_sim):
+        shuffled = rng.permutation(arr)
+        equity = np.cumsum(shuffled)
+        peak = np.maximum.accumulate(equity)
+        max_dds[i] = float((peak - equity).max())
+
+    return MCDrawdownResult(
+        p5=float(np.percentile(max_dds, 5)),
+        p50=float(np.percentile(max_dds, 50)),
+        p95=float(np.percentile(max_dds, 95)),
+        n_sim=n_sim,
+    )

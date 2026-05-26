@@ -7,9 +7,12 @@ threshold dataclasses are loaded from settings.yaml.
 Entry sub-scores  (each in [0, 1], weighted-averaged to [0, 100])
     trend_up           close > MA50 > MA200 stack alignment
     ma50_slope         MA50 rising or falling over last 20 bars
+    ma200_slope        MA200 rising or falling over last 20 bars
     volume_spike       today's volume vs 20-day average
     rsi_healthy        RSI proximity to the ideal trend-confirm band
     breakout_20d       close vs prior 20-bar high
+    near_52w_high      proximity to trailing 252-bar high
+    far_from_52w_low   advance above trailing 252-bar low
     macd_bullish       histogram sign and direction
     no_earnings_risk   days until next earnings vs the configured buffer
     relative_strength  ticker outperforming SPY over 20d and 60d
@@ -23,6 +26,7 @@ Exit sub-scores
     macd_cross_down    MACD histogram crosses below zero
     vol_expansion      ATR today vs 5-day average
     rs_divergence      ticker underperforming SPY over 20d
+    vbp_resistance     overhead high-volume node from Volume-by-Price
 
 Signals where the trigger fired but ``score < min_score_to_alert`` are
 marked ``watch_only=True``.
@@ -62,14 +66,27 @@ class EntryThresholds:
     rsi_healthy_center : RSI value mapped to score 1.0 for trend-confirm band.
     rsi_healthy_half_w : Half-width of the band; score 0.0 at center ± width.
     ma50_slope_scale   : 20-bar MA50 % slope scaled by (slope + scale) / (2*scale).
+    ma200_slope_scale  : 20-bar MA200 % slope scaled by (slope + scale) / (2*scale).
+                         MA200 moves slower than MA50; default scale is smaller.
     breakout_band_pct  : Below prior 20d high by this many %% maps linearly to 0.
     volume_spike_ratio : Today's volume / 20d avg at which score saturates to 1.0.
+    near_52w_high_pct_band  : Distance below 252-bar high (in %) at which the
+                              ``near_52w_high`` score reaches 0.0. The score is
+                              1.0 within 5%% of the high and decays linearly to
+                              0.0 at this band edge.
+    far_from_52w_low_pct_floor : Percentage above the 252-bar low at which
+                                 ``far_from_52w_low`` saturates to 1.0.
+                                 Below this floor the score scales linearly
+                                 from 0.0 (at the low) to 1.0 (at the floor).
     """
     rsi_healthy_center: float = 52.5
     rsi_healthy_half_w: float = 12.5
     ma50_slope_scale: float = 2.0
+    ma200_slope_scale: float = 0.5
     breakout_band_pct: float = 3.0
     volume_spike_ratio: float = 2.0
+    near_52w_high_pct_band: float = 25.0
+    far_from_52w_low_pct_floor: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -82,11 +99,16 @@ class ExitThresholds:
     rsi_overbought_range : RSI delta over the floor at which score saturates to 1.0.
     multi_bar_decay_max  : Consecutive negative macd_hist bars saturating score at 1.0.
     vol_expansion_ratio  : ATR(today)/ATR(5d avg) − 1 saturating score at 1.0.
+    vbp_near_atr_mult    : Distance (in ATR units) to overhead VBP node at which
+                           ``vbp_resistance`` score is 1.0.
+    vbp_far_atr_mult     : Distance at which ``vbp_resistance`` score drops to 0.0.
     """
     rsi_overbought_floor: float = 60.0
     rsi_overbought_range: float = 10.0
     multi_bar_decay_max: float = 3.0
     vol_expansion_ratio: float = 0.5
+    vbp_near_atr_mult: float = 0.5
+    vbp_far_atr_mult: float = 3.0
 
 
 def _load_entry_thresholds(settings: dict) -> EntryThresholds:
@@ -97,8 +119,15 @@ def _load_entry_thresholds(settings: dict) -> EntryThresholds:
         rsi_healthy_center=float(raw.get("rsi_healthy_center", defaults.rsi_healthy_center)),
         rsi_healthy_half_w=float(raw.get("rsi_healthy_half_w", defaults.rsi_healthy_half_w)),
         ma50_slope_scale=float(raw.get("ma50_slope_scale", defaults.ma50_slope_scale)),
+        ma200_slope_scale=float(raw.get("ma200_slope_scale", defaults.ma200_slope_scale)),
         breakout_band_pct=float(raw.get("breakout_band_pct", defaults.breakout_band_pct)),
         volume_spike_ratio=float(raw.get("volume_spike_ratio", defaults.volume_spike_ratio)),
+        near_52w_high_pct_band=float(
+            raw.get("near_52w_high_pct_band", defaults.near_52w_high_pct_band)
+        ),
+        far_from_52w_low_pct_floor=float(
+            raw.get("far_from_52w_low_pct_floor", defaults.far_from_52w_low_pct_floor)
+        ),
     )
 
 
@@ -111,6 +140,8 @@ def _load_exit_thresholds(settings: dict) -> ExitThresholds:
         rsi_overbought_range=float(raw.get("rsi_overbought_range", defaults.rsi_overbought_range)),
         multi_bar_decay_max=float(raw.get("multi_bar_decay_max", defaults.multi_bar_decay_max)),
         vol_expansion_ratio=float(raw.get("vol_expansion_ratio", defaults.vol_expansion_ratio)),
+        vbp_near_atr_mult=float(raw.get("vbp_near_atr_mult", defaults.vbp_near_atr_mult)),
+        vbp_far_atr_mult=float(raw.get("vbp_far_atr_mult", defaults.vbp_far_atr_mult)),
     )
 
 
@@ -149,6 +180,8 @@ class SignalScorer:
             market_dfs: dict | None = None,
             vix_df: pd.DataFrame | None = None,
             current_price: float | None = None,
+            rp_ranks: dict[str, float] | None = None,
+            ticker: str | None = None,
     ) -> None:
         """
         Mutate signal in-place: add ``score``, ``score_components``,
@@ -164,12 +197,14 @@ class SignalScorer:
         market_dfs    : Symbol → OHLCV for regime indices.
         vix_df        : VIX OHLCV.
         current_price : Latest live price, if available.
+        rp_ranks      : Ticker → RP percentile rank [0, 99] (Phase 2).
         """
         if signal.direction == "long":
             score, components = _score_entry(
                 df, regime, earnings_date, self._entry_weights, self._filters_cfg,
                 self._entry_thr,
                 market_dfs=market_dfs, signal_type=signal.signal_type,
+                rp_ranks=rp_ranks, ticker=ticker,
             )
         elif signal.direction == "exit_long":
             score, components = _score_exit(
@@ -208,6 +243,8 @@ def _score_entry(
         thr: EntryThresholds,
         market_dfs: dict | None = None,
         signal_type: str = "momentum",
+        rp_ranks: dict[str, float] | None = None,
+        ticker: str | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
     row = df.iloc[-1]
@@ -237,6 +274,23 @@ def _score_entry(
     else:
         components["ma50_slope"] = 0.5
 
+    # 2b. ma200_slope — MA200 change over last 20 bars as % of price
+    # Mirror of ma50_slope; gated on the weights dict so the sub-score is silently
+    # absent (not 0) when the user hasn't enabled it in settings.yaml.
+    if "ma200_slope" in weights:
+        ma200_series = df["close"].rolling(200, min_periods=200).mean().dropna()
+        if len(ma200_series) >= 21:
+            slope_pct = (
+                    (ma200_series.iloc[-1] - ma200_series.iloc[-21])
+                    / ma200_series.iloc[-21] * 100
+            )
+            components["ma200_slope"] = max(
+                0.0,
+                min(1.0, (slope_pct + thr.ma200_slope_scale) / (2.0 * thr.ma200_slope_scale)),
+            )
+        else:
+            components["ma200_slope"] = 0.5
+
     # 3. volume_spike — today vs 20-day average (exclude today from average)
     avg_vol = float(df["volume"].iloc[-21:-1].mean()) if len(df) >= 22 else 0.0
     if avg_vol > 0:
@@ -264,6 +318,17 @@ def _score_entry(
             components["breakout_20d"] = 0.0
     else:
         components["breakout_20d"] = 0.5
+
+    # 5b. near_52w_high — proximity to trailing 252-bar high (Minervini #9)
+    # 1.0 within 5% of the 52w high; linear decay to 0.0 at near_52w_high_pct_band.
+    if "near_52w_high" in weights:
+        components["near_52w_high"] = _score_near_52w_high(df, close, thr)
+
+    # 5c. far_from_52w_low — leadership floor (Minervini #8)
+    # 1.0 when ≥ far_from_52w_low_pct_floor % above the 252-bar low;
+    # linear scale from 0.0 (at the low) to 1.0 (at the floor).
+    if "far_from_52w_low" in weights:
+        components["far_from_52w_low"] = _score_far_from_52w_low(df, close, thr)
 
     # 6. macd_bullish — histogram sign and direction
     hist = float(row["macd_hist"]) if "macd_hist" in row.index else 0.0
@@ -304,6 +369,19 @@ def _score_entry(
     # 10. bb_zscore — Bollinger Band Z-score statistical positioning
     if "bb_zscore" in weights:
         components["bb_zscore"] = _score_bb_zscore(df, signal_type)
+
+    # 11. rp_percentile — cross-sectional relative strength rank (Phase 2)
+    if "rp_percentile" in weights:
+        components["rp_percentile"] = _score_rp_percentile(ticker, rp_ranks)
+
+    # 12. insider_buying — SEC Form 4 cluster buying (Phase 8)
+    if "insider_buying" in weights:
+        components["insider_buying"] = _score_insider_buying(ticker)
+
+    # 13. short_interest — yfinance short percent of float (Phase 8)
+    if "short_interest" in weights:
+        components["short_interest"] = _score_short_interest(
+            ticker, regime.trend)
 
     return _weighted_average(components, weights), components
 
@@ -368,10 +446,91 @@ def _score_exit(
     if "rs_divergence" in weights:
         components["rs_divergence"] = _score_rs_exit(df, market_dfs)
 
+    # 7. vbp_resistance — overhead high-volume node as exit resistance
+    if "vbp_resistance" in weights:
+        components["vbp_resistance"] = _score_vbp_resistance(df, thr)
+
     return _weighted_average(components, weights), components
 
 
 # ── sub-score helpers ─────────────────────────────────────────────────────────
+
+
+def _score_near_52w_high(
+        df: pd.DataFrame,
+        close: float,
+        thr: EntryThresholds,
+) -> float:
+    """
+    Proximity-to-52-week-high score (Minervini criterion #9).
+
+    Computes the trailing 252-bar high from ``df["high"]`` and measures the
+    current close's distance below it as a percentage.
+
+        distance_pct = (high_52w − close) / high_52w × 100
+
+    Returns
+    -------
+    1.0   distance_pct ≤ 5%%               (right at the highs)
+    0.0   distance_pct ≥ near_52w_high_pct_band   (typically 25%%)
+    linear in between
+    0.5   when fewer than 252 bars are available (warmup)
+
+    Notes
+    -----
+    Uses the trailing high from ``df["high"]`` (intraday high, not close)
+    because the user's mental model of "52-week high" follows price
+    extremes, not closing prices.
+    """
+    if len(df) < 252:
+        return 0.5
+    high_52w = float(df["high"].iloc[-252:].max())
+    if high_52w <= 0:
+        return 0.5
+    distance_pct = (high_52w - close) / high_52w * 100.0
+    # Distance ≤ 5% → full score; distance ≥ band → zero score.
+    if distance_pct <= 5.0:
+        return 1.0
+    band = thr.near_52w_high_pct_band
+    if distance_pct >= band:
+        return 0.0
+    # Linear decay in (5, band).
+    return max(0.0, 1.0 - (distance_pct - 5.0) / (band - 5.0))
+
+
+def _score_far_from_52w_low(
+        df: pd.DataFrame,
+        close: float,
+        thr: EntryThresholds,
+) -> float:
+    """
+    Leadership-floor score (Minervini criterion #8).
+
+    Measures how far the current close has advanced from the trailing
+    252-bar low, as a percentage of that low.
+
+        above_pct = (close − low_52w) / low_52w × 100
+
+    Returns
+    -------
+    1.0   above_pct ≥ far_from_52w_low_pct_floor   (typically 30%%)
+    0.0   above_pct ≤ 0   (at or below the low)
+    linear in between
+    0.5   when fewer than 252 bars are available (warmup)
+    """
+    if len(df) < 252:
+        return 0.5
+    low_52w = float(df["low"].iloc[-252:].min())
+    if low_52w <= 0:
+        return 0.5
+    above_pct = (close - low_52w) / low_52w * 100.0
+    floor = thr.far_from_52w_low_pct_floor
+    if above_pct >= floor:
+        return 1.0
+    if above_pct <= 0:
+        return 0.0
+    return above_pct / floor
+
 
 def _score_rs_entry(
         df: pd.DataFrame,
@@ -526,6 +685,166 @@ def _score_bb_zscore(df: pd.DataFrame, signal_type: str) -> float:
     else:
         # Momentum: near mean is ideal, extremes in either direction are bad
         return max(0.0, 1.0 - abs(bb_z) / 2.0)
+
+
+def _score_vbp_resistance(
+        df: pd.DataFrame,
+        thr: ExitThresholds,
+) -> float:
+    """
+    Exit sub-score from Volume-by-Price overhead resistance.
+
+    Computes a VBP histogram over the trailing 120 bars and finds the
+    nearest high-volume node *above* the current price.  The score is
+    based on the distance to that node in ATR units:
+
+        1.0  when within 0.5 × ATR  (price approaching resistance)
+        0.0  when ≥ 3.0 × ATR away  (plenty of room to run)
+        linear decay in between
+
+    Returns 0.0 when no qualifying node is found.
+    """
+    from core.indicators.vbp import compute_vbp, nearest_high_volume_node_above
+
+    if len(df) < 120:
+        return 0.0
+
+    vbp = compute_vbp(df, lookback=120, n_bins=24)
+    if vbp.empty:
+        return 0.0
+
+    close = float(df.iloc[-1]["close"])
+    atr = float(df.iloc[-1]["atr"])
+    if atr <= 0:
+        return 0.0
+
+    node = nearest_high_volume_node_above(vbp, close, volume_percentile=70)
+    if node is None:
+        return 0.0
+
+    node_price = node[0]
+    distance_atr = (node_price - close) / atr
+
+    near = thr.vbp_near_atr_mult
+    far = thr.vbp_far_atr_mult
+    if distance_atr <= near:
+        return 1.0
+    if distance_atr >= far:
+        return 0.0
+    return max(0.0, 1.0 - (distance_atr - near) / (far - near))
+
+
+def _score_rp_percentile(
+        ticker: str | None,
+        rp_ranks: dict[str, float] | None,
+) -> float:
+    """
+    Cross-sectional percentile-rank relative strength sub-score (Phase 2).
+
+    Sub-score mapping:
+        rank >= 80 → 1.0
+        rank 70–80 → 0.7
+        rank 50–70 → 0.3
+        rank < 50  → 0.0
+        missing    → 0.5
+    """
+    if ticker is None or rp_ranks is None:
+        return 0.5
+    rank = rp_ranks.get(ticker)
+    if rank is None:
+        return 0.5
+    if rank >= 80:
+        return 1.0
+    elif rank >= 70:
+        return 0.7
+    elif rank >= 50:
+        return 0.3
+    else:
+        return 0.0
+
+
+def _score_insider_buying(ticker: str | None) -> float:
+    """
+    SEC Form 4 insider buying sub-score (Phase 8).
+
+    Scoring:
+        1.0 — cluster buy in last 30d (≥3 distinct insiders, ≥$250k)
+        0.7 — 2 distinct insider buys ≥$100k in 90d
+        0.5 — 1 buy or no signal
+        0.0 — net selling >$1M in 90d
+    """
+    if ticker is None:
+        return 0.5
+    try:
+        from core.fetchers.behavioral.form4 import fetch_form4
+        data = fetch_form4(ticker)
+    except Exception:
+        return 0.5
+
+    buys_30 = data.get("buys_30d", 0)
+    buys_90 = data.get("buys_90d", 0)
+    sells_90 = data.get("sells_90d", 0)
+    buy_val_30 = data.get("buy_value_30d", 0.0)
+    sell_val_90 = data.get("sell_value_90d", 0.0)
+    distinct_30 = data.get("distinct_insiders_30d", 0)
+    cluster = data.get("cluster_buy_30d", False)
+
+    if cluster and buy_val_30 >= 250_000:
+        return 1.0
+    if buys_90 >= 2 and buy_val_30 >= 100_000:
+        return 0.7
+    if sell_val_90 > 1_000_000 and sells_90 > buys_90:
+        return 0.0
+    if buys_30 > 0 or buys_90 > 0:
+        return 0.5
+    return 0.5
+
+
+def _score_short_interest(
+        ticker: str | None,
+        trend: str = "BULL",
+) -> float:
+    """
+    Short interest sub-score (Phase 8).
+
+    BULL regime:
+        SI < 3%     → 0.7 (low short interest, healthy)
+        SI > 20%    → 0.8 (squeeze candidate)
+        normal      → 0.5
+
+    BEAR regime:
+        SI > 10%    → 0.0 (high short interest, risky)
+        SI < 3%     → 0.6
+        normal      → 0.3
+    """
+    if ticker is None:
+        return 0.5
+    try:
+        from core.fetchers.behavioral.short_interest import fetch_short_interest
+        data = fetch_short_interest(ticker)
+    except Exception:
+        return 0.5
+
+    si_pct = data.get("short_percent_of_float")
+    if si_pct is None:
+        return 0.5
+
+    si_pct = float(si_pct) * 100  # convert to percentage
+
+    if trend == "BULL":
+        if si_pct < 3:
+            return 0.7
+        elif si_pct > 20:
+            return 0.8
+        else:
+            return 0.5
+    else:
+        if si_pct > 10:
+            return 0.0
+        elif si_pct < 3:
+            return 0.6
+        else:
+            return 0.3
 
 
 # ── description builder ───────────────────────────────────────────────────────

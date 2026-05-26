@@ -29,7 +29,7 @@ Per-bar phase order
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
@@ -71,6 +71,10 @@ class PortfolioConfig:
     close_open_at_eod    : Force-close open trades at last bar.
     entry_slippage_pct   : Entry fill = bar_open × (1 + this). Default 0.
     commission_r         : Per-trade commission drag in R units. Default 0.
+    max_drawdown_r       : Portfolio drawdown circuit breaker (R units).
+                           When cumulative R drops this far below peak, block
+                           new entries until recovery to 50% of drawdown.
+                           None → disabled.
     """
     max_concurrent: int
     start_date: Optional[date] = None
@@ -79,6 +83,7 @@ class PortfolioConfig:
     close_open_at_eod: bool = True
     entry_slippage_pct: float = 0.0
     commission_r: float = 0.0
+    max_drawdown_r: Optional[float] = None
 
 
 @dataclass
@@ -97,6 +102,55 @@ class PortfolioResult:
     skipped: dict[str, str] = field(default_factory=dict)
     tickers_walked: int = 0
     bars_walked: int = 0
+
+
+# ── drawdown circuit-breaker helper ──────────────────────────────────────────
+
+
+class _DrawdownGate:
+    """Cumulative-R peak tracker with breach-and-recover state machine.
+
+    P0-4 FIX: this used to be inline in run_prepped only and was MISSING
+    from run_all. Now both paths share one implementation. When the
+    drawdown from peak exceeds ``limit``, new entries are blocked until
+    cumulative_r recovers to within ``recovery_frac * limit`` of the peak.
+    """
+
+    def __init__(self, limit: Optional[float], recovery_frac: float = 0.5):
+        self.limit = limit
+        self.recovery_frac = recovery_frac
+        self.cumulative_r = 0.0
+        self.peak = 0.0
+        self.blocked = False
+
+    @property
+    def enabled(self) -> bool:
+        return self.limit is not None
+
+    def record(self, r: float) -> None:
+        """Record a closed trade's r_multiple and update peak/state."""
+        if not self.enabled:
+            return
+        self.cumulative_r += r
+        if self.cumulative_r > self.peak:
+            self.peak = self.cumulative_r
+        # If currently blocked, check for recovery
+        if self.blocked:
+            recovery_target = self.peak - self.limit * self.recovery_frac
+            if self.cumulative_r >= recovery_target:
+                self.blocked = False
+        else:
+            drawdown = self.peak - self.cumulative_r
+            if drawdown >= self.limit:
+                self.blocked = True
+
+    def reset_for_new_bar(self) -> None:
+        """Re-evaluate breach state at the top of each bar (cheap idempotent op)."""
+        if not self.enabled or self.blocked:
+            return
+        drawdown = self.peak - self.cumulative_r
+        if drawdown >= self.limit:
+            self.blocked = True
 
 
 # ── per-ticker preparation ────────────────────────────────────────────────────
@@ -183,6 +237,10 @@ class PortfolioBacktester:
             tickers: list[str],
             market_dfs: dict[str, pd.DataFrame] | None = None,
             vix_df: pd.DataFrame | None = None,
+            macro_series: dict[str, pd.DataFrame] | None = None,
+            behavioral_data: dict | None = None,
+            spy_df: pd.DataFrame | None = None,
+            settings: dict | None = None,
     ) -> PortfolioResult:
         """
         Run the portfolio-capped backtest for the full universe.
@@ -213,6 +271,11 @@ class PortfolioBacktester:
         pending_exits: set[str] = set()
         bars_walked = 0
 
+        # P0-4 FIX: drawdown gate now active in run_all() as well as
+        # run_prepped(). Previously the cfg.max_drawdown_r was silently
+        # ignored on this code path.
+        dd_gate = _DrawdownGate(self._cfg.max_drawdown_r)
+
         for D in timeline:
             D_date = D.date()
             active = [tk for tk in prepped if D in date_sets[tk]]
@@ -231,6 +294,22 @@ class PortfolioBacktester:
             # Avoids N redundant calls to _market_regime inside engine.signal.
             regime = self._engine.market_regime(market_t, vix_t)
 
+            # Enrich regime with macro state (point-in-time)
+            if macro_series:
+                from core.macro.regime import classify_macro_state
+                macro_state = classify_macro_state(
+                    macro_series, as_of=D, settings=settings,
+                )
+                regime = replace(regime, macro=macro_state)
+
+            # Enrich regime with behavioral state
+            if behavioral_data:
+                from core.behavioral import classify_behavioral_state
+                behavioral_state = classify_behavioral_state(
+                    behavioral_data, settings=settings, spy_df=spy_df, as_of=D,
+                )
+                regime = replace(regime, behavioral=behavioral_state)
+
             closed_this_bar: set[str] = set()
 
             # ── Phase 1: pending exits fill at open (frees slots) ─────────
@@ -248,9 +327,22 @@ class PortfolioBacktester:
                     exit_idx=t_idx,
                     commission_r=self._cfg.commission_r,
                 )
-                result.trades.append(open_trades.pop(ticker))
+                closed = open_trades.pop(ticker)
+                result.trades.append(closed)
+                dd_gate.record(closed.effective_r)  # P0-4 + P0-6
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
+
+            # ── Drawdown circuit breaker (P0-4) ────────────────────────────
+            dd_gate.reset_for_new_bar()
+            if dd_gate.blocked:
+                # Discard queued entries — they'd otherwise sit waiting forever
+                for ticker in list(pending_entries.keys()):
+                    result.capped_signals.append(CappedSignal(
+                        date=D_date,
+                        ticker=ticker,
+                        signal=pending_entries.pop(ticker),
+                    ))
 
             # ── Phase 2: pending entries fill at open — score-ranked ──────
             # Highest-scoring signal wins the slot when cap is contested.
@@ -275,6 +367,14 @@ class PortfolioBacktester:
                     continue
 
                 signal = pending_entries.pop(ticker)
+                # P0-6: signals with zero size_mult are blocked — equivalent
+                # to "regime says stand aside, don't trade".
+                if getattr(signal, "size_mult", 1.0) <= 0:
+                    result.capped_signals.append(CappedSignal(
+                        date=D_date, ticker=ticker, signal=signal,
+                    ))
+                    continue
+
                 bar = prepped[ticker].df.loc[D]
                 raw_entry = float(bar["open"])
                 actual_entry = raw_entry * (1.0 + self._cfg.entry_slippage_pct)
@@ -289,6 +389,7 @@ class PortfolioBacktester:
                     initial_target=float(signal.target_price),
                     market_regime=signal.market_regime,
                     ticker_trend=signal.ticker_trend,
+                    size_mult=float(getattr(signal, "size_mult", 1.0)),  # P0-6
                 )
 
             # ── Phase 3: stop/target check on held trades ─────────────────
@@ -309,7 +410,9 @@ class PortfolioBacktester:
                     _close_trade(trade, D_date, fill, "stop",
                                  prepped[ticker].df.index, t_idx,
                                  self._cfg.commission_r)
-                    result.trades.append(open_trades.pop(ticker))
+                    closed = open_trades.pop(ticker)
+                    result.trades.append(closed)
+                    dd_gate.record(closed.effective_r)  # P0-4 + P0-6
                     closed_this_bar.add(ticker)
                     continue
 
@@ -317,7 +420,9 @@ class PortfolioBacktester:
                     _close_trade(trade, D_date, trade.initial_target, "target",
                                  prepped[ticker].df.index, t_idx,
                                  self._cfg.commission_r)
-                    result.trades.append(open_trades.pop(ticker))
+                    closed = open_trades.pop(ticker)
+                    result.trades.append(closed)
+                    dd_gate.record(closed.effective_r)  # P0-4 + P0-6
                     closed_this_bar.add(ticker)
 
             # ── Phase 4: engine signal evaluation at this bar's close ─────
@@ -332,6 +437,7 @@ class PortfolioBacktester:
                 signal = call_engine_slice(
                     self._engine, ticker, df_t, D_date,
                     market_t, vix_t, prepped[ticker].earnings_history, held,
+                    regime=regime,
                 )
 
                 if not signal.passed:
@@ -356,6 +462,7 @@ class PortfolioBacktester:
                                 df=df_t,
                                 regime=regime,
                                 earnings_date=next_earn,
+                                ticker=ticker,
                             )
                         except Exception as exc:
                             logger.debug("[%s] scorer.enrich failed: %s",
@@ -386,7 +493,9 @@ class PortfolioBacktester:
                     exit_idx=len(in_window) - 1,
                     commission_r=self._cfg.commission_r,
                 )
-                result.trades.append(open_trades.pop(ticker))
+                closed = open_trades.pop(ticker)
+                result.trades.append(closed)
+                dd_gate.record(closed.effective_r)  # P0-4 + P0-6
 
         result.bars_walked = bars_walked
         return result
@@ -397,6 +506,10 @@ class PortfolioBacktester:
             skipped,
             market_dfs=None,
             vix_df=None,
+            macro_series=None,
+            behavioral_data=None,
+            spy_df=None,
+            settings=None,
     ):
         """Run portfolio walk on pre-loaded _TickerPrep data (sweep hot-path).
 
@@ -424,6 +537,10 @@ class PortfolioBacktester:
         pending_exits = set()
         bars_walked = 0
 
+        # P0-4 FIX: drawdown gate now lives in a shared helper so the same
+        # behaviour applies to run_all() and run_prepped() and is testable.
+        dd_gate = _DrawdownGate(self._cfg.max_drawdown_r)
+
         for D in timeline:
             D_date = D.date()
             active = [tk for tk in prepped if D in date_sets[tk]]
@@ -436,6 +553,23 @@ class PortfolioBacktester:
             )
             vix_t = vix_df.loc[:D] if vix_df is not None else None
             regime = self._engine.market_regime(market_t, vix_t)
+
+            # Enrich regime with macro state (point-in-time)
+            if macro_series:
+                from core.macro.regime import classify_macro_state
+                macro_state = classify_macro_state(
+                    macro_series, as_of=D, settings=settings,
+                )
+                regime = replace(regime, macro=macro_state)
+
+            # Enrich regime with behavioral state
+            if behavioral_data:
+                from core.behavioral import classify_behavioral_state
+                behavioral_state = classify_behavioral_state(
+                    behavioral_data, settings=settings, spy_df=spy_df, as_of=D,
+                )
+                regime = replace(regime, behavioral=behavioral_state)
+
             closed_this_bar = set()
 
             # Phase 1: pending exits at open
@@ -447,34 +581,55 @@ class PortfolioBacktester:
                 _close_trade(open_trades[ticker], D_date, float(bar["open"]),
                              "engine_exit", prepped[ticker].df.index, t_idx,
                              self._cfg.commission_r)
-                result.trades.append(open_trades.pop(ticker))
+                closed = open_trades.pop(ticker)
+                result.trades.append(closed)
+                dd_gate.record(closed.effective_r)
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
 
             # Phase 2: pending entries at open, score-ranked
-            for ticker in sorted(
-                    [tk for tk in pending_entries if D in date_sets[tk]],
-                    key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
-                    reverse=True,
-            ):
-                if ticker in closed_this_bar:
-                    pending_entries.pop(ticker, None)
-                    continue
-                if len(open_trades) >= self._cfg.max_concurrent:
+            # Drawdown circuit breaker (P0-4)
+            dd_gate.reset_for_new_bar()
+            if dd_gate.blocked:
+                # Skip entry fills but still process exits
+                for ticker in sorted(
+                        [tk for tk in pending_entries if D in date_sets[tk]],
+                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
+                        reverse=True,
+                ):
                     result.capped_signals.append(
                         CappedSignal(D_date, ticker, pending_entries.pop(ticker))
                     )
-                    continue
-                signal = pending_entries.pop(ticker)
-                bar = prepped[ticker].df.loc[D]
-                actual_entry = float(bar["open"]) * (1.0 + self._cfg.entry_slippage_pct)
-                open_trades[ticker] = Trade(
-                    ticker=ticker, signal_type=signal.signal_type,
-                    direction="long", entry_date=D_date, entry_price=actual_entry,
-                    initial_stop=float(signal.stop_price),
-                    initial_target=float(signal.target_price),
-                    market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
-                )
+            else:
+                for ticker in sorted(
+                        [tk for tk in pending_entries if D in date_sets[tk]],
+                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
+                        reverse=True,
+                ):
+                    if ticker in closed_this_bar:
+                        pending_entries.pop(ticker, None)
+                        continue
+                    if len(open_trades) >= self._cfg.max_concurrent:
+                        result.capped_signals.append(
+                            CappedSignal(D_date, ticker, pending_entries.pop(ticker))
+                        )
+                        continue
+                    signal = pending_entries.pop(ticker)
+                    if getattr(signal, "size_mult", 1.0) <= 0:  # P0-6
+                        result.capped_signals.append(
+                            CappedSignal(D_date, ticker, signal)
+                        )
+                        continue
+                    bar = prepped[ticker].df.loc[D]
+                    actual_entry = float(bar["open"]) * (1.0 + self._cfg.entry_slippage_pct)
+                    open_trades[ticker] = Trade(
+                        ticker=ticker, signal_type=signal.signal_type,
+                        direction="long", entry_date=D_date, entry_price=actual_entry,
+                        initial_stop=float(signal.stop_price),
+                        initial_target=float(signal.target_price),
+                        market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
+                        size_mult=float(getattr(signal, "size_mult", 1.0)),  # P0-6
+                    )
 
             # Phase 3: stop / target on held trades
             for ticker in list(open_trades):
@@ -488,13 +643,17 @@ class PortfolioBacktester:
                     fill = apply_stop_fill(trade.initial_stop, b_open)
                     _close_trade(trade, D_date, fill, "stop",
                                  prepped[ticker].df.index, t_idx, self._cfg.commission_r)
-                    result.trades.append(open_trades.pop(ticker))
+                    closed = open_trades.pop(ticker)
+                    result.trades.append(closed)
+                    dd_gate.record(closed.effective_r)
                     closed_this_bar.add(ticker)
                     continue
                 if b_high >= trade.initial_target:
                     _close_trade(trade, D_date, trade.initial_target, "target",
                                  prepped[ticker].df.index, t_idx, self._cfg.commission_r)
-                    result.trades.append(open_trades.pop(ticker))
+                    closed = open_trades.pop(ticker)
+                    result.trades.append(closed)
+                    dd_gate.record(closed.effective_r)
                     closed_this_bar.add(ticker)
 
             # Phase 4: engine signal at close
@@ -508,6 +667,7 @@ class PortfolioBacktester:
                 signal = call_engine_slice(
                     self._engine, ticker, df_t, D_date,
                     market_t, vix_t, prepped[ticker].earnings_history, held,
+                    regime=regime,
                 )
                 if not signal.passed:
                     continue
@@ -528,6 +688,7 @@ class PortfolioBacktester:
                                 df=df_t,
                                 regime=regime,
                                 earnings_date=next_earn,
+                                ticker=ticker,
                             )
                         except Exception as exc:
                             logger.debug("[%s] scorer.enrich failed: %s",
@@ -548,7 +709,9 @@ class PortfolioBacktester:
                 last_date = last_bar.name.date() if hasattr(last_bar.name, "date") else last_D.date()
                 _close_trade(trade, last_date, float(last_bar["close"]), "open_eod",
                              tdf.index, len(in_win) - 1, self._cfg.commission_r)
-                result.trades.append(open_trades.pop(ticker))
+                closed = open_trades.pop(ticker)
+                result.trades.append(closed)
+                dd_gate.record(closed.effective_r)
 
         result.bars_walked = bars_walked
         return result

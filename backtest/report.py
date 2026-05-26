@@ -57,7 +57,7 @@ def _sparkbar(value, lo, hi, width=10):
 # ── terminal ──────────────────────────────────────────────────────────────────
 
 def print_baseline(point, equity=None, bootstrap=None, kelly=None,
-                   attribution=None, streaks=None):
+                   attribution=None, streaks=None, mc_dd=None):
     s = point.stats
     sep = "─" * 60
     print()
@@ -86,6 +86,7 @@ def print_baseline(point, equity=None, bootstrap=None, kelly=None,
     if equity:    print_equity_curve(equity)
     if bootstrap: print_bootstrap(bootstrap)
     if kelly:     print_kelly(kelly, streaks)
+    if mc_dd:     print_mc_drawdown(mc_dd)
     if attribution: print_attribution(attribution)
     print()
 
@@ -141,6 +142,22 @@ def print_kelly(kelly, streaks=None, bankroll=50_000):
         print(f"  P(≥5 losses in 100 trades, binomial): {p:.1%}")
 
 
+def print_mc_drawdown(mc_dd, bankroll=50_000):
+    sep = "─" * 60
+    print()
+    print(_c("  Monte-Carlo Drawdown  (trade-order shuffling)", _BOLD + _CYAN))
+    print(f"  {sep}")
+    print(f"  Realized max DD      : see baseline above")
+    print(f"  MC p50 (median)      : {mc_dd.p50:.2f} R")
+    print(f"  MC p95 (size for)    : {mc_dd.p95:.2f} R  "
+          f"(${mc_dd.p95 * bankroll * 0.05:,.0f} @ ${bankroll:,.0f}, 5% risk/R)")
+    print(f"  MC p5 (best case)    : {mc_dd.p5:.2f} R")
+    print(f"  Simulations          : {mc_dd.n_sim:,}")
+    p95_pct = mc_dd.p95 * 5  # approximate % DD at 5% risk per R
+    flag = _c("  ✓ within 25% limit", _GREEN) if p95_pct < 25 else _c("  ✗ exceeds 25% — reduce size", _RED)
+    print(f"  p95 as % account     : ~{p95_pct:.0f}%  (at 5% risk/R)  {flag}")
+
+
 def print_attribution(attribution):
     sep = "─" * 60
     print()
@@ -193,6 +210,51 @@ def print_mean_rev_tune(report, baseline_er):
 def print_walk_forward(wf):
     for line in wf.summary_lines():
         print(line)
+
+
+def print_robustness(results, base_er):
+    sep = "─" * 60
+    print()
+    print(_c("  Parameter Robustness  (±10% / ±20% perturbation)", _BOLD + _CYAN))
+    print(f"  {sep}")
+    print(f"  Baseline E[R]: {base_er:+.3f}\n")
+
+    # Group by param
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in results:
+        groups[r["param"]].append(r)
+
+    flagged = []
+    for param, pts in sorted(groups.items()):
+        pts_sorted = sorted(pts, key=lambda x: x["pct"])
+        ers = [p["er"] for p in pts_sorted]
+        er_range = max(ers) - min(ers) if ers else 0
+        drop_from_base = base_er - min(ers) if base_er > 0 else 0
+        drop_pct = (drop_from_base / abs(base_er) * 100) if base_er != 0 else 0
+
+        flag = drop_pct > 50
+        if flag:
+            flagged.append((param, drop_pct))
+
+        label = f"  {_c(param, _RED)}" if flag else f"  {param}"
+        print(label)
+        for p in pts_sorted:
+            sign = "+" if p["pct"] > 0 else ""
+            er_c = _er_color(p["er"], base_er)
+            print(f"    {sign}{p['pct']:.0%} → {p['value']:>10g}  "
+                  f"E[R]={_c(f'{p["er"]:+.3f}', er_c)}  "
+                  f"({p['trades']}t)")
+        print(f"    range={er_range:.3f}  drop_from_base={drop_pct:.0f}%")
+        print()
+
+    if flagged:
+        print(_c(f"  ⚠ FLAGGED — E[R] drops >50% from baseline:", _BOLD + _RED))
+        for param, pct in flagged:
+            print(f"    {param}: {pct:.0f}% drop")
+    else:
+        print(_c("  ✓ No params flagged — all within 50% drop threshold", _GREEN))
+    print()
 
 
 def print_report(report):

@@ -8,6 +8,7 @@ Staleness threshold loaded from settings.yaml → ``storage.staleness_hours``
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,7 +29,7 @@ _SETTINGS_PATH: Path = Path(__file__).parent.parent.parent / "config" / "setting
 def load_default_staleness_h() -> int:
     """Return ``storage.staleness_hours`` from settings.yaml, else 12."""
     if _SETTINGS_PATH.exists():
-        settings = yaml.safe_load(_SETTINGS_PATH.read_text())
+        settings = yaml.safe_load(_SETTINGS_PATH.read_text(encoding="utf-8"))
         return settings.get("storage", {}).get("staleness_hours", 12)
     return 12
 
@@ -133,7 +134,11 @@ def save(
     _validate_structure(df)
     path = _path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path)
+    # P2-5 FIX: atomic write — temp file + os.replace prevents partial-write
+    # corruption if the process is killed mid-write or two threads race.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    df.to_parquet(tmp)
+    os.replace(tmp, path)
     logger.debug("Cache save  → %s  (%d rows)", path, len(df))
 
 
