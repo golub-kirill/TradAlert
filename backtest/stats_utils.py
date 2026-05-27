@@ -127,10 +127,6 @@ class ConsecutiveLossStats:
             return 0.0
         return sum(1 for s in self.streaks if s >= 5) / len(self.streaks)
 
-    def binomial_p(self, win_rate: float, n: int) -> float:
-        """Probability of exactly n consecutive losses: (1-WR)^n."""
-        return (1.0 - win_rate) ** n
-
     def binomial_at_least(self, win_rate: float, n: int,
                           sequence_length: int) -> float:
         """
@@ -156,8 +152,7 @@ class ConsecutiveLossStats:
 # ── bootstrap CI ─────────────────────────────────────────────────────────────
 
 def _profit_factor(r: np.ndarray) -> float:
-    """P1-3 FIX: previously returned inf for all-loss runs (no winners but
-    losers exist). Correct semantics:
+    """Profit factor — sum(wins) / abs(sum(losses)). Semantics:
         winners=0, losers>0  → 0.0   (terrible — all losses)
         winners>0, losers=0  → +inf  (no losses to divide by)
         both empty           → nan   (no trades)
@@ -431,32 +426,6 @@ def consecutive_loss_stats(r_multiples: Sequence[float]) -> ConsecutiveLossStats
         avg_consecutive=sum(streaks) / len(streaks),
         streaks=streaks,
     )
-
-
-# ── Monthly P&L series ────────────────────────────────────────────────────────
-
-def monthly_r_series(
-        exit_dates: Sequence,  # datetime.date or pd.Timestamp
-        r_multiples: Sequence[float],
-) -> "dict[str, float]":
-    """
-    Aggregate R-multiples into a dict keyed by "YYYY-MM" strings.
-
-    Parameters
-    ----------
-    exit_dates  : Sequence of exit dates (one per trade).
-    r_multiples : Corresponding R-multiples.
-
-    Returns
-    -------
-    Dict mapping "YYYY-MM" → total R for that month (sorted chronologically).
-    """
-    from collections import defaultdict
-    monthly: dict[str, float] = defaultdict(float)
-    for d, r in zip(exit_dates, r_multiples):
-        key = f"{d.year:04d}-{d.month:02d}"
-        monthly[key] += r
-    return dict(sorted(monthly.items()))
 
 
 # ── Monte-Carlo drawdown simulation ──────────────────────────────────────────

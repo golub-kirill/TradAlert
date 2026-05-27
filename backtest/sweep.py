@@ -455,6 +455,7 @@ class SweepReport:
             {
                 "ticker": t.ticker,
                 "signal_type": t.signal_type,
+                "direction": t.direction,
                 "entry_date": t.entry_date,
                 "exit_date": t.exit_date,
                 "entry_price": t.entry_price,
@@ -738,6 +739,19 @@ class SweepEngine:
             "close_open_at_eod", "entry_slippage_pct", "commission_r",
         }
         pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
+
+        # Per-worker chronic-loser tracker. The config dict is passed
+        # through base_port; each worker builds a fresh TickerHealth so
+        # sweep points don't share streak state.
+        chronic_cfg = port_params.get("chronic_loser_cfg")
+        if chronic_cfg:
+            try:
+                from core.ticker_health import TickerHealth
+                pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
+            except Exception as exc:
+                logger.warning("TickerHealth.from_config failed [%s]: %s",
+                               run_id, exc)
+
         try:
             pcfg = PortfolioConfig(**pcfg_kwargs)
         except Exception as exc:

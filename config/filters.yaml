@@ -1,4 +1,4 @@
-﻿# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # TradAlert — filters.yaml
 # Read by FilterEngine (src/core/filter_engine.py) and chart.py (RSI bands).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,6 +37,10 @@ regime: # block: broad-market regime classifier
   require_all_indices: true            # true: unanimous vote; false: majority vote
   ma_short: 20                         # secondary short-term MA for regime alignment
   require_ma_short_alignment: false     # true: all indices must also be above MA(ma_short)
+  vix_slope_block: false               # opt-in: block fresh momentum entries when VIX is rising
+  # over the lookback window, even at low VIX level.
+  # Targets Feb 2025 cluster — see postmortem.
+  vix_slope_lookback_days: 5           # bars looked back when computing vix_rising
 
 
 # ── EVENTS ────────────────────────────────────────────────────────────────────
@@ -70,16 +74,41 @@ signals: # block: trigger configuration
   # behave consistently across $7 and $400 names instead of triggering
   # on noise for low-priced stocks and never firing for high-priced ones.
 
+  allow_shorts: false                # Phase 10 master switch. When false
+    # (default), no short entries are
+  # emitted and the baseline backtest
+  # replays bit-identical. Enable via
+  # --allow-shorts on run_backtest.py.
+
+  hard_to_borrow_list: [ ]            # Phase 10 v2: symbols that cannot be shorted
+  # (hard-to-borrow / unavailable). Short entries on
+  # these are blocked; longs unaffected. e.g. [GME, AMC].
+
+  borrow: # Phase 10 v2: stock-borrow cost for shorts.
+    annual_rate_default: 0.0         #   0.0 = off (baseline-safe). e.g. 0.03 = 3%/yr.
+    per_ticker: { }                   #   per-symbol overrides, e.g. {GME: 0.30}.
+    # Folded into Trade.effective_r as an R drag ∝ bars_held; longs never charged.
+    # v1 is a flat configured rate — a live per-symbol borrow source is a follow-on.
+
+  require_trigger_bar_up: false      # opt-in: only queue T+1 entry when trigger
+  # bar T closed >= open (no red-bar entries).
+  # Targets 11 fast stop-outs from postmortem.
+
   momentum: # block: trend-following triggers
     long: # entry: macd_hist crosses up + RSI in band + delta gate
       rsi_min: 50                       # inclusive floor for momentum long
-      rsi_max: 65                       # inclusive ceiling for momentum long
+      rsi_max: 70                       # inclusive ceiling for momentum long (widened from 65; more entries)
       min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) >= this * atr
       max_bars_since_cross: 3           # block entries if MACD zero-cross happened >N bars ago (stale signal)
     short: # held-long exit: fade trigger; reused by _momentum_fade_exit
       rsi_min: 30                       # inclusive floor for fade trigger
       rsi_max: 65                       # was 45 — widened; MACD zero-cross after a run lands at RSI 45-65, so 45 silently blocked all fades
       min_hist_delta_atr: 0.18          # ATR-multiple; (row - prev) <= -this * atr
+    short_entry: # Phase 10 — fresh short on downside momentum
+      rsi_min: 30                       # inclusive floor (very oversold blocks new shorts)
+      rsi_max: 50                       # inclusive ceiling — short into weakness, not extremes
+      min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) <= -this * atr (negative delta)
+      max_bars_since_cross: 3           # stale-signal guard
 
   gap_risk: # block: overnight gap risk filter
     enabled: true                       # true: block entries when prev bar range is too wide
@@ -91,23 +120,46 @@ signals: # block: trigger configuration
 
   mean_reversion: # block: counter-trend triggers
     long: # entry: RSI < rsi_max + macd_hist rising
-      rsi_max: 35                       # exclusive ceiling; lower = more oversold
-      min_hist_delta_atr: 0.18          # ATR-multiple; set to 0.18 to effectively disable MR entries (tuning sweep showed MR signal bleeds -0.205 E[R])
+      rsi_max: 70                       # exclusive ceiling; widened from 35 (sweep best: +0.410 R / 102 trades)
+      min_hist_delta_atr: 0.08          # ATR-multiple; lowered from 0.18 to re-enable MR entries (paired with rsi_max widening above)
     short: # held-long exit: overbought trigger
       rsi_min: 65                       # exclusive floor; higher = more overbought
       min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
+    short_entry: # Phase 10 — counter-trend short into rally (mirror of long)
+      rsi_min: 70                       # exclusive floor; symmetric mirror of long.rsi_max
+      min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) <= -this * atr
 
-  exits: # block: held-long exit toggles (all default true)
-    regime_flip: true                 # exit when broad-market trend != BULL
-    momentum_fade: true                 # exit on momentum-fade trigger
-    mean_rev: true                 # exit on overbought mean-reversion trigger
+  exits: # block: held-position exit toggles (all default true)
+    regime_flip: true                 # exit held LONG when broad-market trend != BULL
+    momentum_fade: true               # exit held LONG on momentum-fade trigger
+    mean_rev: true                    # exit held LONG on overbought mean-reversion trigger
+    # Phase 10 — held-SHORT exit toggles (default true; cheap insurance)
+    regime_flip_short: true           # cover held SHORT when broad-market trend != BEAR
+    short_cover_pop: true             # cover held SHORT on momentum-pop trigger
+    short_cover_oversold: true        # cover held SHORT on oversold + upturn
 
   stop_loss: # block: position-sizing & R:R structure
     atr_multiplier: 2.5                 # stop = close - atr*atr_multiplier (sweep: 2.5 â†’ +0.112 R, wider stops survive noise)
     min_rr: 2.5                         # target = close + risk*min_rr; ratio gate (balanced: better than 2.0, not as sparse as 3.0)
+      # min_rr_short: 2.5                 # Phase 10 v2 (optional): R:R gate for SHORTS only.
+      #   Shorts have bounded upside (price floor $0), so a
+    #   tighter reward ceiling can be justified. Absent →
+    #   falls back to min_rr above. Only affects shorts.
+
+  size_mult_gate: # F3-1: composite (macro×behavioral) position-size gate
+    enabled: false                      # default off so existing sweeps replay identically
+    min: 0.25                           # block entries when regime.size_multiplier < this
 
 
-# ── BEHAVIORAL GATE ────────────────────────────────────────────────────────────
-
-behavioral: # block: macro/behavioral entry gate
-  size_multiplier_floor: 0.25           # block entries when size_multiplier < this
+# ── CHRONIC-LOSER PENALTY ────────────────────────────────────────────────────
+# Per-ticker sliding-scale size penalty after consecutive losses inside a
+# rolling window. Targets emergent losers (the static prune of the postmortem
+# 2026-05-27 already removed the known-bad symbols). Off by default so the
+# 2026-05-27 baseline replays identically.
+chronic_loser_penalty:
+  enabled: false                        # master switch
+  lookback_days: 90                     # losses older than this age off the streak
+  scale: # consecutive_losses_threshold → size_mult
+    2: 0.5                              # 2 in 90d → half size
+    3: 0.25                             # 3 in 90d → quarter size
+    4: 0.0                              # 4+ → block entirely

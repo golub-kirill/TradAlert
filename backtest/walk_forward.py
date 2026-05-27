@@ -20,7 +20,7 @@ Walk-forward modes
       Validates temporal stability but does not defeat parameter-tuning
       data-snooping.
 
-  re-tune (re_tune=True, P0.3):  For each IS window, run an OFAT sweep
+  re-tune (re_tune=True):  For each IS window, run an OFAT sweep
       via SweepEngine.run_ofat(), pick the best-by-E[R] config, then
       apply *that* config to the OOS window.  The OOS cell is then a
       true "if I had only seen up to IS_end, what would I have shipped"
@@ -91,7 +91,7 @@ class WFResult:
     window: WFWindow
     is_point: SweepPoint
     oos_point: SweepPoint
-    tuned_params: dict = field(default_factory=dict)  # P0.3: params chosen from IS sweep
+    tuned_params: dict = field(default_factory=dict)  # params chosen from IS sweep
 
     @property
     def is_er(self) -> float: return self.is_point.stats.expectancy_r
@@ -114,7 +114,7 @@ class WalkForwardReport:
     is_years: float
     oos_years: float
     step_months: int
-    re_tune: bool = False  # P0.3: whether re-tuning was used
+    re_tune: bool = False  # whether re-tuning was used
 
     @property
     def oos_er_values(self) -> list[float]:
@@ -203,7 +203,7 @@ class WalkForwardReport:
         ]
         if self.re_tune:
             lines.append("")
-            lines.append("  Re-tuning: IS sweep → best config → OOS (P0.3)")
+            lines.append("  Re-tuning: IS sweep → best config → OOS")
             for r in self.results:
                 if r.tuned_params:
                     params_str = ", ".join(
@@ -233,7 +233,7 @@ class WalkForwardEngine:
     is_years      : In-sample window length in years.  Default 3.
     oos_years     : Out-of-sample window length in years.  Default 1.
     step_months   : Months to slide each window forward.  Default 6.
-    re_tune       : If True, run OFAT sweep on IS and apply best to OOS (P0.3).
+    re_tune       : If True, run OFAT sweep on IS and apply best to OOS.
     grid          : ParamSpec list for the OFAT sweep. Defaults to PARAM_GRID.
     """
 
@@ -257,7 +257,7 @@ class WalkForwardEngine:
         self._re_tune = re_tune
         self._grid = grid if grid is not None else PARAM_GRID
 
-        # In-memory sweep cache keyed by (is_start, is_end) (P0.3)
+        # In-memory sweep cache keyed by (is_start, is_end)
         self._sweep_cache: dict[tuple[date, date], SweepPoint] = {}
 
         # Reuse SweepEngine's _run_one logic
@@ -315,7 +315,7 @@ class WalkForwardEngine:
         """
         Run IS + OOS for every rolling window.
 
-        If re_tune=True (P0.3):
+        If re_tune=True:
           1. Run OFAT sweep on IS window (cached in-memory).
           2. Pick best config by E[R].
           3. Apply that config to OOS window.
@@ -389,7 +389,7 @@ class WalkForwardEngine:
             progress: Callable[[str], None] | None = None,
     ) -> tuple[SweepPoint, SweepPoint, dict]:
         """
-        P0.3: Run OFAT sweep on IS, pick best config, apply to OOS.
+        Run OFAT sweep on IS, pick best config, apply to OOS.
 
         Returns (is_point, oos_point, tuned_params_dict).
         The IS point is the sweep baseline (un-tuned config on IS).

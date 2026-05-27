@@ -2,9 +2,9 @@
 Next-earnings-date wrapper over the shared earnings-history fetcher.
 
 Returns the next scheduled earnings date, or None for:
-    • ETFs, indices, crypto, forex (never report earnings)
-    • Equities between cycles (no future date posted)
-    • Network or parser failures
+ • ETFs, indices, crypto, forex (never report earnings)
+ • Equities between cycles (no future date posted)
+ • Network or parser failures
 """
 
 from __future__ import annotations
@@ -45,16 +45,16 @@ def get_next_earnings(
 
     Parameters
     ----------
-    ticker          : Ticker symbol; validated downstream.
-    cache_dir       : Root fundamentals cache directory.
+    ticker : Ticker symbol; validated downstream.
+    cache_dir : Root fundamentals cache directory.
     staleness_hours : Cache freshness threshold in hours.
-    force           : When True, bypass cache and always re-fetch.
-    today           : Override for "today" — used by tests.
+    force : When True, bypass cache and always re-fetch.
+    today : Override for "today" — used by tests.
 
     Returns
     -------
     date | None
-        Next future earnings date, or None when none exists or the fetch failed.
+    Next future earnings date, or None when none exists or the fetch failed.
     """
     history = get_earnings_history(
         ticker=ticker,

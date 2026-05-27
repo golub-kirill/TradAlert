@@ -18,6 +18,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from core.paths import PRICES_LIVE_DIR
 
 import yfinance as yf
 
@@ -25,7 +26,7 @@ from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR: Path = Path("data/prices_live")
+DEFAULT_CACHE_DIR: Path = PRICES_LIVE_DIR
 DEFAULT_STALENESS_MIN: int = 5
 
 

@@ -20,15 +20,27 @@ import yaml
 
 from core.fetchers import yf_fetchOne
 from core.fetchers.yf_fetchOne import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
+from core.paths import CONFIG_DIR, WATCHLIST_YAML, SETTINGS_YAML
 from exceptions import ConfigError
 from persistence.cache import DEFAULT_STALENESS_H, get_or_fetch
 
 logger = logging.getLogger(__name__)
 
+# ── override yfinance session with curl_cffi to avoid bot detection ─────────
+try:
+    from curl_cffi import requests
+    import yfinance as yf
+
+    # Override the default session creator for all new Ticker instances
+    yf.Ticker._session = lambda self: requests.Session(impersonate="chrome")
+    logger.info("curl_cffi session active — Yahoo bot detection bypassed")
+except ImportError:
+    logger.warning("curl_cffi not installed — some TSX tickers may fail with 'no timezone'")
+
 # ── config paths ──────────────────────────────────────────────────────────────
-_CONFIG_DIR = Path("config")
-_WATCHLIST_PATH = _CONFIG_DIR / "watchlist.yaml"
-_SETTINGS_PATH = _CONFIG_DIR / "settings.yaml"
+_CONFIG_DIR = CONFIG_DIR
+_WATCHLIST_PATH = WATCHLIST_YAML
+_SETTINGS_PATH = SETTINGS_YAML
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 _DEFAULT_MAX_WORKERS: int = 8
@@ -213,7 +225,6 @@ def fetch_tier_b(
                     logger.warning("[tier_b] tsx60 resolve failed: %s", exc)
 
     # Deduplicate and exclude tier_a
-    exclude = tier_a
     tickers = sorted(set(all_constituents) - tier_a)
 
     # Also check for explicit exclude list in tier_b
@@ -289,9 +300,17 @@ def _fetch_one(
     """
     Fetch and cache a single ticker. Exceptions propagate to the future.
     """
+    # Create a fresh curl_cffi session for this thread
+    from curl_cffi import requests
+    session = requests.Session(impersonate="chrome")
+
+    # Override the fetcher to include the session
+    from functools import partial
+    fetcher_with_session = partial(fetcher_fn, session=session)
+
     get_or_fetch(
         ticker=ticker,
-        fetcher=fetcher_fn,
+        fetcher=fetcher_with_session,
         cache_dir=cache_dir,
         staleness_hours=staleness_hours,
         force=force,

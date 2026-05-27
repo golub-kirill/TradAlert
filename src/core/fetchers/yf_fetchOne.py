@@ -9,16 +9,18 @@ between this fetch and cache.save() — see cache.get_or_fetch().
 
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
 
 import pandas as pd
 import yfinance as yf
 
+from core.fetchers.symbology import to_yf_symbol
 from core.validators.dataframe_validator import REQUIRED_COLUMNS
 from core.validators.yf_tickerValidator import validate_ticker
 from exceptions import FetchError
 
-DEFAULT_LOOKBACK: int = 5000  # calendar days — ~350 trading days, covers MA200 warmup
+DEFAULT_LOOKBACK: int = 10000  # calendar days — ~350 trading days, covers MA200 warmup
 DEFAULT_INTERVAL: str = "1d"  # daily bars — correct for swing trading
 
 
@@ -29,6 +31,9 @@ def fetch(
         start: str | None = None,
         end: str | None = None,
         interval: str = DEFAULT_INTERVAL,
+        session=None,
+        retries: int = 2,
+        backoff: float = 1.0,
 ) -> pd.DataFrame:
     """
     Download OHLCV for *ticker* and return a partially standardised DataFrame.
@@ -42,6 +47,10 @@ def fetch(
     interval : yfinance interval string. Default "1d" (daily bars).
                Valid values: 1m 2m 5m 15m 30m 60m 90m 1h 1d 5d 1wk 1mo 3mo.
                Note: intraday intervals cannot extend beyond the last 60 days.
+    session  : Optional `curl_cffi.requests.Session` to impersonate a browser.
+               If not provided, uses yfinance's default session.
+    retries  : Number of retry attempts on transient failures.
+    backoff  : Base delay in seconds between retries (exponential).
 
     Returns
     -------
@@ -54,7 +63,8 @@ def fetch(
     Raises
     ------
     FetchError
-        On invalid ticker string or empty yfinance response.
+        On invalid ticker string, empty yfinance response, or persistent
+        download failures (e.g., delisted ticker, network blocks).
     """
     ticker = validate_ticker(ticker)
 
@@ -62,20 +72,52 @@ def fetch(
     start = start or (date.today() - timedelta(days=DEFAULT_LOOKBACK)).isoformat()
     end = end or (date.today() + timedelta(days=1)).isoformat()
 
-    raw = yf.download(
-        ticker,
-        start=start,
-        end=end,
-        interval=interval,
-        auto_adjust=True,
-        repair=True,  # detects and fixes 100x currency unit mixups (CAD/USD)
-        progress=False,
+    last_exception = None
+
+    # Map the internal symbol to Yahoo's form for the network call only
+    # (e.g. ABC.DE.TO -> ABC-DE.TO, BRK.B -> BRK-B). The cache key and all
+    # downstream bookkeeping keep the original ``ticker``. Identity for clean
+    # symbols, so the existing watchlist fetches are unchanged.
+    yf_ticker = to_yf_symbol(ticker)
+
+    for attempt in range(retries + 1):
+        try:
+            # Use Ticker with custom session if available, otherwise fallback to download
+            if session is not None:
+                ticker_obj = yf.Ticker(yf_ticker, session=session)
+            else:
+                # If a global session override exists (yf.Ticker._session), it will be used
+                ticker_obj = yf.Ticker(yf_ticker)
+
+            raw = ticker_obj.history(
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=True,
+                repair=True,
+            )
+
+            if raw.empty:
+                raise FetchError("yfinance returned no data", ticker=ticker)
+
+            return _standardise(raw)
+
+        except Exception as exc:
+            last_exception = exc
+            error_msg = str(exc).lower()
+            # Retry on transient errors (including timezone, rate limit, connection)
+            if any(phrase in error_msg for phrase in
+                   ["timezone", "delisted", "connection", "timeout", "rate limit", "404"]):
+                if attempt < retries:
+                    sleep_s = backoff * (2 ** attempt)
+                    time.sleep(sleep_s)
+                    continue
+            break
+
+    raise FetchError(
+        f"yfinance download failed after {retries + 1} attempts: {last_exception}",
+        ticker=ticker,
     )
-
-    if raw.empty:
-        raise FetchError("yfinance returned no data", ticker=ticker)
-
-    return _standardise(raw)
 
 
 # ── internal ──────────────────────────────────────────────────────────────────

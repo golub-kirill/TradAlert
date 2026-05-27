@@ -8,19 +8,16 @@ functions return safe fallbacks so a DB hiccup never aborts a scan run.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-import mysql.connector
 from mysql.connector import Error as MySQLError
 
 from exceptions import ConfigError
+from persistence.db_conn import connect as _connect
 
 logger = logging.getLogger(__name__)
-
-_DB_OPTIONAL_KEYS = ("DB_USER", "DB_PASSWORD", "DB_NAME")
 
 Side = Literal["long", "short"]
 
@@ -267,19 +264,3 @@ def _row_to_position(r: dict) -> Position:
     )
 
 
-def _connect():
-    """Open a fresh MySQL connection. Raises MySQLError or ConfigError."""
-    missing = [k for k in _DB_OPTIONAL_KEYS if not os.environ.get(k)]
-    if missing:
-        raise ConfigError(
-            ", ".join(missing),
-            reason="DB env var(s) not set — position tracking disabled",
-        )
-    return mysql.connector.connect(
-        host=os.environ.get("DB_HOST", "localhost"),
-        port=int(os.environ.get("DB_PORT", "3306")),
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        database=os.environ["DB_NAME"],
-        connect_timeout=5,
-    )

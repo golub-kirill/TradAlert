@@ -2,10 +2,9 @@
 /.venv/
 /.idea/
 /data/
-__pycache__
-/sentiment.xls
-# Belt-and-braces: log file lives under /data/ which is ignored anyway,
-# but make the intent explicit so a future config change doesn't leak it.
-data/tradealert.log
+/__pycache__/
 *.tmp
 *.corrupt
+/.opencodeignore
+/AGENTS.md
+/TODO.md

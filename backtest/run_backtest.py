@@ -32,6 +32,17 @@ for _p in [str(_ROOT), str(_ROOT / "src")]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# Load secrets.env so DB_* (journaling) and FRED_API_KEY (macro) reach
+# os.environ. This entry point must load it explicitly (as main.py does at
+# import); without it --journal fails with "DB env vars not set" even when
+# config/secrets.env is populated.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_ROOT / "config" / "secrets.env")
+except ImportError:
+    pass
+
 
 def main() -> None:
     args = _parse_args()
@@ -119,13 +130,53 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_concurrent": 6,  # 6 × 5% = 30% aggregate open risk cap (P1.10)
+        "max_concurrent": 6,  # 6 × 5% = 30% aggregate open risk cap
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
         "commission_r": exec_cfg.get("commission_r", 0.005),
         "close_open_at_eod": True,
     }
+
+    # Chronic-loser penalty (--chronic-penalty). We pass the raw config
+    # *dict* through base_port; each sweep worker constructs its own
+    # TickerHealth so per-run ledgers stay isolated. When the flag is off,
+    # the key is absent and PortfolioConfig.ticker_health stays None.
+    if args.chronic_penalty:
+        chronic_cfg = base_cfg.get("chronic_loser_penalty", {}) or {}
+        # Force enabled even if YAML default is False (the CLI flag is the
+        # operator's explicit opt-in).
+        chronic_cfg = {**chronic_cfg, "enabled": True}
+        base_port["chronic_loser_cfg"] = chronic_cfg
+        print(f"  ▸ Chronic-loser penalty: ENABLED  "
+              f"(lookback={chronic_cfg.get('lookback_days', 90)}d, "
+              f"scale={chronic_cfg.get('scale', {2: 0.5, 3: 0.25, 4: 0.0})})")
+
+    # VIX slope gate (--vix-slope-gate). Mutates base_cfg["regime"] directly
+    # because the FilterEngine reads regime.vix_slope_block at signal time.
+    if args.vix_slope_gate:
+        rcfg = base_cfg.setdefault("regime", {})
+        rcfg["vix_slope_block"] = True
+        lookback = int(rcfg.get("vix_slope_lookback_days", 5))
+        print(f"  ▸ VIX slope gate: ENABLED  (lookback={lookback}d, "
+              f"blocks fresh momentum entries when VIX has risen over the window)")
+
+    # Anti-gap entry confirmation (--anti-gap-entry). Mutates base_cfg["signals"]
+    # so FilterEngine picks it up via cfg.get("signals", {}).get(...).
+    if args.anti_gap_entry:
+        scfg = base_cfg.setdefault("signals", {})
+        scfg["require_trigger_bar_up"] = True
+        print(f"  ▸ Anti-gap entry: ENABLED  "
+              f"(blocks T+1 entry when trigger bar closed below its open)")
+
+    # Short trading (--allow-shorts). Mutates base_cfg["signals"] so the
+    # FilterEngine emits short entries in BEAR regimes. Off by default → the
+    # long-only baseline replays bit-identically.
+    if args.allow_shorts:
+        scfg = base_cfg.setdefault("signals", {})
+        scfg["allow_shorts"] = True
+        print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
+              "short entries fire in BEAR regimes)")
 
     engine = SweepEngine(
         universe=uni,
@@ -172,7 +223,7 @@ def main() -> None:
 
         trades = pt.trades
         ec = build_curve(trades) if trades else None
-        rs = [t.r_multiple for t in trades if t.r_multiple is not None]
+        rs = [t.effective_r for t in trades if t.exit_date is not None]
         boots = bootstrap_all(rs) if len(rs) >= 10 else None
         kel = (kelly_fraction(pt.stats.win_rate,
                               pt.stats.avg_winner_r,
@@ -192,7 +243,7 @@ def main() -> None:
                 is_years=3,
                 oos_years=1,
                 step_months=6,
-                re_tune=True,  # P0.3: re-tune per IS window
+                re_tune=True,  # re-tune per IS window
             )
             wf_report = wfe.run(progress=_progress)
 
@@ -291,7 +342,7 @@ def main() -> None:
 
         ec = build_curve(report.baseline.trades)
         attr = attribution_table(report.baseline.trades)
-        rs = [t.r_multiple for t in report.baseline.trades if t.r_multiple is not None]
+        rs = [t.effective_r for t in report.baseline.trades if t.exit_date is not None]
         boots = bootstrap_all(rs) if len(rs) >= 10 else None
         kel = (kelly_fraction(report.baseline.stats.win_rate,
                               report.baseline.stats.avg_winner_r,
@@ -356,8 +407,12 @@ def _quick_portfolio_grid() -> list:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="TradAlert Backtester",
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--sweep", action="store_true")
-    p.add_argument("--quick", action="store_true")
+    p.add_argument("--sweep", action="store_true",
+                   help="Run the full OFAT parameter sweep (one factor at a "
+                        "time over backtest/sweep.py PARAM_GRID).")
+    p.add_argument("--quick", action="store_true",
+                   help="With --sweep: use the reduced grid (fewer values per "
+                        "parameter) for a fast pass.")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
     p.add_argument("--scoring-sweep", action="store_true",
@@ -366,18 +421,50 @@ def _parse_args() -> argparse.Namespace:
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
     p.add_argument("--robustness", action="store_true",
                    help="Perturb each param plus/minus 10pct/20pct and report E[R] sensitivity")
-    p.add_argument("--start", default=None, metavar="YYYY-MM-DD")
-    p.add_argument("--end", default=None, metavar="YYYY-MM-DD")
-    p.add_argument("--tickers", nargs="+", metavar="TICKER")
-    p.add_argument("--earnings-aware", action="store_true")
-    p.add_argument("--workers", type=int, default=1, metavar="N")
-    p.add_argument("--out", default="data/backtest_out", metavar="DIR")
-    p.add_argument("--no-html", action="store_true")
-    p.add_argument("--no-csv", action="store_true")
+    p.add_argument("--start", default=None, metavar="YYYY-MM-DD",
+                   help="First in-window entry date (inclusive). "
+                        "Default: earliest available bar.")
+    p.add_argument("--end", default=None, metavar="YYYY-MM-DD",
+                   help="Last in-window entry date (inclusive). "
+                        "Default: latest available bar.")
+    p.add_argument("--tickers", nargs="+", metavar="TICKER",
+                   help="Restrict the run to these tickers (space-separated). "
+                        "Default: the full watchlist universe.")
+    p.add_argument("--earnings-aware", action="store_true",
+                   help="Reconstruct historical earnings dates and apply the "
+                        "earnings-proximity buffer gate during the replay.")
+    p.add_argument("--workers", type=int, default=1, metavar="N",
+                   help="Parallel worker processes for sweep / walk-forward "
+                        "(1 = sequential).")
+    p.add_argument("--out", default="data/backtest_out", metavar="DIR",
+                   help="Output directory for the HTML report and CSV ledger.")
+    p.add_argument("--no-html", action="store_true",
+                   help="Skip writing the HTML report.")
+    p.add_argument("--no-csv", action="store_true",
+                   help="Skip writing the CSV trade ledger (trades.csv).")
     p.add_argument("--journal", action="store_true",
                    help="Write baseline run + trades to MySQL (requires DB env vars)")
+    p.add_argument("--chronic-penalty", action="store_true",
+                   help="Enable per-ticker chronic-loser size penalty "
+                        "(see config/filters.yaml `chronic_loser_penalty`). "
+                        "Off by default so baseline replays identically.")
+    p.add_argument("--vix-slope-gate", action="store_true",
+                   help="Enable VIX slope gate: block fresh momentum entries "
+                        "when VIX has risen over the configured lookback window "
+                        "(see config/filters.yaml `regime.vix_slope_block`). "
+                        "Off by default so baseline replays identically.")
+    p.add_argument("--anti-gap-entry", action="store_true",
+                   help="Require trigger bar close >= open before queuing the "
+                        "T+1 entry (see config/filters.yaml "
+                        "`signals.require_trigger_bar_up`). Off by default.")
+    p.add_argument("--allow-shorts", action="store_true",
+                   help="Enable short-side entries (Phase 10): sets "
+                        "signals.allow_shorts=true so the engine fires shorts "
+                        "in BEAR regimes. Off by default so the long-only "
+                        "baseline replays identically.")
     p.add_argument("--log", default="WARNING",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                   help="Console log verbosity. Default: WARNING.")
     return p.parse_args()
 
 
@@ -434,7 +521,13 @@ def _journal_baseline(
         print(f"  Journal: run_id={run_id}  {n} trades written to backtest_trades")
 
     except Exception as exc:
-        print(f"  ⚠  Journal skipped — {exc}")
+        # Differentiate "DB not configured" from real errors so the operator
+        # knows whether to fix env vars or schema.
+        msg = str(exc) or type(exc).__name__
+        if "environment variable" in msg or "DB_" in msg:
+            print(f"  ⚠  Journal skipped — DB env vars not set ({msg})")
+        else:
+            print(f"  ⚠  Journal skipped — {msg}")
 
 
 def _die(msg: str) -> None:

@@ -123,4 +123,3 @@ class ConfigError(TradAlertError):
         self.reason = reason
         self.missing_key = dotted
         super().__init__(f"config key {dotted}: {reason}")
-

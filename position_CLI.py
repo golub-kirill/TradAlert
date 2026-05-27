@@ -91,25 +91,30 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="list all positions").set_defaults(func=_cmd_list)
 
     p_open = sub.add_parser("open", help="open a new position")
-    p_open.add_argument("ticker", type=str)
-    p_open.add_argument("price", type=float)
-    # P1-5 FIX: removed "short" until short-trading is implemented end-to-end.
-    # The signal engine treats only side=="long" as held; a short position
-    # would never get an exit signal. Re-add when _signal_exit and the
-    # backtester support shorts.
-    p_open.add_argument("--side", choices=("long",), default="long")
-    p_open.add_argument("--stop", type=float, default=None)
-    p_open.add_argument("--notes", type=str, default="")
+    p_open.add_argument("ticker", type=str, help="Ticker symbol, e.g. AAPL.")
+    p_open.add_argument("price", type=float, help="Entry fill price.")
+    # Phase 10: short side is now wired end-to-end in the signal/exit engine
+    # and backtester; the CLI accepts it so manual short positions can be
+    # tracked. Short orders still require the broker to permit short selling.
+    p_open.add_argument("--side", choices=("long", "short"), default="long",
+                        help="long (buy-then-sell, default) or short "
+                             "(sell-then-cover). Short orders require the broker "
+                             "to permit short selling.")
+    p_open.add_argument("--stop", type=float, default=None,
+                        help="Initial stop-loss price. Optional; omit to open "
+                             "without a recorded stop.")
+    p_open.add_argument("--notes", type=str, default="",
+                        help="Free-text note stored with the position.")
     p_open.set_defaults(func=_cmd_open)
 
     p_close = sub.add_parser("close", help="close an open position")
-    p_close.add_argument("id", type=int)
-    p_close.add_argument("price", type=float)
+    p_close.add_argument("id", type=int, help="Position id (from `list`).")
+    p_close.add_argument("price", type=float, help="Exit fill price.")
     p_close.set_defaults(func=_cmd_close)
 
     p_stop = sub.add_parser("stop", help="update stop on an open position")
-    p_stop.add_argument("id", type=int)
-    p_stop.add_argument("price", type=float)
+    p_stop.add_argument("id", type=int, help="Position id (from `list`).")
+    p_stop.add_argument("price", type=float, help="New stop-loss price.")
     p_stop.set_defaults(func=_cmd_stop)
 
     return parser

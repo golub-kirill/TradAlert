@@ -113,7 +113,7 @@ def _fix_index(df: pd.DataFrame, tag: str, ticker: str) -> pd.DataFrame:
         When the index cannot be converted to a DatetimeIndex.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
-        logger.warning(
+        logger.debug(
             "%sindex is %s, not DatetimeIndex — converting via pd.to_datetime()",
             tag,
             type(df.index).__name__,
@@ -127,7 +127,7 @@ def _fix_index(df: pd.DataFrame, tag: str, ticker: str) -> pd.DataFrame:
             ) from exc
 
     if df.index.tz is not None:
-        logger.warning(
+        logger.debug(
             "%sindex is tz-aware (%s) — stripping timezone",
             tag,
             df.index.tz,
@@ -142,7 +142,7 @@ def _fix_price_dtypes(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     price_cols = ["open", "high", "low", "close"]
     for col in price_cols:
         if df[col].dtype != np.float64:
-            logger.warning(
+            logger.debug(
                 "%s'%s' dtype is %s — casting to float64",
                 tag, col, df[col].dtype,
             )
@@ -155,7 +155,7 @@ def _drop_bad_rows(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     inf_mask = df[REQUIRED_COLUMNS].isin([np.inf, -np.inf])
     if inf_mask.any().any():
         inf_rows = int(inf_mask.any(axis=1).sum())
-        logger.warning(
+        logger.debug(
             "%sfound ±inf in %d row(s) — replacing with NaN before dropping",
             tag, inf_rows,
         )
@@ -164,7 +164,7 @@ def _drop_bad_rows(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     nan_mask = df[REQUIRED_COLUMNS].isna().any(axis=1)
     nan_count = int(nan_mask.sum())
     if nan_count:
-        logger.warning(
+        logger.debug(
             "%sdropping %d row(s) with NaN in required columns",
             tag, nan_count,
         )
@@ -176,7 +176,7 @@ def _drop_bad_rows(df: pd.DataFrame, tag: str) -> pd.DataFrame:
 def _fix_volume_dtype(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     """Cast volume to int64. Must be called after _drop_bad_rows."""
     if df["volume"].dtype != np.int64:
-        logger.warning(
+        logger.debug(
             "%s'volume' dtype is %s — casting to int64",
             tag, df["volume"].dtype,
         )
@@ -216,7 +216,7 @@ def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         bad = df[mask]
         if not bad.empty:
             sample = bad.index[:3].tolist()
-            logger.warning(
+            logger.debug(
                 "%sOHLCV violation '%s' on %d row(s) — dropping; "
                 "first offenders: %s",
                 tag, description, len(bad), sample,

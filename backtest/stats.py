@@ -74,7 +74,7 @@ def compute_stats(trades: Iterable[Trade]) -> Stats:
     if not closed:
         return Stats()
 
-    rs = [t.r_multiple for t in closed]
+    rs = [t.effective_r for t in closed]
     winners = [r for r in rs if r > 0]
     losers = [r for r in rs if r <= 0]
     sum_wins = sum(winners)

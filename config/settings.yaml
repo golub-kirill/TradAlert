@@ -26,14 +26,14 @@ storage: # block: paths + cache freshness + logging
 # Parallel watchlist fetch via ThreadPoolExecutor.
 
 fetcher: # block: concurrency
-  max_workers: 12
+  max_workers: 14
 
 
 # ── MARKET HOURS ──────────────────────────────────────────────────────────────
 # Expected hold horizon for swing entries; surfaced in signal descriptions.
 
 market_hours: # block: trade horizon
-  expected_hold_days_low: 10           # low end of "~N–Md hold" shown in signal description
+  expected_hold_days_low: 1           # low end of "~N–Md hold" shown in signal description
   # code default (scoring.py): 10  |  backtest avg: 10 bars
   expected_hold_days_high: 20          # high end of the range
   # code default (scoring.py): 15  |
@@ -44,7 +44,7 @@ market_hours: # block: trade horizon
 
 scanner: # block: scoring + alerting
 
-  min_score_to_alert: 50                # entries below this score are watch_only (sweep: 55 → +0.191 R)
+  min_score_to_alert: 70                # entries below this score are watch_only
 
   # ── ENTRY WEIGHTS ──────────────────────────────────────────────────────────
   # Weighted-averaged in scoring._weighted_average(); units are arbitrary,
@@ -53,7 +53,7 @@ scanner: # block: scoring + alerting
   weights: # block: long-entry sub-score weights
     trend_up: 3                # close > MA50 > MA200 stack alignment
     ma50_slope: 2                # MA50 % change over last 20 bars
-    ma200_slope: 2                # MA200 % change over last 20 bars (Phase 3 — Minervini's #10; sweep: 2 → +0.191 R)
+    ma200_slope: 2                # MA200 % change over last 20 bars
     volume_spike: 2                # today_vol / 20d avg
     rsi_healthy: 2                # RSI proximity to ideal trend-confirm centre
     breakout_20d: 3                # close vs prior 20-bar high
@@ -62,9 +62,9 @@ scanner: # block: scoring + alerting
     relative_strength: 2                # ticker vs SPY over 20d + 60d
     weekly_trend: 2                # weekly close > 10w SMA + rising
     bb_zscore: 2                # Bollinger Z-score positioning; signal-type-aware
-    near_52w_high: 2                # proximity to trailing 252-bar high (Phase 1 — Minervini #9)
-    far_from_52w_low: 2                # advance above trailing 252-bar low (Phase 1 — Minervini #8)
-    rp_percentile: 3                # cross-sectional RP rank (Phase 2 — Minervini #1)
+    near_52w_high: 2                # proximity to trailing 252-bar high
+    far_from_52w_low: 2                # advance above trailing 252-bar low
+    rp_percentile: 3                # cross-sectional RP rank
 
   # ── EXIT WEIGHTS ──────────────────────────────────────────────────────────
   # Same mechanic as weights; used only when direction == "exit_long".
@@ -109,7 +109,6 @@ scanner: # block: scoring + alerting
   # ── Chart settings  ──────────────────────────────────────────────
   chart: # block: chart rendering options
     signal_history: true                # render historical signal markers on charts
-    scorecard_panel: true               # render Minervini-style scorecard panel
 
 
 # ── MACRO DATA LAYER ──────────────────────────────────────────────
@@ -142,9 +141,9 @@ macro: # block: macro data configuration
   # ── BoC Valet series ───────────────────────────────────────────────────────
   boc_series:
     - V39079                            # BoC overnight rate target
-    - V39055                            # GoC 2-year bond yield
-    - V39056                            # GoC 5-year bond yield
-    - V39057                            # GoC 10-year bond yield
+    - BD.CDN.2YR.DQ.YLD                 # GoC 2-year benchmark bond yield (was V39055, retired)
+    - BD.CDN.5YR.DQ.YLD                 # GoC 5-year benchmark bond yield (was V39056, retired)
+    - BD.CDN.10YR.DQ.YLD                # GoC 10-year benchmark bond yield (was V39057, retired)
 
   # ── yfinance macro tickers ─────────────────────────────────────────────────
   yf_series:

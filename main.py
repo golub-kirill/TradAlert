@@ -13,7 +13,6 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -23,7 +22,7 @@ from dotenv import load_dotenv
 # ── path bootstrap ────────────────────────────────────────────────────────────
 # Ensure src/ is on the Python path so this script is runnable from the CLI
 # (python main.py) as well as from within the IDE with src/ as a source root.
-# Mirrors the same pattern used in position_CLI.py (CODE-06 in TODO).
+# Mirrors the same pattern used in position_CLI.py.
 _SRC = Path(__file__).parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -35,6 +34,7 @@ from persistence.cache import load as cache_load  # noqa: E402
 from core.indicators.chart import chart  # noqa: E402
 from persistence.db import save_scan_run, save_scan_results  # noqa: E402
 from core.filter_engine import FilterEngine, ScanResult, SignalResult  # noqa: E402
+from core.types import TickerResult  # noqa: E402
 from core.fetchers.fetcher import FetchSummary, fetch_watchlist, fetch_tier_b  # noqa: E402
 from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
 from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
@@ -43,20 +43,25 @@ from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
 from core.scoring import SignalScorer  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
+from core.fetchers.http import mask_api_keys_filter  # noqa: E402
 
-# Phase 2/5/6/8/9 imports (fail-open — modules exist but data may not)
+# (fail-open — modules exist but data may not)
 try:
     from core.fetchers.macro import fetch_all_macro_series  # noqa: E402
-    from core.macro import classify_macro_state, MacroState  # noqa: E402
+    from core.macro import classify_macro_state  # noqa: E402
     from core.macro.calendar import get_calendar_events  # noqa: E402
     from core.indicators.rp_rank import build_rp_rank_table  # noqa: E402
     from core.indicators.chart_signal_history import collect_signal_history  # noqa: E402
 
+    # Kept intentionally: graceful-import guard for optional Phase 6/8/9
+    # modules (macro / calendar / rp_rank / signal_history). A partial or
+    # stripped install degrades to long-only core instead of crashing at
+    # import; the four consult sites below fall back when this is False.
     _PHASE_MODULES_AVAILABLE = True
 except ImportError:
     _PHASE_MODULES_AVAILABLE = False
 
-# Phase 7 behavioral fetcher (fail-open)
+# behavioral fetcher (fail-open)
 try:
     from core.fetchers.behavioral import fetch_all_behavioral  # noqa: E402
 
@@ -77,26 +82,6 @@ _MIN_ROWS: int = 20
 _REGIME_INDICES: list[str] = ["SPY", "QQQ"]  # tradeable, scanned
 _VIX_SYMBOL: str = "^VIX"  # context-only
 _CONTEXT_ONLY: set[str] = {_VIX_SYMBOL}
-
-
-# ── result type ───────────────────────────────────────────────────────────────
-
-@dataclass
-class TickerResult:
-    """
-    Per-ticker stage outcomes for one pipeline run.
-
-    Attributes
-    ----------
-    ticker : Symbol.
-    scan   : ScanResult; always present.
-    signal : SignalResult, or None when scan failed or signal was skipped.
-    error  : Non-empty when an unexpected exception occurred.
-    """
-    ticker: str
-    scan: ScanResult
-    signal: SignalResult | None = None
-    error: str = ""
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -136,12 +121,20 @@ def main() -> None:
     except Exception as exc:
         logger.warning("[tier_b] fetch failed — proceeding without: %s", exc)
 
-    # ── 2 – 6. context → enrich → scan → signal → score ─────────────────────
+    # ── context → enrich → scan → signal → score ─────────────────────
     # Parse filters.yaml once; pass the dict to both the engine and the scorer
     # so the file is not read and parsed a second time inside FilterEngine.__init__.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
-    # Phase 5/6: Fetch macro series once (market-wide, reused across tickers)
+    # Phase 10.5: --allow-shorts flips the master switch on. We only mutate
+    # when the flag is set, so an unflagged run leaves filters.yaml untouched
+    # (allow_shorts defaults false there) and the long-only baseline replays
+    # bit-identically.
+    if args.allow_shorts:
+        filters_cfg.setdefault("signals", {})["allow_shorts"] = True
+        logger.info("[shorts] --allow-shorts enabled (signals.allow_shorts=true)")
+
+    # Fetch macro series once (market-wide, reused across tickers)
     macro_series = {}
     macro_state = None
     if _PHASE_MODULES_AVAILABLE and settings.get("macro", {}).get("enabled", True):
@@ -151,10 +144,11 @@ def main() -> None:
                 macro_state = classify_macro_state(macro_series, settings=settings)
                 logger.info("[macro] risk_on=%.2f confidence=%.0f%%",
                             macro_state.risk_on_score, macro_state.confidence * 100)
-        except Exception as exc:
-            logger.warning("[macro] classification failed — proceeding without: %s", exc)
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning("[macro] classification failed — proceeding without: %s",
+                           exc, exc_info=True)
 
-    # Phase 7/8: Fetch behavioral data once (market-wide, reused across tickers)
+    # Fetch behavioral data once (market-wide, reused across tickers)
     behavioral_data = {}
     behavioral_state = None
     if _BEHAVIORAL_AVAILABLE and settings.get("behavioral", {}).get("enabled", True):
@@ -167,16 +161,18 @@ def main() -> None:
                 logger.info("[behavioral] score=%.2f confidence=%.0f%%",
                             behavioral_state.behavioral_score,
                             behavioral_state.confidence * 100)
-        except Exception as exc:
-            logger.warning("[behavioral] classification failed — proceeding without: %s", exc)
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning("[behavioral] classification failed — proceeding without: %s",
+                           exc, exc_info=True)
 
-    # Phase 8: Wire calendar events into engine (in-memory only)
+    # Wire calendar events into engine (in-memory only)
     if _PHASE_MODULES_AVAILABLE:
         try:
             cal_events = get_calendar_events()
             # Extend engine._stop_dates with calendar events
             # (done after engine construction below)
-        except Exception:
+        except (ImportError, OSError, ValueError, RuntimeError) as exc:
+            logger.debug("[calendar] get_calendar_events failed (skipping): %s", exc)
             cal_events = []
     else:
         cal_events = []
@@ -185,7 +181,7 @@ def main() -> None:
 
     # Inject calendar events into engine's stop_dates index
     if cal_events:
-        import hashlib  # P1-8 FIX: deterministic IDs (hash() is per-run salt-randomized)
+        import hashlib
         for evt in cal_events:
             date_str = evt.date.isoformat()
             if date_str not in engine._stop_dates:
@@ -199,7 +195,7 @@ def main() -> None:
 
     scorer = SignalScorer(settings=settings, filters_cfg=filters_cfg)
 
-    # Phase 2: Build RP rank table (cross-sectional, computed once)
+    # Build RP rank table (cross-sectional, computed once)
     rp_ranks = {}
     if _PHASE_MODULES_AVAILABLE:
         try:
@@ -214,13 +210,13 @@ def main() -> None:
                     continue
                 try:
                     rp_universe[t] = cache_load(t)
-                except Exception:
-                    pass
+                except (FileNotFoundError, OSError, ValueError) as exc:
+                    logger.debug("[rp_rank] cache_load skipped for %s: %s", t, exc)
             if rp_universe:
                 rp_ranks = build_rp_rank_table(rp_universe)
                 logger.info("[rp_rank] built table for %d tickers", len(rp_ranks))
-        except Exception as exc:
-            logger.warning("[rp_rank] rank table build failed: %s", exc)
+        except (OSError, ValueError, KeyError, AttributeError) as exc:
+            logger.warning("[rp_rank] rank table build failed: %s", exc, exc_info=True)
 
     results = _run_pipeline(
         fetch_summary.succeeded, engine, scorer,
@@ -237,7 +233,7 @@ def main() -> None:
     # ── 8. report ─────────────────────────────────────────────────────────────
     _print_report(fetch_summary, results, total_seconds=elapsed)
 
-    # ── 9. P1.9: alpha-decay watch ────────────────────────────────────────────
+    # ── 9. alpha-decay watch ────────────────────────────────────────────
     _print_alpha_decay_watch()
 
 
@@ -276,9 +272,9 @@ def _run_pipeline(
     tickers          : Symbols successfully fetched (FetchSummary.succeeded).
     engine           : Shared FilterEngine instance.
     scorer           : Shared SignalScorer instance.
-    macro_state      : MacroState for regime size multiplier (Phase 6).
-    behavioral_state : BehavioralState for regime size multiplier (Phase 8).
-    rp_ranks         : Ticker → RP percentile rank [0, 99] (Phase 2).
+    macro_state      : MacroState for regime size multiplier.
+    behavioral_state : BehavioralState for regime size multiplier.
+    rp_ranks         : Ticker → RP percentile rank [0, 99].
 
     Returns
     -------
@@ -454,7 +450,7 @@ def _run_pipeline(
             )
             # Chart only for fire signals (score ≥ threshold, not watch-only)
             if not signal.watch_only:
-                # Phase 9: Collect historical signals for chart overlay
+                # Collect historical signals for chart overlay
                 hist_signals = []
                 if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
                                                                                                  False):
@@ -467,7 +463,7 @@ def _run_pipeline(
                     except Exception as exc:
                         logger.debug("[%s] signal history collection failed: %s", ticker, exc)
 
-                # Phase 9: Extract RP rank for scorecard
+                # Extract RP rank for scorecard
                 ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
 
                 chart(
@@ -615,6 +611,14 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Bypass cache staleness check and re-fetch all tickers.",
     )
+    parser.add_argument(
+        "--allow-shorts",
+        action="store_true",
+        default=False,
+        help="Enable short-side entries (Phase 10). Overrides "
+             "signals.allow_shorts in filters.yaml to true. Default off "
+             "keeps the long-only baseline replay-stable.",
+    )
     return parser.parse_args()
 
 
@@ -654,6 +658,11 @@ def _setup_logging(settings: dict) -> None:
     file_h = logging.FileHandler(_LOG_FILE, encoding="utf-8")
     file_h.setFormatter(formatter)
 
+    # Defensive: mask anything resembling an API key in formatted log output.
+    _mask = mask_api_keys_filter()
+    console.addFilter(_mask)
+    file_h.addFilter(_mask)
+
     root = logging.getLogger()
     root.setLevel(level)
     root.addHandler(console)
@@ -672,13 +681,34 @@ def _print_report(
 
     scan_passed = [r for r in results if r.scan.passed]
     scan_blocked = [r for r in results if not r.scan.passed and not r.error]
-    signals = [r for r in results if r.signal and r.signal.passed]
-    entries = [r for r in signals if r.signal.direction == "long"]
-    exits = [r for r in signals if r.signal.direction == "exit_long"]
-    fire_entries = [r for r in entries if not r.signal.watch_only]
-    watch_entries = [r for r in entries if r.signal.watch_only]
-    fire_exits = [r for r in exits if not r.signal.watch_only]
-    watch_exits = [r for r in exits if r.signal.watch_only]
+    # The ``r.signal is not None`` guard in each comprehension below is
+    # redundant at runtime (the initial filter already excludes None) but
+    # required by the type checker so subsequent ``.attribute`` accesses
+    # narrow correctly. Without it PyCharm flagged 16 None-deref warnings
+    # in this block — see TODO.md ``main.py None-deref guards``.
+    signals = [r for r in results if r.signal is not None and r.signal.passed]
+    entries = [r for r in signals
+               if r.signal is not None and r.signal.direction == "long"]
+    exits = [r for r in signals
+             if r.signal is not None and r.signal.direction == "exit_long"]
+    # Phase 10.5: short-side counterparts. Empty unless --allow-shorts fired
+    # short entries / exit_short covers, so the baseline summary is unchanged.
+    short_entries = [r for r in signals
+                     if r.signal is not None and r.signal.direction == "short"]
+    short_exits = [r for r in signals
+                   if r.signal is not None and r.signal.direction == "exit_short"]
+    fire_entries = [r for r in entries
+                    if r.signal is not None and not r.signal.watch_only]
+    watch_entries = [r for r in entries
+                     if r.signal is not None and r.signal.watch_only]
+    fire_exits = [r for r in exits
+                  if r.signal is not None and not r.signal.watch_only]
+    watch_exits = [r for r in exits
+                   if r.signal is not None and r.signal.watch_only]
+    fire_short_entries = [r for r in short_entries
+                          if r.signal is not None and not r.signal.watch_only]
+    fire_short_exits = [r for r in short_exits
+                        if r.signal is not None and not r.signal.watch_only]
     errors = [r for r in results if r.error]
 
     divider = "─" * 72
@@ -706,6 +736,7 @@ def _print_report(
         logger.info("ENTRIES  %d alert(s)", len(fire_entries))
         for r in fire_entries:
             s = r.signal
+            assert s is not None  # filtered by fire_entries comprehension
             logger.info(
                 "  ▲ %-10s  %-15s  score=%s  stop=%-10.4f  target=%-10.4f"
                 "  R:R≥%.1f  %s / %s",
@@ -722,6 +753,7 @@ def _print_report(
         logger.info("  — WATCH (score below threshold) —")
         for r in watch_entries:
             s = r.signal
+            assert s is not None  # filtered by watch_entries comprehension
             logger.info(
                 "  ~ %-10s  %-15s  score=%s  stop=%-10.4f  %s / %s",
                 r.ticker, s.signal_type,
@@ -731,13 +763,33 @@ def _print_report(
             for line in s.description.splitlines():
                 logger.info("    %s", line)
 
+    # ── short entries (Phase 10.5) ──────────────────────────────────────────
+    # Only rendered when short signals exist, so a long-only (baseline) run
+    # produces byte-identical summary output.
+    if fire_short_entries:
+        logger.info(divider)
+        logger.info("SHORTS   %d entry alert(s)", len(fire_short_entries))
+        for r in fire_short_entries:
+            s = r.signal
+            assert s is not None  # filtered by fire_short_entries comprehension
+            logger.info(
+                "  ▼ %-10s  %-15s  score=%s  stop=%-10.4f  target=%-10.4f"
+                "  R:R≥%.1f  %s / %s",
+                r.ticker, s.signal_type,
+                _score_label(s), s.stop_price, s.target_price,
+                s.min_rr, s.market_regime, s.ticker_trend,
+            )
+            for line in s.description.splitlines():
+                logger.info("    %s", line)
+
     # ── exits ─────────────────────────────────────────────────────────────────
-    if fire_exits or watch_exits:
+    if fire_exits or watch_exits or fire_short_exits:
         logger.info(divider)
     if fire_exits:
         logger.info("EXITS    %d alert(s) — held longs", len(fire_exits))
         for r in fire_exits:
             s = r.signal
+            assert s is not None  # filtered by fire_exits comprehension
             logger.info(
                 "  ✕ %-10s  %-15s  score=%s  %s / %s  —  %s",
                 r.ticker, s.signal_type,
@@ -750,11 +802,26 @@ def _print_report(
         logger.info("  — WATCH exits (score below threshold) —")
         for r in watch_exits:
             s = r.signal
+            assert s is not None  # filtered by watch_exits comprehension
             logger.info(
                 "  ~ %-10s  %-15s  score=%s  %s / %s  —  %s",
                 r.ticker, s.signal_type,
                 _score_label(s), s.market_regime, s.ticker_trend, s.reason,
             )
+
+    if fire_short_exits:
+        logger.info("COVERS   %d cover alert(s) for held shorts",
+                    len(fire_short_exits))
+        for r in fire_short_exits:
+            s = r.signal
+            assert s is not None  # filtered by fire_short_exits comprehension
+            logger.info(
+                "  ✓ %-10s  %-15s  score=%s  %s / %s  —  %s",
+                r.ticker, s.signal_type,
+                _score_label(s), s.market_regime, s.ticker_trend, s.reason,
+            )
+            for line in s.description.splitlines():
+                logger.info("    %s", line)
 
     if errors:
         logger.info(divider)
@@ -772,7 +839,7 @@ def _score_label(signal: SignalResult) -> str:
 
 
 def _print_alpha_decay_watch() -> None:
-    """P1.9: Compute and display 6-month rolling E[R] from backtest trade CSV."""
+    """Compute and display 6-month rolling E[R] from backtest trade CSV."""
     logger = logging.getLogger(__name__)
     try:
         import csv

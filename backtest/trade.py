@@ -27,8 +27,7 @@ class Trade:
     ticker         : Symbol.
     signal_type    : 'momentum' | 'mean_reversion'. Recorded from
                      SignalResult.signal_type at entry time.
-    direction      : 'long'. Short backtesting is not implemented in
-                     phase 8.
+    direction      : 'long' or 'short'. Both supported as of phase 10.
     entry_date     : T+1 — the bar the order actually filled.
     entry_price    : T+1 open.
     initial_stop   : Stop level set at T close. Frozen for the trade's life.
@@ -65,10 +64,15 @@ class Trade:
     ticker_trend: str = ""
     entry_score: float = 0.0
     entry_score_components: dict[str, float] = field(default_factory=dict)
-    # P0-6 FIX: portfolio-level size multiplier from macro/behavioral regime.
+    # Portfolio-level size multiplier from macro/behavioral regime.
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.
     size_mult: float = 1.0
+    # Phase 10 v2: annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
+    # 0.0 (default) = no borrow drag, so longs and pre-v2 runs are unchanged.
+    # Set at entry from signals.borrow.*; folded into effective_r as a
+    # per-trade R drag proportional to bars_held (see borrow_drag_r).
+    borrow_annual_rate: float = 0.0
 
     # ── helpers ────────────────────────────────────────────────────────────
 
@@ -81,31 +85,75 @@ class Trade:
         return self.is_closed and self.r_multiple > 0
 
     @property
+    def _sign(self) -> int:
+        """+1 for longs, -1 for shorts. Defaults to +1 for legacy data
+        where ``direction`` was never populated."""
+        return -1 if self.direction == "short" else 1
+
+    @property
     def risk_per_share(self) -> float:
         """
-        Entry-to-stop distance in price units. Zero or negative means the
-        T+1 open already filled at/through the stop — r_multiple cannot be
-        meaningfully computed.
+        Always-positive entry-to-stop distance in price units.
+
+        For longs the stop is below entry → ``entry - stop`` is positive.
+        For shorts the stop is above entry → ``stop - entry`` is positive.
+        Zero or negative means the T+1 open already filled at/through the
+        stop — r_multiple cannot be meaningfully computed.
         """
-        return self.entry_price - self.initial_stop
+        return self._sign * (self.entry_price - self.initial_stop)
+
+    def borrow_drag_r(self) -> float:
+        """Stock-borrow cost for a held short, expressed in R units.
+
+        Borrow accrues on the short notional (~entry price per share) per
+        day held. Converting to R divides by the per-share risk:
+
+            fee_per_share_per_day = entry_price × (annual_rate / 252)
+            drag_R = fee_per_share_per_day × bars_held / risk_per_share
+
+        252 (trading days/yr) keeps the unit consistent with ``bars_held``
+        (trading bars). Returns 0.0 for longs, a non-positive rate, an
+        open trade, or non-positive risk. v1 uses a single rate; a real
+        per-symbol borrow source is a follow-on (see TODO).
+        """
+        if (self.direction != "short" or self.borrow_annual_rate <= 0
+                or not self.is_closed):
+            return 0.0
+        risk = self.risk_per_share
+        if risk <= 0:
+            return 0.0
+        daily_fee = self.entry_price * (self.borrow_annual_rate / 252.0)
+        return daily_fee * max(self.bars_held, 0) / risk
 
     @property
     def effective_r(self) -> float:
-        """R-multiple scaled by position-size multiplier (portfolio bookkeeping)."""
-        return self.r_multiple * self.size_mult
+        """R-multiple scaled by position-size multiplier, net of borrow cost.
+
+        ``borrow_drag_r()`` is 0.0 for longs and when ``borrow_annual_rate``
+        is unset, so this is identical to ``r_multiple × size_mult`` for the
+        long-only baseline."""
+        return self.r_multiple * self.size_mult - self.borrow_drag_r()
 
     def compute_r(self) -> float:
         """
-        R-multiple for the trade.
+        R-multiple for the trade. Sign convention makes profitable
+        shorts (exit < entry) report positive R, just like profitable
+        longs (exit > entry).
 
         Returns 0.0 when the trade is open or risk is non-positive (the
         T+1 open already gapped past the stop). The closure path in the
         backtester always populates exit_price first, so this is safe to
         call as the last step of close_trade().
+
+        Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
+        the stop and the target, the backtester records the STOP fill (the
+        worse outcome). So compute_r can return a loss even on a bar that
+        also touched the target — a deliberate conservative convention,
+        mirrored for shorts via the sign helper.
         """
         if not self.is_closed or self.exit_price is None:
             return 0.0
         risk = self.risk_per_share
         if risk <= 0:
             return 0.0
-        return (self.exit_price - self.entry_price) / risk
+        return self._sign * (self.exit_price - self.entry_price) / risk

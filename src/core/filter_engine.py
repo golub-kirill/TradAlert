@@ -22,6 +22,7 @@ import yaml
 from pandas import Series
 
 from exceptions import ConfigError, InsufficientDataError
+from core.defaults import DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _type_name(expected: type | tuple[type, ...]) -> str:
 TrendState = Literal["BULL", "BEAR", "CHOP"]
 VolState = Literal["LOW", "NORMAL", "HIGH"]
 TickerTrend = Literal["UPTREND", "DOWNTREND", "CHOP"]
-Direction = Literal["long", "exit_long", "none"]
+Direction = Literal["long", "short", "exit_long", "exit_short", "none"]
 SignalType = Literal["momentum", "mean_reversion", "regime", "none"]
 
 
@@ -73,13 +74,19 @@ class MarketRegime:
 
     Attributes
     ----------
-    trend      : "BULL" | "BEAR" | "CHOP".
-    volatility : "LOW" | "NORMAL" | "HIGH". Defaults to NORMAL when vix_df is None.
-    macro      : Optional MacroState from Phase 6 (default None).
-    behavioral : Optional BehavioralState from Phase 8 (default None).
+    trend       : "BULL" | "BEAR" | "CHOP".
+    volatility  : "LOW" | "NORMAL" | "HIGH". Defaults to NORMAL when vix_df is None.
+    vix_rising  : True when VIX has risen over the slope-lookback window. Set
+                  by ``_market_regime`` from ``regime.vix_slope_lookback_days``
+                  (default 5 bars). Consulted by the entry gate when
+                  ``regime.vix_slope_block`` is enabled — see the Feb 2025
+                  postmortem in TODO.md for motivation.
+    macro       : Optional MacroState from Phase 6 (default None).
+    behavioral  : Optional BehavioralState from Phase 8 (default None).
     """
     trend: TrendState
     volatility: VolState
+    vix_rising: bool = False
     macro: object | None = None
     behavioral: object | None = None
 
@@ -94,8 +101,17 @@ class MarketRegime:
         return self.trend == "BULL" and self.volatility != "HIGH"
 
     @property
+    def allows_shorts(self) -> bool:
+        """True when trend is BEAR and volatility is not HIGH.
+
+        Mirror image of ``allows_longs``. The HIGH-volatility carve-out
+        applies symmetrically — chaotic markets are bad in both directions.
+        """
+        return self.trend == "BEAR" and self.volatility != "HIGH"
+
+    @property
     def size_multiplier(self) -> float:
-        """P0-6: composite position-size multiplier from macro × behavioral.
+        """Composite position-size multiplier from macro × behavioral.
 
         Geometric mean preserves the property that if either axis says
         zero-risk, the composite goes to zero. Missing axes contribute 1.0
@@ -242,7 +258,7 @@ class FilterEngine:
         self._today = today or date.today()
         self._stop_dates = self._build_stop_dates_index()
         self._sector_map = self._load_sector_map()
-        self._quarantine: set[str] = set()  # P1.6: pre-computed quarantine list
+        self._quarantine: set[str] = set()  # pre-computed quarantine list
 
     # ── private — config validation ──────────────────────────────────────────
 
@@ -413,6 +429,7 @@ class FilterEngine:
             vix_df: pd.DataFrame | None = None,
             earnings_date: date | None = None,
             held_long: bool = False,
+            held_short: bool = False,
             regime: MarketRegime | None = None,
     ) -> SignalResult:
         """
@@ -459,7 +476,9 @@ class FilterEngine:
             regime = self._market_regime(market_dfs, vix_df)
 
         result = (
-            self._signal_exit(ticker, df, regime)
+            self._signal_exit_short(ticker, df, regime)
+            if held_short
+            else self._signal_exit(ticker, df, regime)
             if held_long
             else self._signal_entry(ticker, df, regime, earnings_date, market_dfs)
         )
@@ -524,7 +543,7 @@ class FilterEngine:
             if not ok:
                 return self._fail_result(reason, regime, ticker_trend)
 
-        # 4d. P1.6: per-ticker quarantine gate
+        # 4d. per-ticker quarantine gate
         if ticker in self._quarantine:
             return self._fail_result(
                 "ticker quarantined (negative rolling expectancy)",
@@ -539,25 +558,75 @@ class FilterEngine:
         if direction == "none":
             return self._fail_result(why, regime, ticker_trend)
 
-        # 5. R:R sanity (longs only — direction is always "long" here)
+        # 5.0 Phase 10 v2: hard-to-borrow gate (shorts only, opt-in).
+        # Many small caps are HTB / unavailable to borrow; v1 assumed
+        # availability. Symbols listed in ``signals.hard_to_borrow_list``
+        # cannot be shorted. No effect on longs or when the list is absent.
+        if direction == "short":
+            htb = self._cfg.get("signals", {}).get("hard_to_borrow_list", []) or []
+            if ticker in set(htb):
+                return self._fail_result(
+                    f"{ticker} on hard-to-borrow list; short entry blocked",
+                    regime, ticker_trend,
+                )
+
+        # 5a. Anti-gap entry confirmation (opt-in).
+        # Postmortem 2026-05-27 found 11 of 36 stop-outs failed within 3
+        # bars (-12.9R, 26% of all stop damage). All fired on red bars
+        # (close < open). Require trigger-bar close ≥ open before queuing
+        # the T+1 entry. Cheap gate, no cost when off.
+        if self._cfg.get("signals", {}).get("require_trigger_bar_up", False):
+            try:
+                tr_close = float(row["close"])
+                tr_open = float(row["open"])
+            except (KeyError, TypeError, ValueError):
+                tr_close = tr_open = 0.0
+            if tr_close < tr_open:
+                return self._fail_result(
+                    f"trigger bar red (close {tr_close:.2f} < open {tr_open:.2f}); "
+                    "anti-gap gate blocks entry",
+                    regime, ticker_trend,
+                )
+
+        # 6. R:R sanity — branch on direction.
         atr_mult = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
         min_rr = self._cfg["signals"]["stop_loss"]["min_rr"]
+        is_long_dir = (direction == "long")
+        # Phase 10 v2: shorts have a bounded upside (price floor of $0), so
+        # they can warrant a tighter reward ceiling. ``min_rr_short`` lets
+        # the short side demand a different R:R. Absent → falls back to
+        # ``min_rr`` so longs and pre-v2 configs are unchanged.
+        if not is_long_dir:
+            min_rr = self._cfg["signals"]["stop_loss"].get("min_rr_short", min_rr)
         stop_dist = row["atr"] * atr_mult
-        stop_price = row["close"] - stop_dist
-        risk = abs(row["close"] - stop_price)
-        target_price = row["close"] + risk * min_rr
+        if is_long_dir:
+            stop_price = row["close"] - stop_dist
+            target_price = row["close"] + stop_dist * min_rr
+        else:
+            # Short: stop above entry, target below.
+            stop_price = row["close"] + stop_dist
+            target_price = row["close"] - stop_dist * min_rr
 
-        if not self._rr_ok(row["close"], stop_price, min_rr, is_long=True):
+        if not self._rr_ok(row["close"], stop_price, min_rr, is_long=is_long_dir):
             return self._fail_result(
                 f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
-        # P0-6 FIX: stamp the regime composite size_multiplier onto the
-        # SignalResult. Previously hardcoded 1.0 — the macro/behavioral
-        # multiplier was computed but never reached execution.
+        # size_mult_gate: block entries when the composite macro x behavioral
+        # position-size multiplier is below the configured floor. Default off
+        # (enabled=false) so the long-only baseline replays bit-identically.
+        smg = self._cfg.get("signals", {}).get("size_mult_gate", {})
+        if smg.get("enabled", False):
+            min_mult = float(smg.get("min", DEFAULTS.get("filters.signals.size_mult_gate.min")))
+            if regime.size_multiplier < min_mult:
+                return self._fail_result(
+                    f"size_mult {regime.size_multiplier:.2f} < gate min {min_mult:.2f}",
+                    regime, ticker_trend,
+                )
+
         return SignalResult(
             passed=True,
-            direction="long",
+            direction=direction,
             signal_type=signal_type,
             stop_price=round(stop_price, 4),
             target_price=round(target_price, 4),
@@ -663,30 +732,39 @@ class FilterEngine:
 
         # ── volatility ───────────────────────────────────────────────────────
         volatility: VolState
+        vix_rising = False
         if vix_df is not None and not vix_df.empty:
             vix_close = float(vix_df["close"].iloc[-1])
-            vix_low = rcfg.get("vix_low", 20)
-            vix_high = rcfg.get("vix_high", 25)
+            vix_low = rcfg.get("vix_low", DEFAULTS.get("filters.regime.vix_low"))
+            vix_high = rcfg.get("vix_high", DEFAULTS.get("filters.regime.vix_high"))
             if vix_close < vix_low:
                 volatility = "LOW"
             elif vix_close > vix_high:
                 volatility = "HIGH"
             else:
                 volatility = "NORMAL"
+
+            # ── slope ──────────────────────────────────────────────────────
+            # Compare today's VIX close to the close ``lookback`` bars ago.
+            # Set unconditionally; the entry gate decides whether to act on
+            # it via ``regime.vix_slope_block``. Defensive on short series.
+            lookback = int(rcfg.get("vix_slope_lookback_days", 5))
+            if len(vix_df) > lookback:
+                vix_ref = float(vix_df["close"].iloc[-1 - lookback])
+                vix_rising = vix_close > vix_ref
         else:
             volatility = "NORMAL"
 
         # ── trend ────────────────────────────────────────────────────────────
         if market_dfs is None or not market_dfs:
-            # P0-3 FIX: previously defaulted to BULL, which silently allowed
-            # long entries when SPY/QQQ caches were missing. Default to CHOP
-            # so allows_longs == False and the entry gate blocks until data
-            # is restored. Logged at ERROR so it's visible in ops.
+            # Default to CHOP (not BULL) when SPY/QQQ caches are missing, so
+            # allows_longs == False and the entry gate blocks new entries
+            # until data is restored. Logged at ERROR so it's visible in ops.
             logger.error(
                 "market_regime: no index data supplied — defaulting to CHOP "
-                "to block new entries (was BULL fail-open)."
+                "to block new entries."
             )
-            return MarketRegime(trend="CHOP", volatility=volatility)
+            return MarketRegime(trend="CHOP", volatility=volatility, vix_rising=vix_rising)
 
         symbols = rcfg.get("index_symbols", ["SPY", "QQQ"])
         require_all = rcfg.get("require_all_indices", True)
@@ -698,7 +776,7 @@ class FilterEngine:
             idx_df = market_dfs.get(sym)
             if idx_df is None or len(idx_df) < ma_period:
                 continue
-            ma = idx_df["close"].rolling(ma_period, min_periods=ma_period).mean().iloc[-1]
+            ma = idx_df["close"].iloc[-ma_period:].mean()
             last = idx_df["close"].iloc[-1]
             if last > ma:
                 votes_up += 1
@@ -733,12 +811,12 @@ class FilterEngine:
                     idx_df = market_dfs.get(sym)
                     if idx_df is None or len(idx_df) < ma_short:
                         continue
-                    ma_s = idx_df["close"].rolling(ma_short, min_periods=ma_short).mean().iloc[-1]
+                    ma_s = idx_df["close"].iloc[-ma_short:].mean()
                     if idx_df["close"].iloc[-1] < ma_s:
                         trend = "CHOP"
                         break
 
-        return MarketRegime(trend=trend, volatility=volatility)
+        return MarketRegime(trend=trend, volatility=volatility, vix_rising=vix_rising)
 
     # ── private — ticker trend classifier ────────────────────────────────────
 
@@ -751,6 +829,18 @@ class FilterEngine:
         """
         fast = self._cfg["trend"]["ma_fast"]
         slow = self._cfg["trend"]["ma_slow"]
+        # Fast path: read precomputed MA columns (attach_indicators uses the
+        # same 50/200 periods the engine configures) — O(1) vs O(n) per bar.
+        if "ma_fast" in df.columns and "ma_slow" in df.columns and len(df) >= slow:
+            mf = df["ma_fast"].iloc[-1]
+            ms = df["ma_slow"].iloc[-1]
+            if pd.notna(mf) and pd.notna(ms):
+                last = float(df["close"].iloc[-1])
+                if last > float(mf) > float(ms):
+                    return "UPTREND"
+                if last < float(mf) < float(ms):
+                    return "DOWNTREND"
+                return "CHOP"
         return self._classify_trend(df["close"], fast, slow)
 
     def _sector_strength_ok(self, ticker, market_dfs):
@@ -763,7 +853,7 @@ class FilterEngine:
         if len(sector_df) < self._cfg["trend"]["ma_fast"]:
             return True, ""
         fast = self._cfg["trend"]["ma_fast"]
-        ma = sector_df["close"].rolling(fast, min_periods=fast).mean().iloc[-1]
+        ma = sector_df["close"].iloc[-fast:].mean()
         last = sector_df["close"].iloc[-1]
         if last < ma:
             return False, f"sector {sector} below MA({fast}) ({last:.2f} < {ma:.2f})"
@@ -788,15 +878,46 @@ class FilterEngine:
 
         Returns ``(direction, signal_type, reason)``.
         """
+        # ── VIX slope gate (opt-in) ──────────────────────────────────────
+        # When ``regime.vix_slope_block`` is enabled and VIX has risen over
+        # the configured lookback window, block fresh momentum entries even
+        # if the absolute VIX level is still in the LOW or NORMAL band.
+        # Targets the Feb 2025 cluster: 8 momentum trades / 1 win on bars
+        # where VIX was below vix_low but climbing into a tariff scare.
+        # Mean-reversion entries are NOT gated — they often want falling
+        # markets / chop and have their own ATR-relative gates.
+        rcfg = self._cfg.get("regime", {})
+        slope_block = bool(rcfg.get("vix_slope_block", False))
+
+        scfg_top = self._cfg.get("signals", {})
+        allow_shorts = bool(scfg_top.get("allow_shorts", False))
+
         if regime.allows_longs:
             if ticker_trend == "UPTREND" and self._momentum_long(row, prev, df):
+                if slope_block and regime.vix_rising:
+                    return (
+                        "none", "none",
+                        "VIX slope-up: momentum blocked even at low VIX",
+                    )
                 return "long", "momentum", "momentum long"
             if ticker_trend != "DOWNTREND" and self._mean_rev_long(row, prev):
                 return "long", "mean_reversion", "mean-reversion long"
 
+        # Short-side entries (Phase 10.2). Only fire when the master
+        # ``signals.allow_shorts`` switch is on AND the regime is
+        # BEAR + not HIGH-vol. The ticker-trend gate mirrors the long
+        # case: DOWNTREND for momentum shorts, !UPTREND for MR shorts.
+        if allow_shorts and regime.allows_shorts:
+            if ticker_trend == "DOWNTREND" and self._momentum_short_entry(row, prev, df):
+                return "short", "momentum", "momentum short"
+            if ticker_trend != "UPTREND" and self._mean_rev_short_entry(row, prev):
+                return "short", "mean_reversion", "mean-reversion short"
+
         # No entry — explain why for the log
         if regime.volatility == "HIGH":
             return "none", "none", f"regime {regime.label}: high volatility blocks entries"
+        if not regime.allows_longs and not (allow_shorts and regime.allows_shorts):
+            return "none", "none", f"regime {regime.label}: trend blocks entries (longs and shorts)"
         if not regime.allows_longs:
             return "none", "none", f"regime {regime.label}: trend blocks long entries"
         return "none", "none", "no entry conditions met"
@@ -837,6 +958,64 @@ class FilterEngine:
         threshold = cfg["min_hist_delta_atr"] * row["atr"]
         return row["rsi"] < cfg["rsi_max"] and delta >= threshold
 
+    def _momentum_short_entry(self, row: Series, prev: Series,
+                              df: pd.DataFrame) -> bool:
+        """
+        Phase 10.2 — Fresh short-entry trigger on downside momentum.
+
+        Mirror image of ``_momentum_long``:
+          - ``macd_hist`` is currently negative
+          - histogram has fallen by at least ``min_hist_delta_atr * atr``
+            since the previous bar
+          - RSI is in the configured ``short_entry`` band
+          - a recent zero-cross DOWN happened within ``max_bars_since_cross``
+
+        Config block: ``signals.momentum.short_entry``.
+        """
+        cfg = self._cfg["signals"]["momentum"].get("short_entry")
+        if not cfg:
+            return False
+        max_bars = cfg.get("max_bars_since_cross", 3)
+
+        if row["macd_hist"] >= 0:
+            return False
+        if not (cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]):
+            return False
+
+        delta = row["macd_hist"] - prev["macd_hist"]
+        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        # Symmetric to _momentum_long's ``delta < threshold``: short
+        # requires ``delta <= -threshold`` (strong downward histogram move).
+        if delta > -threshold:
+            return False
+
+        hist = df["macd_hist"].iloc[-(max_bars + 3):]
+        for i in range(len(hist) - 2, -1, -1):
+            # Recent zero-cross DOWN: hist[i] >= 0 > hist[i+1]
+            if hist.iloc[i] >= 0 > hist.iloc[i + 1]:
+                bars_ago = len(hist) - 2 - i
+                return bars_ago <= max_bars
+
+        return False
+
+    def _mean_rev_short_entry(self, row: Series, prev: Series) -> bool:
+        """
+        Phase 10.2 — Counter-trend short entry into a rally (mirror of mean_rev_long).
+
+        Fires when ``RSI > signals.mean_reversion.short_entry.rsi_min`` AND
+        histogram delta <= -``min_hist_delta_atr * atr`` (downtick).
+
+        Note: ``mean_reversion.short`` is the *held-long exit* trigger and
+        is NOT what we want here. The new ``mean_reversion.short_entry``
+        block is the fresh-short trigger.
+        """
+        cfg = self._cfg["signals"]["mean_reversion"].get("short_entry")
+        if not cfg:
+            return False
+        delta = row["macd_hist"] - prev["macd_hist"]
+        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        return row["rsi"] > cfg["rsi_min"] and delta <= -threshold
+
     # ── private — exit triggers ──────────────────────────────────────────────
 
     def _momentum_fade_exit(self, row: Series, prev: Series) -> bool:
@@ -873,6 +1052,108 @@ class FilterEngine:
         threshold = cfg["min_hist_delta_atr"] * row["atr"]
         return row["rsi"] > cfg["rsi_min"] and delta <= -threshold
 
+    def _momentum_pop_exit(self, row: Series, prev: Series) -> bool:
+        """
+        Phase 10.2 — Held-short exit on momentum pop.
+
+        Mirror of ``_momentum_fade_exit``. Fires when:
+          - ``prev["macd_hist"] < 0 < row["macd_hist"]``  (zero-cross UP)
+          - RSI in the ``momentum.long`` band
+          - histogram delta >= ``min_hist_delta_atr * atr``
+
+        Re-uses the ``momentum.long`` config block — the trigger that
+        would *open* a long is exactly what closes a short.
+        """
+        cfg = self._cfg["signals"]["momentum"]["long"]
+        delta = row["macd_hist"] - prev["macd_hist"]
+        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        return (
+                prev["macd_hist"] < 0 < row["macd_hist"]
+                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
+                and delta >= threshold
+        )
+
+    def _mean_rev_short_cover(self, row: Series, prev: Series) -> bool:
+        """
+        Phase 10.2 — Held-short exit on extreme oversold + upturn.
+
+        Mirror of ``_mean_rev_exit``. Fires when RSI < ``mean_reversion.long.rsi_max``
+        AND histogram delta >= ``min_hist_delta_atr * atr`` (signal turning up).
+        Re-uses the ``mean_reversion.long`` config block for the same
+        reason as ``_momentum_pop_exit``.
+        """
+        cfg = self._cfg["signals"]["mean_reversion"]["long"]
+        delta = row["macd_hist"] - prev["macd_hist"]
+        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        return row["rsi"] < cfg["rsi_max"] and delta >= threshold
+
+    def _signal_exit_short(
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            regime: MarketRegime,
+    ) -> SignalResult:
+        """
+        Held-short exit detection (Phase 10.2).
+
+        Mirror of ``_signal_exit``. Fires on:
+          1. regime flip — any non-BEAR trend
+          2. momentum pop — macd_hist crosses up + RSI confirms
+          3. oversold cover — RSI low + macd_hist turning up
+
+        Each is toggleable via ``signals.exits.<name>`` with new short
+        keys defaulting to True.
+        """
+        self._min_rows_guard(df, ticker)
+        ticker_trend = self._ticker_trend(df)
+        row = df.iloc[-1]
+        prev = df.iloc[-2]
+        exit_cfg = self._cfg.get("signals", {}).get("exits", {})
+
+        if exit_cfg.get("regime_flip_short", True) and regime.trend != "BEAR":
+            return self._exit_short_result(
+                "regime",
+                f"regime flipped to {regime.trend} — cover held short",
+                regime, ticker_trend,
+            )
+        if exit_cfg.get("short_cover_pop", True) and self._momentum_pop_exit(row, prev):
+            return self._exit_short_result(
+                "momentum",
+                "momentum pop — cover held short",
+                regime, ticker_trend,
+            )
+        if exit_cfg.get("short_cover_oversold", True) and self._mean_rev_short_cover(row, prev):
+            return self._exit_short_result(
+                "mean_reversion",
+                "oversold + momentum up — cover held short",
+                regime, ticker_trend,
+            )
+
+        return self._fail_result(
+            "no exit condition met (hold short)", regime, ticker_trend,
+        )
+
+    def _exit_short_result(
+            self,
+            signal_type: SignalType,
+            reason: str,
+            regime: MarketRegime,
+            ticker_trend: TickerTrend,
+    ) -> SignalResult:
+        """Build an ``exit_short`` SignalResult. Mirror of ``_exit_result``."""
+        return SignalResult(
+            passed=True,
+            direction="exit_short",
+            signal_type=signal_type,
+            stop_price=0.0,
+            target_price=0.0,
+            min_rr=0.0,
+            size_mult=1.0,
+            market_regime=regime.label,
+            ticker_trend=ticker_trend,
+            reason=reason,
+        )
+
     # ── private — shared helpers ─────────────────────────────────────────────
 
     def _min_rows_guard(self, df: pd.DataFrame, ticker: str) -> None:
@@ -901,8 +1182,8 @@ class FilterEngine:
         """
         if len(close) < slow:
             return "CHOP"
-        ma_fast = close.rolling(fast, min_periods=fast).mean().iloc[-1]
-        ma_slow = close.rolling(slow, min_periods=slow).mean().iloc[-1]
+        ma_fast = close.iloc[-fast:].mean()
+        ma_slow = close.iloc[-slow:].mean()
         last = close.iloc[-1]
         if last > ma_fast > ma_slow:
             return "UPTREND"
@@ -1030,11 +1311,6 @@ class FilterEngine:
 
     # ---- dict-based constructor (used by sweep engine) ----------------------
 
-    def set_quarantine(self, tickers: set[str]) -> None:
-        """P1.6: Set pre-computed quarantine list. Quarantined tickers are
-        suppressed in _signal_entry() regardless of signal quality."""
-        self._quarantine = tickers
-
     @classmethod
     def from_dict(cls, cfg: dict, today: date | None = None) -> "FilterEngine":
         """
@@ -1056,5 +1332,5 @@ class FilterEngine:
         obj._validate_config()
         obj._stop_dates = obj._build_stop_dates_index()
         obj._sector_map = obj._load_sector_map()
-        obj._quarantine = set()  # P1.6
+        obj._quarantine = set()
         return obj

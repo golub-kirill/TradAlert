@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+.git/
+.idea/
+**/__pycache__/**
+**/*.pyc
+**/data/**
+.git/
+.idea/

@@ -120,17 +120,25 @@ def print_bootstrap(bootstrap, bankroll=50_000):
               f"CI [{r.lower:>+7.3f} … {r.upper:>+7.3f}]  SE={r.std_error:.3f}{sig}")
 
 
-def print_kelly(kelly, streaks=None, bankroll=50_000):
+def print_kelly(kelly, streaks=None, bankroll=50_000, fixed_risk_pct=0.01):
+    """Print Kelly fractions + the operator-defined fixed-risk recommendation.
+
+    ``fixed_risk_pct`` (default 0.01 = 1% of bankroll) is the *recommended*
+    per-trade risk. Kelly fractions remain for reference but practical sizing
+    should follow the 1% fixed-risk line.
+    """
     sep = "─" * 60
     print()
-    print(_c("  Position Sizing  (Kelly Criterion)", _BOLD + _CYAN))
+    print(_c("  Position Sizing", _BOLD + _CYAN))
     print(f"  {sep}")
-    print(f"  Full Kelly fraction  : {kelly.full_kelly:.1%}  "
-          f"(${kelly.dollar_risk(bankroll, 'full'):>7,.0f} risk @ ${bankroll:,.0f})")
-    print(f"  Half Kelly (rec.)    : {kelly.half_kelly:.1%}  "
-          f"(${kelly.dollar_risk(bankroll, 'half'):>7,.0f} risk @ ${bankroll:,.0f})")
-    print(f"  Quarter Kelly        : {kelly.quarter_kelly:.1%}  "
-          f"(${kelly.dollar_risk(bankroll, 'quarter'):>7,.0f} risk @ ${bankroll:,.0f})")
+    print(f"  Fixed risk (rec.)    : {fixed_risk_pct:.1%}  "
+          f"(${bankroll * fixed_risk_pct:>7,.0f} risk @ ${bankroll:,.0f})")
+    print(f"  Full Kelly (ref.)    : {kelly.full_kelly:.1%}  "
+          f"(${kelly.dollar_risk(bankroll, 'full'):>7,.0f} — usually too aggressive)")
+    print(f"  Half Kelly (ref.)    : {kelly.half_kelly:.1%}  "
+          f"(${kelly.dollar_risk(bankroll, 'half'):>7,.0f})")
+    print(f"  Quarter Kelly (ref.) : {kelly.quarter_kelly:.1%}  "
+          f"(${kelly.dollar_risk(bankroll, 'quarter'):>7,.0f})")
     print(f"  Edge per trade       : {kelly.edge_per_trade:+.3f} R")
     print(f"  Breakeven win rate   : {kelly.breakeven_wr:.1%}")
     if streaks:
@@ -142,20 +150,24 @@ def print_kelly(kelly, streaks=None, bankroll=50_000):
         print(f"  P(≥5 losses in 100 trades, binomial): {p:.1%}")
 
 
-def print_mc_drawdown(mc_dd, bankroll=50_000):
+def print_mc_drawdown(mc_dd, bankroll=50_000, risk_per_r_pct=0.01):
+    """Default risk_per_r_pct=0.01 means 1 R risks 1% of the bankroll."""
     sep = "─" * 60
+    risk_pct = risk_per_r_pct * 100
     print()
     print(_c("  Monte-Carlo Drawdown  (trade-order shuffling)", _BOLD + _CYAN))
     print(f"  {sep}")
-    print(f"  Realized max DD      : see baseline above")
+    print("  Realized max DD      : see baseline above")
     print(f"  MC p50 (median)      : {mc_dd.p50:.2f} R")
     print(f"  MC p95 (size for)    : {mc_dd.p95:.2f} R  "
-          f"(${mc_dd.p95 * bankroll * 0.05:,.0f} @ ${bankroll:,.0f}, 5% risk/R)")
+          f"(${mc_dd.p95 * bankroll * risk_per_r_pct:,.0f} @ "
+          f"${bankroll:,.0f}, {risk_pct:.1f}% risk/R)")
     print(f"  MC p5 (best case)    : {mc_dd.p5:.2f} R")
     print(f"  Simulations          : {mc_dd.n_sim:,}")
-    p95_pct = mc_dd.p95 * 5  # approximate % DD at 5% risk per R
+    p95_pct = mc_dd.p95 * risk_pct  # % drawdown at configured risk per R
     flag = _c("  ✓ within 25% limit", _GREEN) if p95_pct < 25 else _c("  ✗ exceeds 25% — reduce size", _RED)
-    print(f"  p95 as % account     : ~{p95_pct:.0f}%  (at 5% risk/R)  {flag}")
+    print(f"  p95 as % account     : ~{p95_pct:.0f}%  "
+          f"(at {risk_pct:.1f}% risk/R)  {flag}")
 
 
 def print_attribution(attribution):
@@ -242,14 +254,15 @@ def print_robustness(results, base_er):
         for p in pts_sorted:
             sign = "+" if p["pct"] > 0 else ""
             er_c = _er_color(p["er"], base_er)
+            er_str = f"{p['er']:+.3f}"
             print(f"    {sign}{p['pct']:.0%} → {p['value']:>10g}  "
-                  f"E[R]={_c(f'{p["er"]:+.3f}', er_c)}  "
+                  f"E[R]={_c(er_str, er_c)}  "
                   f"({p['trades']}t)")
         print(f"    range={er_range:.3f}  drop_from_base={drop_pct:.0f}%")
         print()
 
     if flagged:
-        print(_c(f"  ⚠ FLAGGED — E[R] drops >50% from baseline:", _BOLD + _RED))
+        print(_c("  ⚠ FLAGGED — E[R] drops >50% from baseline:", _BOLD + _RED))
         for param, pct in flagged:
             print(f"    {param}: {pct:.0f}% drop")
     else:
@@ -315,16 +328,25 @@ def _print_param_table(pts, base_er, base_wr, base_tr):
 # ── HTML ──────────────────────────────────────────────────────────────────────
 
 def save_html(report, path, equity=None, wf_report=None,
-              bootstrap=None, kelly=None, attribution=None, streaks=None):
+              bootstrap=None, kelly=None, attribution=None, streaks=None,
+              bankroll: float = 50_000, fixed_risk_pct: float = 0.01):
+    """Render and write the HTML backtest report.
+
+    ``bankroll`` and ``fixed_risk_pct`` mirror ``print_kelly`` defaults so
+    the HTML Position Sizing block cannot disagree with the terminal one.
+    """
     path = Path(path)
-    html = _build_html(report, equity, wf_report, bootstrap, kelly, attribution, streaks)
+    html = _build_html(report, equity, wf_report, bootstrap, kelly,
+                       attribution, streaks,
+                       bankroll=bankroll, fixed_risk_pct=fixed_risk_pct)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
     return path
 
 
 def _build_html(report, equity=None, wf_report=None,
-                bootstrap=None, kelly=None, attribution=None, streaks=None):
+                bootstrap=None, kelly=None, attribution=None, streaks=None,
+                bankroll: float = 50_000, fixed_risk_pct: float = 0.01):
     base = report.baseline
     bs = base.stats
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -458,10 +480,38 @@ def _build_html(report, equity=None, wf_report=None,
         eq_dates = [str(d.date()) for d in equity.equity.index]
         eq_vals = [round(float(v), 4) for v in equity.equity.values]
         dd_vals = [round(float(v), 4) for v in equity.drawdown.values]
-        mo_labels = [str(k) for k in equity.monthly.index]
-        mo_vals = [round(float(v), 4) for v in equity.monthly.values]
-        mo_colors = ["rgba(34,197,94,0.8)" if v >= 0 else "rgba(239,68,68,0.8)"
-                     for v in equity.monthly.values]
+        # Backfill zero-trade months so silent regimes (e.g. the
+        # Mar-May 2025 tariff-scare gap from the 2026-05-27 postmortem)
+        # show up explicitly in the bar chart. Renders zero months grey
+        # so they're distinguishable from real flat months.
+        _mo_keys = list(equity.monthly.index)
+        if _mo_keys:
+            _first = _mo_keys[0]
+            _last = _mo_keys[-1]
+            _fy, _fm = int(_first[:4]), int(_first[5:7])
+            _ly, _lm = int(_last[:4]), int(_last[5:7])
+            _all_keys: list[str] = []
+            _y, _m = _fy, _fm
+            while (_y, _m) <= (_ly, _lm):
+                _all_keys.append(f"{_y:04d}-{_m:02d}")
+                _m += 1
+                if _m > 12:
+                    _y += 1;
+                    _m = 1
+        else:
+            _all_keys = []
+        _existing = {str(k): float(v) for k, v in equity.monthly.items()}
+        mo_labels = _all_keys
+        mo_vals = [round(_existing.get(k, 0.0), 4) for k in _all_keys]
+
+        def _mo_color(k: str, v: float) -> str:
+            if k not in _existing:  # zero-trade month
+                return "rgba(100,116,139,0.45)"  # var(--muted)-ish grey
+            if v >= 0:
+                return "rgba(34,197,94,0.8)"
+            return "rgba(239,68,68,0.8)"
+
+        mo_colors = [_mo_color(k, v) for k, v in zip(mo_labels, mo_vals)]
         sharpe_s = f"{equity.sharpe:.2f}" if equity.sharpe == equity.sharpe else "N/A"
         sortino_s = f"{equity.sortino:.2f}" if equity.sortino == equity.sortino else "N/A"
         calmar_s = f"{equity.calmar:.2f}" if equity.calmar != float("inf") and equity.calmar == equity.calmar else "inf"
@@ -527,29 +577,163 @@ def _build_html(report, equity=None, wf_report=None,
   <tbody>{rows}</tbody>
 </table></div>"""
 
-    # kelly section
+    # ── Position Sizing & Kelly ───────────────────────────────────────────
+    # Operator-facing layout: 1% fixed-risk recommendation leads; Kelly is
+    # demoted to a labelled reference table. Mirrors print_kelly() so the
+    # HTML report cannot disagree with the terminal report.
     kelly_html = ""
     if kelly:
-        streak_rows = ""
+        risk_dollars = bankroll * fixed_risk_pct
+        expected_dollars = kelly.edge_per_trade * risk_dollars
+
+        # 1. Recommended sizing — the only block the operator should act on.
+        recommend_table = (
+            '<p class="subhead">Recommended sizing — fixed risk</p>'
+            '<table>'
+            '<thead><tr><th>Metric</th><th>Value</th></tr></thead>'
+            '<tbody>'
+            f'<tr class="recommend"><td>Risk per trade</td>'
+            f'<td class="num">${risk_dollars:,.0f}  '
+            f'({fixed_risk_pct:.1%} of ${bankroll:,.0f})</td></tr>'
+            f'<tr><td>Expected per trade</td>'
+            f'<td class="num">{expected_dollars:+,.0f}$  '
+            f'(edge {kelly.edge_per_trade:+.3f} R)</td></tr>'
+            f'<tr><td>Max one-trade loss (1R)</td>'
+            f'<td class="num">-${risk_dollars:,.0f}</td></tr>'
+            '</tbody></table>'
+        )
+
+        # 2. Edge reality check — does the strategy have meaningful slack?
+        buffer_pp = (kelly.win_rate - kelly.breakeven_wr) * 100.0
+        buffer_class = "win" if buffer_pp >= 5.0 else ("lose" if buffer_pp < 0 else "warn")
+        edge_table = (
+            '<p class="subhead">Edge reality check</p>'
+            '<table>'
+            '<thead><tr><th>Metric</th><th>Value</th></tr></thead>'
+            '<tbody>'
+            f'<tr><td>Win rate observed</td>'
+            f'<td class="num">{kelly.win_rate:.1%}</td></tr>'
+            f'<tr><td>Breakeven WR needed</td>'
+            f'<td class="num">{kelly.breakeven_wr:.1%}</td></tr>'
+            f'<tr class="{buffer_class}"><td>Buffer above breakeven</td>'
+            f'<td class="num">{buffer_pp:+.1f} pp</td></tr>'
+            f'<tr><td>Edge per trade</td>'
+            f'<td class="num">{kelly.edge_per_trade:+.4f} R</td></tr>'
+            f'<tr><td>Avg winner / Avg loser</td>'
+            f'<td class="num">{kelly.avg_win_r:+.2f}R / -{kelly.avg_loss_r:.2f}R</td></tr>'
+            '</tbody></table>'
+        )
+
+        # 3. Loss-streak stress test — sets expectations for run-of-losses pain.
+        streak_table = ""
         if streaks:
-            streak_rows = (
-                f"<tr><td>Max losing streak</td><td class='num'>{streaks.max_consecutive}</td></tr>"
-                f"<tr><td>Avg losing streak</td><td class='num'>{streaks.avg_consecutive:.1f}</td></tr>"
-                f"<tr><td>P(streak≥5)</td><td class='num'>{streaks.p_streak_5:.1%}</td></tr>"
+            streak_dollars = streaks.max_consecutive * risk_dollars
+            binom_5_100 = streaks.binomial_at_least(kelly.win_rate, 5, 100)
+            streak_table = (
+                '<p class="subhead">Loss-streak stress test</p>'
+                '<table>'
+                '<thead><tr><th>Metric</th><th>Value</th></tr></thead>'
+                '<tbody>'
+                f'<tr><td>Max observed streak</td>'
+                f'<td class="num">{streaks.max_consecutive} trades '
+                f'(-${streak_dollars:,.0f})</td></tr>'
+                f'<tr><td>Avg losing streak</td>'
+                f'<td class="num">{streaks.avg_consecutive:.1f} trades</td></tr>'
+                f'<tr><td>P(streak ≥ 5) — empirical</td>'
+                f'<td class="num">{streaks.p_streak_5:.1%}</td></tr>'
+                f'<tr><td>P(≥5 losses in 100 trades) — binomial</td>'
+                f'<td class="num">{binom_5_100:.1%}</td></tr>'
+                '</tbody></table>'
             )
-        kelly_html = f"""
-<h2>Position Sizing &amp; Kelly</h2>
-<div class="top5-wrapper"><table>
-  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-  <tbody>
-    <tr><td>Full Kelly</td><td class="num">{kelly.full_kelly:.2%}</td></tr>
-    <tr class="win"><td>Half Kelly (recommended)</td><td class="num">{kelly.half_kelly:.2%}</td></tr>
-    <tr><td>Quarter Kelly</td><td class="num">{kelly.quarter_kelly:.2%}</td></tr>
-    <tr><td>Edge per trade</td><td class="num">{kelly.edge_per_trade:+.4f} R</td></tr>
-    <tr><td>Breakeven WR</td><td class="num">{kelly.breakeven_wr:.1%}</td></tr>
-    {streak_rows}
-  </tbody>
-</table></div>"""
+
+        # 4. Kelly reference — labelled DO NOT USE, kept for analysis only.
+        kelly_full_dollars = kelly.dollar_risk(bankroll, "full")
+        kelly_half_dollars = kelly.dollar_risk(bankroll, "half")
+        kelly_qtr_dollars = kelly.dollar_risk(bankroll, "quarter")
+        kelly_reference = (
+            '<p class="subhead">Kelly reference — do <strong>not</strong> size with these</p>'
+            '<p class="note warn">⚠  Kelly is mathematically optimal under stationary '
+            'edge; real markets are not stationary. Use the 1% fixed-risk line above; '
+            'keep Kelly fractions only for sanity-checking that the recommended size '
+            'is well below Full Kelly.</p>'
+            '<table>'
+            '<thead><tr><th>Fraction</th><th>Of bankroll</th>'
+            '<th>Dollars at risk</th></tr></thead>'
+            '<tbody>'
+            f'<tr class="warn"><td>Full Kelly</td>'
+            f'<td class="num">{kelly.full_kelly:.1%}</td>'
+            f'<td class="num">${kelly_full_dollars:,.0f}</td></tr>'
+            f'<tr class="warn"><td>Half Kelly</td>'
+            f'<td class="num">{kelly.half_kelly:.1%}</td>'
+            f'<td class="num">${kelly_half_dollars:,.0f}</td></tr>'
+            f'<tr class="warn"><td>Quarter Kelly</td>'
+            f'<td class="num">{kelly.quarter_kelly:.1%}</td>'
+            f'<td class="num">${kelly_qtr_dollars:,.0f}</td></tr>'
+            '</tbody></table>'
+        )
+
+        kelly_html = (
+            '<h2>Position Sizing &amp; Kelly</h2>'
+            '<div class="top5-wrapper">'
+            f'{recommend_table}'
+            f'{edge_table}'
+            f'{streak_table}'
+            f'{kelly_reference}'
+            '</div>'
+        )
+
+    # ── Stop-out latency histogram ────────────────────────────────────────
+    # Postmortem 2026-05-27 found 11 of 36 stops failed within 3 bars
+    # (-12.9R, 26 % of stop damage). Surfacing the distribution here makes
+    # bad-entry latency visible at a glance for future runs.
+    stop_latency_html = ""
+    try:
+        _stop_trades = [
+            t for t in getattr(report.baseline, "trades", [])
+            if getattr(t, "exit_reason", "") == "stop"
+        ]
+    except (AttributeError, TypeError):
+        _stop_trades = []
+    if _stop_trades:
+        _buckets = [(0, 2, "0-2"), (3, 5, "3-5"),
+                    (6, 10, "6-10"), (11, 20, "11-20"),
+                    (21, 10_000, "21+")]
+        _total_n = len(_stop_trades)
+        _total_r = float(sum(t.effective_r for t in _stop_trades))
+        _rows = []
+        for lo, hi, label in _buckets:
+            _bucket = [
+                t for t in _stop_trades
+                if lo <= int(getattr(t, "bars_held", 0) or 0) <= hi
+            ]
+            n = len(_bucket)
+            if n == 0:
+                continue
+            sumR = float(sum(t.effective_r for t in _bucket))
+            share_n = (n / _total_n) * 100.0
+            share_r = (sumR / _total_r) * 100.0 if _total_r else 0.0
+            row_cls = "lose" if share_r >= 25.0 else ""
+            _rows.append(
+                f'<tr class="{row_cls}">'
+                f'<td>{label} bars</td>'
+                f'<td class="num">{n}</td>'
+                f'<td class="num">{share_n:.0f}%</td>'
+                f'<td class="num">{sumR:+.2f} R</td>'
+                f'<td class="num">{share_r:.0f}%</td>'
+                f'</tr>'
+            )
+        stop_latency_html = (
+            '<h2>Stop-out Latency '
+            f'<span class="group-tag">{_total_n} stops · '
+            f'{_total_r:+.1f} R total</span></h2>'
+            '<div class="top5-wrapper"><table>'
+            '<thead><tr><th>Bars held</th><th>Trades</th><th>Share</th>'
+            '<th>Total R</th><th>R share</th></tr></thead>'
+            f'<tbody>{"".join(_rows)}</tbody></table>'
+            '<p class="note">Rows highlighted red carry ≥25 % of total '
+            'stop damage — anti-gap entry (--anti-gap-entry) targets the '
+            "&quot;0-2 bars&quot; cluster directly.</p></div>"
+        )
 
     # walk-forward section
     wf_html = ""
@@ -642,6 +826,12 @@ tbody td{padding:9px 12px;border-top:1px solid var(--border);}
 tbody tr:hover{background:rgba(99,102,241,0.05);}
 tbody tr.win{border-left:3px solid var(--green);}
 tbody tr.lose{border-left:3px solid var(--red);}
+tbody tr.recommend{background:rgba(34,197,94,0.08);border-left:3px solid var(--green);font-weight:600;}
+tbody tr.warn td:first-child{color:var(--yellow);}
+.note{color:var(--muted);font-size:0.8rem;margin:4px 0 18px 0;font-style:italic;}
+.note.warn{color:var(--yellow);font-style:normal;font-weight:500;}
+.subhead{color:var(--muted);font-size:0.85rem;text-transform:uppercase;letter-spacing:0.07em;
+  margin:14px 0 6px 0;}
 .num{font-variant-numeric:tabular-nums;text-align:right;font-family:monospace;}
 .group-section,.breakdown-section{margin-bottom:32px;}
 .chart-wrapper{background:var(--surface);border:1px solid var(--border);
@@ -680,6 +870,7 @@ tbody tr.lose{border-left:3px solid var(--red);}
 </div>
 
 {equity_html}
+{stop_latency_html}
 {bootstrap_html}
 {kelly_html}
 
