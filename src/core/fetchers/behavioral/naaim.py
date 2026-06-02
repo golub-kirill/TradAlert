@@ -22,7 +22,6 @@ If the website is unreachable, returns the cached data (stale but usable).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -30,6 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.fetchers import cache_meta
 from core.fetchers.http import request_with_retry
 from core.paths import BEHAVIORAL_DIR
 
@@ -53,7 +53,7 @@ def fetch_naaim(
 
     # 1. Load cached history
     cached_df = _load_cached_or_empty(parquet_path)
-    cache_fresh = _cache_fresh(meta_path, staleness_days)
+    cache_fresh = cache_meta.is_fresh(meta_path, staleness_days * 86400)
 
     if not force and cache_fresh and not cached_df.empty:
         logger.debug("[naaim] loaded from cache (%d rows)", len(cached_df))
@@ -78,7 +78,7 @@ def fetch_naaim(
     # 4. Write back
     try:
         updated_df.to_parquet(parquet_path)
-        _write_meta(meta_path)
+        cache_meta.write_meta(meta_path)
         logger.info("[naaim] updated cache (%d rows)", len(updated_df))
     except (OSError, ValueError) as exc:
         logger.warning("[naaim] cache write failed: %s", exc)
@@ -127,27 +127,6 @@ def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp]:
     days_back = (today.weekday() - 2) % 7  # Wednesday = 2
     survey_date = today - timedelta(days=days_back)
     return value, pd.Timestamp(survey_date.date())
-
-
-def _cache_fresh(meta_path: Path, staleness_days: int) -> bool:
-    if not meta_path.exists():
-        return False
-    try:
-        mtime = meta_path.stat().st_mtime
-        age_days = (datetime.now().timestamp() - mtime) / 86400
-        return age_days < staleness_days
-    except (OSError, ValueError) as exc:
-        logger.debug("[naaim] cache freshness check failed: %s", exc)
-        return False
-
-
-def _write_meta(meta_path: Path) -> None:
-    meta = {"fetched_at": datetime.now().isoformat()}
-    try:
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
-    except OSError as exc:
-        logger.debug("[naaim] meta write failed at %s: %s", meta_path, exc)
-
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     if parquet_path.exists():

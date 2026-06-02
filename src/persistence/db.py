@@ -198,10 +198,12 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
     sig = r.signal
     signal_kind = "none"
     if sig and sig.passed:
-        if sig.direction == "long":
-            signal_kind = "entry_long"
-        elif sig.direction == "exit_long":
-            signal_kind = "exit_long"
+        signal_kind = {
+            "long": "entry_long",
+            "short": "entry_short",
+            "exit_long": "exit_long",
+            "exit_short": "exit_short",
+        }.get(sig.direction, "none")
 
     return {
         "run_id": run_id,

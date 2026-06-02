@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
-from core.paths import MACRO_DIR
 
 import pandas as pd
 import requests
 
+from core.fetchers import cache_meta
 from core.fetchers.http import request_with_retry
+from core.paths import MACRO_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def fetch_fred_series(
     parquet_path = series_dir / f"{series_id}.parquet"
     meta_path = series_dir / f"{series_id}.meta.json"
 
-    if not force and _cache_fresh(meta_path, staleness_hours):
+    if not force and cache_meta.is_fresh(meta_path, staleness_hours * 3600):
         try:
             df = pd.read_parquet(parquet_path)
             logger.debug("[fred] %s loaded from cache (%d rows)", series_id, len(df))
@@ -106,7 +106,7 @@ def fetch_fred_series(
 
     try:
         df.to_parquet(parquet_path)
-        _write_meta(meta_path)
+        cache_meta.write_meta(meta_path)
         logger.info("[fred] %s fetched and cached (%d rows)", series_id, len(df))
     except (OSError, ValueError) as exc:
         logger.warning("[fred] cache write failed for %s: %s", series_id, exc, exc_info=True)
@@ -174,27 +174,6 @@ def _get_api_key() -> str | None:
         # Keep settings.yaml read tolerant — fall through to default name.
         logger.debug("[fred] reading settings.yaml failed (%s); using default env name", exc)
     return os.environ.get(env_name)
-
-
-def _cache_fresh(meta_path: Path, staleness_hours: int) -> bool:
-    """Check if the metadata file is within the staleness window."""
-    if not meta_path.exists():
-        return False
-    try:
-        mtime = meta_path.stat().st_mtime
-        age_hours = (datetime.now().timestamp() - mtime) / 3600
-        return age_hours < staleness_hours
-    except (OSError, ValueError) as exc:
-        logger.debug("[fred] cache freshness check failed: %s", exc)
-        return False
-
-
-def _write_meta(meta_path: Path) -> None:
-    """Write a simple JSON metadata file with fetch timestamp."""
-    import json
-    meta = {"fetched_at": datetime.now().isoformat()}
-    meta_path.write_text(json.dumps(meta))
-
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     """Load cached parquet if available, otherwise return empty DataFrame."""

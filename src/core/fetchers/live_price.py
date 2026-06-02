@@ -18,10 +18,11 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from core.paths import PRICES_LIVE_DIR
 
 import yfinance as yf
 
+from core.fetchers.symbology import to_yf_symbol
+from core.paths import PRICES_LIVE_DIR
 from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def get_live_price(
 def _fetch(ticker: str) -> float | None:
     """Query yfinance fast_info for last_price. Return None on any error."""
     try:
-        fi = yf.Ticker(ticker).fast_info
+        fi = yf.Ticker(to_yf_symbol(ticker)).fast_info
         price: float = getattr(fi, "last_price", 0.0)
         if price is not None and price > 0:
             return float(price)

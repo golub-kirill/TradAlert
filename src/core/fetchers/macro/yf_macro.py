@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
+from core.fetchers import cache_meta
 from core.paths import MACRO_DIR
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ def fetch_yf_macro_series(
     parquet_path = series_dir / f"{ticker}.parquet"
     meta_path = series_dir / f"{ticker}.meta.json"
 
-    if not force and _cache_fresh(meta_path, staleness_hours):
+    if not force and cache_meta.is_fresh(meta_path, staleness_hours * 3600):
         try:
             df = pd.read_parquet(parquet_path)
             logger.debug("[yf_macro] %s loaded from cache (%d rows)", ticker, len(df))
@@ -81,31 +82,12 @@ def fetch_yf_macro_series(
 
     try:
         result.to_parquet(parquet_path)
-        _write_meta(meta_path)
+        cache_meta.write_meta(meta_path)
         logger.info("[yf_macro] %s fetched and cached (%d rows)", ticker, len(result))
     except (OSError, ValueError) as exc:
         logger.warning("[yf_macro] cache write failed for %s: %s", ticker, exc, exc_info=True)
 
     return result
-
-
-def _cache_fresh(meta_path: Path, staleness_hours: int) -> bool:
-    if not meta_path.exists():
-        return False
-    try:
-        mtime = meta_path.stat().st_mtime
-        age_hours = (datetime.now().timestamp() - mtime) / 3600
-        return age_hours < staleness_hours
-    except (OSError, ValueError) as exc:
-        logger.debug("[yf_macro] cache freshness check failed: %s", exc)
-        return False
-
-
-def _write_meta(meta_path: Path) -> None:
-    import json
-    meta = {"fetched_at": datetime.now().isoformat()}
-    meta_path.write_text(json.dumps(meta))
-
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     if parquet_path.exists():

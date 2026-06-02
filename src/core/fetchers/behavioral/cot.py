@@ -32,13 +32,12 @@ Failure modes
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
+from core.fetchers import cache_meta
 from core.fetchers.http import request_with_retry
 from core.paths import BEHAVIORAL_DIR
 
@@ -131,7 +130,7 @@ def fetch_cot(
     meta_path = data_dir_p / f"cot_{contract}.meta.json"
 
     # ── 1. fresh-cache short-circuit ─────────────────────────────────────
-    if not force and _cache_fresh(meta_path, staleness_days):
+    if not force and cache_meta.is_fresh(meta_path, staleness_days * 86400):
         try:
             df = pd.read_parquet(parquet_path)
             logger.debug("[cot] %s loaded from cache (%d rows)",
@@ -174,7 +173,7 @@ def fetch_cot(
     # ── 3. cache write ───────────────────────────────────────────────────
     try:
         df.to_parquet(parquet_path)
-        _write_meta(meta_path)
+        cache_meta.write_meta(meta_path)
         logger.info("[cot] %s fetched and cached (%d rows)",
                     contract, len(df))
     except (OSError, ValueError) as exc:
@@ -229,27 +228,6 @@ def _normalise_cot_rows(rows: list[dict]) -> pd.DataFrame:
     df["mm_net"] = df["mm_long"] - df["mm_short"]
 
     return df[["mm_long", "mm_short", "mm_net"]].dropna(subset=["mm_net"])
-
-
-def _cache_fresh(meta_path: Path, staleness_days: int) -> bool:
-    if not meta_path.exists():
-        return False
-    try:
-        mtime = meta_path.stat().st_mtime
-        age_days = (datetime.now().timestamp() - mtime) / 86400
-        return age_days < staleness_days
-    except (OSError, ValueError) as exc:
-        logger.debug("[cot] cache freshness check failed: %s", exc)
-        return False
-
-
-def _write_meta(meta_path: Path) -> None:
-    meta = {"fetched_at": datetime.now().isoformat()}
-    try:
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
-    except OSError as exc:
-        logger.debug("[cot] meta write failed at %s: %s", meta_path, exc)
-
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     if parquet_path.exists():

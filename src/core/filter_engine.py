@@ -21,8 +21,8 @@ import pandas as pd
 import yaml
 from pandas import Series
 
-from exceptions import ConfigError, InsufficientDataError
 from core.defaults import DEFAULTS
+from exceptions import ConfigError, InsufficientDataError
 
 logger = logging.getLogger(__name__)
 
@@ -363,13 +363,23 @@ class FilterEngine:
 
         Raises
         ------
-        InsufficientDataError   When ``len(df) < 20``.
+        InsufficientDataError   When ``len(df) < trend.ma_slow``.
         KeyError                When a required indicator column is missing.
         """
-        if len(df) < 20:
-            raise InsufficientDataError(got=len(df), need=20, ticker=ticker)
+        min_rows = self._cfg["trend"]["ma_slow"]
+        if len(df) < min_rows:
+            raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
 
         row = df.iloc[-1]
+        # NaN guard: warmup bars carry NaN indicators. Without this, gate
+        # comparisons (e.g. ``atr_pct < min``) silently evaluate False and the
+        # ticker passes. The live path is normally pre-guarded by
+        # _indicators_ready, but scan() must be self-defending.
+        if pd.isna(row["close"]) or pd.isna(row["atr"]):
+            return ScanResult(
+                passed=False, reason="indicators in warmup (NaN on last bar)",
+            )
+
         dv20 = float((df["close"] * df["volume"]).tail(20).mean())
 
         # ── capture snapshot now so all exit paths can carry it ───────────────

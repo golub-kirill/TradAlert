@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yfinance as yf
 
+from core.fetchers.symbology import to_yf_symbol
 from core.validators.yf_tickerValidator import validate_ticker
 from persistence.json_cache import (
     DEFAULT_CACHE_DIR,
@@ -84,7 +85,7 @@ def get_market_cap(
 def _fetch(ticker: str) -> float | None:
     """Query yfinance for market cap. Try ``fast_info`` then ``.info``."""
     try:
-        yf_ticker = yf.Ticker(ticker)
+        yf_ticker = yf.Ticker(to_yf_symbol(ticker))
         with silence_yfinance():
             try:
                 fi = yf_ticker.fast_info

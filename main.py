@@ -323,9 +323,10 @@ def _run_pipeline(
             ))
             continue
 
-        # ── 3. row-count guard ────────────────────────────────────────────────
-        if len(df) < _MIN_ROWS:
-            reason = f"only {len(df)} rows — need {_MIN_ROWS} for scan"
+        # ── 3. row-count guard (matches engine scan()/signal() = trend.ma_slow) ──
+        min_rows = engine._cfg["trend"]["ma_slow"]
+        if len(df) < min_rows:
+            reason = f"only {len(df)} rows — need {min_rows} for scan"
             logger.warning("[%s] skipping — %s", ticker, reason)
             results.append(TickerResult(
                 ticker=ticker,

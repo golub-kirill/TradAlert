@@ -172,17 +172,17 @@ architecture mismatches when moving data between machines).
 
 Loaded by `python-dotenv` at startup.
 
-| Variable         | Required for                         | Notes                                                          |
-|------------------|--------------------------------------|----------------------------------------------------------------|
-| `DB_HOST`        | MySQL journaling, `position_CLI.py`  | Default `localhost`.                                           |
-| `DB_PORT`        | MySQL journaling, `position_CLI.py`  | Default `3306`.                                                |
+| Variable         | Required for                         | Notes                                                                                                  |
+|------------------|--------------------------------------|--------------------------------------------------------------------------------------------------------|
+| `DB_HOST`        | MySQL journaling, `position_CLI.py`  | Default `localhost`.                                                                                   |
+| `DB_PORT`        | MySQL journaling, `position_CLI.py`  | Default `3306`.                                                                                        |
 | `DB_USER`        | MySQL journaling, `position_CLI.py`  |
-| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                |
-| `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                |
-| `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>. |
-| `SEC_USER_AGENT` | `core.fetchers.behavioral.form4`     | **Real contact email** required by SEC fair-access policy.     |
-| `TG_CHAT_ID`     | reserved                             | Telegram sender not wired.                                     |
-| `TG_BOT_TOKEN`   | reserved                             | Same.                                                          |
+| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |
+| `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
+| `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
+| `SEC_USER_AGENT` | reserved                             | Not wired — `form4` uses yfinance, not direct EDGAR yet. For the planned Form 4 XML parser (see TODO). |
+| `TG_CHAT_ID`     | reserved                             | Telegram sender not wired.                                                                             |
+| `TG_BOT_TOKEN`   | reserved                             | Same.                                                                                                  |
 
 ## Configuration files
 

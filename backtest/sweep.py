@@ -784,8 +784,9 @@ class SweepEngine:
                         _settings = _yaml.safe_load(_f)
                     if not is_baseline:
                         _apply_settings_mutation(_settings, param_name, param_value)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[sweep] settings load/mutation failed for %s=%s: %s",
+                                   param_name, param_value, exc)
 
         bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
         result = bt.run_prepped(

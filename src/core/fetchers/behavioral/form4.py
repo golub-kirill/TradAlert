@@ -40,9 +40,12 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from core.paths import BEHAVIORAL_DIR
 
 import pandas as pd
+
+from core.fetchers import cache_meta
+from core.fetchers.symbology import to_yf_symbol
+from core.paths import BEHAVIORAL_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +80,7 @@ def fetch_form4(
     data_dir_p.mkdir(parents=True, exist_ok=True)
     cache_path = data_dir_p / f"{ticker.upper()}.json"
 
-    if not force and _cache_fresh(cache_path, staleness_days):
+    if not force and cache_meta.is_fresh(cache_path, staleness_days * 86400):
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             logger.debug("[form4] %s loaded from cache", ticker)
@@ -88,7 +91,7 @@ def fetch_form4(
 
     try:
         import yfinance as yf
-        tx = yf.Ticker(ticker).insider_transactions
+        tx = yf.Ticker(to_yf_symbol(ticker)).insider_transactions
     except (ImportError, AttributeError, KeyError, ValueError,
             TypeError, OSError) as exc:
         logger.warning("[form4] live fetch failed for %s: %s",
@@ -177,20 +180,6 @@ def _summarise_transactions(tx: pd.DataFrame) -> dict:
         "distinct_insiders_30d": int(distinct_30),
         "cluster_buy_30d": bool(cluster),
     }
-
-
-def _cache_fresh(cache_path: Path, staleness_days: int) -> bool:
-    if not cache_path.exists():
-        return False
-    try:
-        mtime = cache_path.stat().st_mtime
-        age_days = (datetime.now().timestamp() - mtime) / 86400
-        return age_days < staleness_days
-    except (OSError, ValueError) as exc:
-        logger.debug("[form4] freshness check failed for %s: %s",
-                     cache_path, exc)
-        return False
-
 
 def _load_cached_or_default(cache_path: Path) -> dict:
     if cache_path.exists():

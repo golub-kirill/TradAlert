@@ -57,6 +57,7 @@ from core.indicators.indicators import attach_indicators
 from core.scoring import SignalScorer
 from core.ticker_health import TickerHealth
 from core.ticker_store import TickerStore, next_earnings_from
+from exceptions import InsufficientDataError
 
 logger = logging.getLogger(__name__)
 
@@ -560,9 +561,13 @@ class BarReplayBacktester:
                 held_long=held_long,
                 held_short=held_short,
             )
-        except Exception as exc:
-            logger.debug("[%s] engine.signal raised at %s: %s",
+        except InsufficientDataError as exc:
+            logger.debug("[%s] engine.signal insufficient data at %s: %s",
                          ticker, today, exc)
+            return SignalResult(passed=False, reason=f"insufficient data: {exc}")
+        except Exception as exc:
+            logger.warning("[%s] engine.signal raised at %s: %s",
+                           ticker, today, exc)
             return SignalResult(passed=False, reason=f"engine raised: {exc}")
         finally:
             self._engine._today = saved_today
@@ -663,8 +668,11 @@ def call_engine_slice(
             held_short=held_short,
             regime=regime,
         )
+    except InsufficientDataError as exc:
+        logger.debug("[%s] engine.signal insufficient data at %s: %s", ticker, today, exc)
+        return SignalResult(passed=False, reason=f"insufficient data: {exc}")
     except Exception as exc:
-        logger.debug("[%s] engine.signal raised at %s: %s", ticker, today, exc)
+        logger.warning("[%s] engine.signal raised at %s: %s", ticker, today, exc)
         return SignalResult(passed=False, reason=f"engine raised: {exc}")
     finally:
         engine._today = saved

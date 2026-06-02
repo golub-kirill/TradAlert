@@ -19,14 +19,14 @@ overnight-rate series (V39079) is unaffected and still valid.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
-from core.paths import MACRO_DIR
 
 import pandas as pd
 import requests
 
+from core.fetchers import cache_meta
 from core.fetchers.http import request_with_retry
+from core.paths import MACRO_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def fetch_boc_series(
     parquet_path = series_dir / f"{series_id}.parquet"
     meta_path = series_dir / f"{series_id}.meta.json"
 
-    if not force and _cache_fresh(meta_path, staleness_hours):
+    if not force and cache_meta.is_fresh(meta_path, staleness_hours * 3600):
         try:
             df = pd.read_parquet(parquet_path)
             logger.debug("[boc] %s loaded from cache (%d rows)", series_id, len(df))
@@ -117,7 +117,7 @@ def fetch_boc_series(
 
     try:
         df.to_parquet(parquet_path)
-        _write_meta(meta_path)
+        cache_meta.write_meta(meta_path)
         logger.info("[boc] %s fetched and cached (%d rows)", series_id, len(df))
     except (OSError, ValueError) as exc:
         logger.warning("[boc] cache write failed for %s: %s", series_id, exc, exc_info=True)
@@ -155,25 +155,6 @@ def _parse_boc_observations(observations: list[dict], series_id: str) -> pd.Data
     df.index.name = None
     df = df.sort_index()
     return df
-
-
-def _cache_fresh(meta_path: Path, staleness_hours: int) -> bool:
-    if not meta_path.exists():
-        return False
-    try:
-        mtime = meta_path.stat().st_mtime
-        age_hours = (datetime.now().timestamp() - mtime) / 3600
-        return age_hours < staleness_hours
-    except (OSError, ValueError) as exc:
-        logger.debug("[boc] cache freshness check failed: %s", exc)
-        return False
-
-
-def _write_meta(meta_path: Path) -> None:
-    import json
-    meta = {"fetched_at": datetime.now().isoformat()}
-    meta_path.write_text(json.dumps(meta))
-
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     if parquet_path.exists():

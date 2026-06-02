@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from exceptions import ConfigError
+
 if TYPE_CHECKING:
     from core.filter_engine import MarketRegime, SignalResult
     from core.position_manager import Position
@@ -170,6 +172,16 @@ class SignalScorer:
 
         self._entry_weights: dict[str, int] = sc.get("weights", {})
         self._exit_weights: dict[str, int] = sc.get("exit_weights", {})
+
+        # insider_buying / short_interest are backed by placeholder fetchers
+        # (Form 4 text-match, yfinance short %). A non-zero weight must not
+        # silently shape the score until they are validated — fail loudly.
+        for _k in ("insider_buying", "short_interest"):
+            if float(self._entry_weights.get(_k, 0) or 0) > 0:
+                raise ConfigError(
+                    f"scanner.weights.{_k}",
+                    reason="must be 0 until the backing fetcher is validated",
+                )
         self._min_score: int = sc.get("min_score_to_alert", _DEFAULT_MIN_SCORE)
         self._hold_low: int = mh.get("expected_hold_days_low", _DEFAULT_HOLD_LOW)
         self._hold_high: int = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)

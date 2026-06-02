@@ -118,10 +118,10 @@ def classify_behavioral_state(
             try:
                 df = df.loc[:as_of]
             except TypeError as exc:
-                # previously `pass` swallowed this. Result: the
-                # as_of slice was silently skipped, classifier saw the WHOLE
-                # series including future data → look-ahead bias in walk-
-                # forward backtests. Now we treat the axis as missing.
+                # Treat the axis as missing rather than skipping the as_of
+                # slice: a skipped slice would expose the classifier to the
+                # WHOLE series including future data → look-ahead bias in
+                # walk-forward backtests.
                 logger.warning(
                     "behavioral._slice: as_of=%s slice failed on %s — "
                     "treating axis as MISSING (refusing to use full-history "
@@ -354,6 +354,10 @@ def _classify_sentiment(aaii: pd.DataFrame) -> str:
     """
     Classify sentiment from AAII bull-bear spread z-score.
 
+    The z-score uses a trailing 52-week window (not the full series) so the
+    classification reflects the *current* sentiment regime rather than being
+    anchored to the whole history. AAII is weekly, so 52 rows ≈ one year.
+
     > 2σ → EUPHORIA
     < −2σ → PANIC
     < −1σ → FEAR
@@ -363,9 +367,10 @@ def _classify_sentiment(aaii: pd.DataFrame) -> str:
     if len(spread) < 52:
         return "NORMAL"
 
+    window = spread.tail(52)
     latest = float(spread.iloc[-1])
-    mean = float(spread.mean())
-    std = float(spread.std())
+    mean = float(window.mean())
+    std = float(window.std())
 
     if std == 0:
         return "NORMAL"

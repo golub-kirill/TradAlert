@@ -33,6 +33,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+
+from core.fetchers import cache_meta
+from core.fetchers.symbology import to_yf_symbol
 from core.paths import BEHAVIORAL_DIR
 
 logger = logging.getLogger(__name__)
@@ -58,7 +61,7 @@ def fetch_short_interest(
     cache_path = data_dir / f"{ticker.upper()}.json"
 
     # ── 1. fresh-cache short-circuit ─────────────────────────────────────
-    if not force and _cache_fresh(cache_path, staleness_days):
+    if not force and cache_meta.is_fresh(cache_path, staleness_days * 86400):
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             logger.debug("[short_int] %s loaded from cache", ticker)
@@ -71,7 +74,7 @@ def fetch_short_interest(
     # ── 2. live fetch via yfinance ──────────────────────────────────────
     try:
         import yfinance as yf
-        info = yf.Ticker(ticker).info or {}
+        info = yf.Ticker(to_yf_symbol(ticker)).info or {}
         pct = info.get("shortPercentOfFloat")
         # yfinance returns float in [0, 1] or None. Pass through as-is so
         # the scoring layer's ``si_pct = float(si_pct) * 100`` math works.
@@ -102,21 +105,6 @@ def fetch_short_interest(
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-
-def _cache_fresh(cache_path: Path, staleness_days: int) -> bool:
-    """True iff the cache file exists and was written within the window."""
-    if not cache_path.exists():
-        return False
-    try:
-        mtime = cache_path.stat().st_mtime
-        age_days = (datetime.now().timestamp() - mtime) / 86400
-        return age_days < staleness_days
-    except (OSError, ValueError) as exc:
-        logger.debug("[short_int] freshness check failed for %s: %s",
-                     cache_path, exc)
-        return False
-
 
 def _load_cached_or_default(cache_path: Path) -> dict:
     """Load the cached JSON, or return the neutral fallback dict."""

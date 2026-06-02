@@ -22,7 +22,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-
+from core.fetchers.symbology import to_yf_symbol
 from core.validators.yf_tickerValidator import validate_ticker
 from persistence.json_cache import (
     DEFAULT_CACHE_DIR,
@@ -95,7 +95,7 @@ def fetch_earnings_dates_from_yfinance(ticker: str) -> list[date]:
     """
     try:
         import yfinance as yf
-        yf_ticker = yf.Ticker(ticker)
+        yf_ticker = yf.Ticker(to_yf_symbol(ticker))
         with silence_yfinance():
             df = yf_ticker.earnings_dates
         if df is None or df.empty:
