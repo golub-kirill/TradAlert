@@ -205,6 +205,13 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
+    # Portfolio open-risk budget (--max-open-risk). Default 6.0 (set in base_port
+    # above); the flag overrides it for tuning this one-number risk lever.
+    if args.max_open_risk is not None:
+        base_port["max_open_risk"] = float(args.max_open_risk)
+        print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
+              f"(size_mult units; default 6.0)")
+
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
@@ -518,6 +525,11 @@ def _parse_args() -> argparse.Namespace:
                         "at the cap; 'if-not-profit' exits at the cap only when "
                         "the position is not in profit (lets winners run to "
                         "target).")
+    p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
+                   help="Aggregate open-risk budget in size_mult units (default "
+                        "6.0). Each open position consumes its own size_mult, so a "
+                        "new entry is dropped once total open risk would exceed "
+                        "this budget. Lower → fewer concurrent positions.")
     p.add_argument("--log", default="WARNING",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                    help="Console log verbosity. Default: WARNING.")
