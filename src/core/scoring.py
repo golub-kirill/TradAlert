@@ -56,6 +56,14 @@ _DEFAULT_HOLD_LOW = 10
 _DEFAULT_HOLD_HIGH = 15
 _DEFAULT_MIN_SCORE = 60
 
+# Sub-score shape constants (algorithm internals, not config-backed).
+# RS-exit: a 20-day relative-strength shortfall of -1/scale (i.e. ~-10%) vs SPY
+# saturates the exit score at 1.0.
+_RS_EXIT_SCALE = 10.0
+# BB z-score: |Z| reaching this half-width drives the momentum score to 0; the
+# mean-reversion score saturates at Z = -(0.5 + half-width).
+_BB_Z_HALFWIDTH = 2.0
+
 
 # ── entry-side scoring thresholds (settings.yaml → scanner.entry_thresholds) ──
 
@@ -724,7 +732,7 @@ def _score_rs_exit(
             return 0.5
         rs20 = (t0 / t20) / (s0 / s20) - 1.0
         # rs20 < 0 means underperforming → exit signal
-        return max(0.0, min(1.0, -rs20 * 10.0))
+        return max(0.0, min(1.0, -rs20 * _RS_EXIT_SCALE))
     except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, AttributeError) as exc:
         logger.debug("rs_exit score failed (neutral fallback): %s", exc)
         return 0.5
@@ -803,10 +811,10 @@ def _score_bb_zscore(df: pd.DataFrame, signal_type: str) -> float:
 
     if signal_type == "mean_reversion":
         # Deeply oversold is desirable
-        return max(0.0, min(1.0, (-bb_z - 0.5) / 2.0))
+        return max(0.0, min(1.0, (-bb_z - 0.5) / _BB_Z_HALFWIDTH))
     else:
         # Momentum: near mean is ideal, extremes in either direction are bad
-        return max(0.0, 1.0 - abs(bb_z) / 2.0)
+        return max(0.0, 1.0 - abs(bb_z) / _BB_Z_HALFWIDTH)
 
 
 def _score_vbp_resistance(

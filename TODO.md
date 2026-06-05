@@ -62,10 +62,13 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
 **Hygiene / reproducibility:**
 - ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now
   that journaling is default-on so fresh deploys can journal).
-- ◻ **Inline magic-number fallbacks → `defaults.py`**: `gap_risk` 3.0
-  (`filter_engine.py:535`), `max_bars_since_cross` 3 (`:933/982`), dv20 window 20,
-  `_score_rs_exit` ×10, `_score_bb_zscore` /2.0 (`scoring`). They read config but the
-  fallback default is inline — centralise.
+- ✅ **Inline magic-number fallbacks — CENTRALISED 2026-06-05.** Config-backed fallbacks
+  now read `DEFAULTS.get(...)` instead of inline literals: `gap_risk.max_prev_bar_range_atr`
+  (`filter_engine.py:535`), `ma_short` (`:813`), `max_bars_since_cross` for long **and**
+  short_entry (`:933/982` — added a `short_entry` default key). Scoring algorithm constants
+  named (`_RS_EXIT_SCALE=10`, `_BB_Z_HALFWIDTH=2`, de-dupes the `/2` used twice). `dv20`
+  window left inline — it's the definitional "20-day" coupled to the `_20d` config-key
+  name, not a config knob. No behavior change (values identical); 202 passed.
 - ◻ **`json_cache.save_section` RMW not lock-safe** — safe today (single writer); add a
   file lock or document the single-writer assumption.
 - ◻ **Dual earnings cache** — `earnings_history.py` (`data/fundamentals/`) vs

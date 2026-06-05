@@ -532,7 +532,8 @@ class FilterEngine:
         # 4b. gap risk filter
         gr = self._cfg.get("signals", {}).get("gap_risk", {})
         if gr.get("enabled", False):
-            max_range = gr.get("max_prev_bar_range_atr", 3.0)
+            max_range = gr.get("max_prev_bar_range_atr",
+                                DEFAULTS.get("filters.signals.gap_risk.max_prev_bar_range_atr"))
             prev_range = prev["high"] - prev["low"]
             if prev_range > max_range * prev["atr"]:
                 return self._fail_result(
@@ -810,7 +811,7 @@ class FilterEngine:
         if trend == "BULL":
             ma_short_ok = rcfg.get("require_ma_short_alignment", False)
             if ma_short_ok:
-                ma_short = rcfg.get("ma_short", 20)
+                ma_short = rcfg.get("ma_short", DEFAULTS.get("filters.regime.ma_short"))
                 for sym in symbols:
                     idx_df = market_dfs.get(sym)
                     if idx_df is None or len(idx_df) < ma_short:
@@ -930,7 +931,8 @@ class FilterEngine:
 
     def _momentum_long(self, row: Series, prev: Series, df: pd.DataFrame) -> bool:
         cfg = self._cfg["signals"]["momentum"]["long"]
-        max_bars = cfg.get("max_bars_since_cross", 3)
+        max_bars = cfg.get("max_bars_since_cross",
+                           DEFAULTS.get("filters.signals.momentum.long.max_bars_since_cross"))
 
         if row["macd_hist"] <= 0:
             return False
@@ -979,7 +981,8 @@ class FilterEngine:
         cfg = self._cfg["signals"]["momentum"].get("short_entry")
         if not cfg:
             return False
-        max_bars = cfg.get("max_bars_since_cross", 3)
+        max_bars = cfg.get("max_bars_since_cross",
+                           DEFAULTS.get("filters.signals.momentum.short_entry.max_bars_since_cross"))
 
         if row["macd_hist"] >= 0:
             return False

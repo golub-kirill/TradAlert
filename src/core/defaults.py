@@ -26,6 +26,7 @@ _VALUES: dict[str, Any] = {
     "filters.regime.vix_symbol": "^VIX",
     "filters.events.earnings_buffer_days": 5,
     "filters.signals.momentum.long.max_bars_since_cross": 3,
+    "filters.signals.momentum.short_entry.max_bars_since_cross": 3,
     "filters.signals.gap_risk.enabled": False,
     "filters.signals.gap_risk.max_prev_bar_range_atr": 3.0,
     "filters.signals.size_mult_gate.min": 0.25,
