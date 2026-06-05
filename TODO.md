@@ -54,8 +54,10 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   1211→1365 trades (+13%), +87.5→+95.7R (+9%), Sharpe 0.58→0.55, Sortino 1.02→0.97 —
   more deployment in reduced-size regimes, slightly lower risk-adjusted. **Budget sweep
   (4/5/6/8) → default lowered to 5.0** (Sharpe peaks 0.58 @ 5.0 vs 0.55 @ 6.0; +87.2R,
-  PF 1.29). Added `--max-open-risk` CLI flag. Caveat: in-sample optimum — OOS
-  walk-forward of 5.0-vs-6.0 deferred (see Phase C / V5).
+  PF 1.29). Added `--max-open-risk` CLI flag. **OOS-validated 2026-06-05** (fixed-config
+  walk-forward, 45 windows): 5.0 beats 6.0 on every OOS axis — OOS E[R] +0.054 vs +0.048,
+  degradation +0.004 vs +0.008, OOS-profitable 67% vs 62%. Not in-sample snooping. (Budget
+  temporal stability only; the broader V5 re-tune/robustness gate on the headline remains.)
 
 **Hygiene / reproducibility:**
 - ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now

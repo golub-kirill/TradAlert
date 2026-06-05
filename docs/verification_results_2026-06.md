@@ -144,9 +144,25 @@ uncapped headline (0.59).
 > the principled risk-budget mechanism. Default set to **5.0** (NS#1: risk-adjusted),
 > giving up ~9% of total R vs 6.0 for +0.03 Sharpe. *Caveat:* this is the in-sample
 > Sharpe-max — 5.0 is defensible as a round number matching the prior effective level,
-> not a fine-tuned peak; an OOS walk-forward of 5.0-vs-6.0 is the proper confirmation
-> (deferred). **Shipped-default headline is now 25d-hard @ budget 5.0 (`run_id=8`:
-> +87.2R, Sharpe 0.58, Sortino 1.03, PF 1.29, 1194 trades).**
+> not a fine-tuned peak.
+>
+> **OOS confirmation (2026-06-05, fixed-config walk-forward, 45 windows, 3yr IS /
+> 1yr OOS / 6mo step).** The in-sample preference for 5.0 holds out-of-sample —
+> 5.0 beats 6.0 on every OOS axis:
+>
+> | Budget | Avg OOS E[R] | Degradation IS→OOS | OOS profitable |
+> |--------|--------------|--------------------|----------------|
+> | **5.0** | **+0.054** | **+0.004** | **67%** (30/45) |
+> | 6.0 | +0.048 | +0.008 | 62% (28/45) |
+>
+> Near-zero degradation (+0.004) → 5.0 does not decay OOS, so the choice was *not*
+> in-sample snooping; it also generalises better than 6.0 (half the IS→OOS decay) and
+> is more consistent. *Caveats:* windows overlap (6mo step) so they are not 45
+> independent samples, and this is still full-history walk-forward, not a locked
+> holdout (Phase C). This validates the **budget** choice (temporal stability); the
+> broader V5 re-tune + robustness + reality-check gate on the headline edge remains.
+> **Shipped-default headline is now 25d-hard @ budget 5.0 (`run_id=8`: +87.2R,
+> Sharpe 0.58, Sortino 1.03, PF 1.29, 1194 trades).**
 
 ### Biases still NOT addressed (the honest gaps)
 1. **Survivorship — Phase A (biggest).** `tier_a` is hand-picked; the
