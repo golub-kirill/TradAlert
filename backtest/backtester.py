@@ -202,6 +202,13 @@ class BacktestConfig:
     # instance (typically ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``)
     # to apply the sliding-scale size penalty on a per-ticker basis.
     ticker_health: Optional["TickerHealth"] = None
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
+    # baseline replays bit-identically. Mirrors PortfolioConfig.max_hold_days:
+    # a still-open trade closes at the bar CLOSE once held this many bars.
+    #   mode "hard"          → always exit at the cap.
+    #   mode "if_not_profit" → exit at the cap only when not in profit.
+    max_hold_days: Optional[int] = None
+    max_hold_mode: str = "hard"
 
 
 @dataclass
@@ -450,6 +457,24 @@ class BarReplayBacktester:
                     self._record_close(ticker, open_trade)
                     open_trade = None
                     continue
+
+                # Time-based max-hold exit (opt-in). Neither stop nor target
+                # hit this bar; close at this bar's CLOSE once the trade has
+                # been held max_hold_days bars. Off when None → baseline same.
+                if self._cfg.max_hold_days is not None:
+                    entry_pos = int(df.index.searchsorted(
+                        pd.Timestamp(open_trade.entry_date)))
+                    if (T - entry_pos) >= self._cfg.max_hold_days:
+                        b_close = float(bar["close"])
+                        in_profit = ((b_close < open_trade.entry_price) if is_short
+                                     else (b_close > open_trade.entry_price))
+                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
+                            _close_trade(open_trade, today, b_close, "time_stop",
+                                         df.index, T)
+                            trades.append(open_trade)
+                            self._record_close(ticker, open_trade)
+                            open_trade = None
+                            continue
 
                 # Neither touched — check engine exit signal at this close.
                 # Dispatch by trade direction: held_short signals the engine

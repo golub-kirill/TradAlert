@@ -1,33 +1,9 @@
 """
-CFTC Commitments of Traders (COT) report fetcher.
+CFTC Commitments of Traders (COT) report fetcher – TFF (Traders in Financial Futures).
 
-Pulls weekly Disaggregated COT data from CFTC's public Socrata JSON API
+Pulls weekly TFF Futures‑Only data from CFTC's public Socrata JSON API
 (no API key required). One file per contract under
 ``data/behavioral/cot_<short>.parquet``.
-
-Public API
-──────────
-``fetch_cot(contract, ...) -> pd.DataFrame``
-    Per-contract DataFrame keyed by report-date. Required column for the
-    behavioral classifier: ``mm_net`` (managed-money long minus short).
-
-``fetch_all_cot(...) -> dict[str, pd.DataFrame]``
-    Returns a dict ``{<short>: df}`` for every contract in
-    ``_COMMODITY_CODES``. The behavioral classifier reads ``"cot_es"``
-    from the bundled ``data`` dict, so the loader must map ``"es"`` →
-    ``"cot_es"`` when assembling its payload.
-
-Data source
-───────────
-``https://publicreporting.cftc.gov/resource/72hh-3qaq.json`` — disaggregated
-weekly futures-and-options reports. Filter by ``contract_market_name``
-plus the formal exchange string to disambiguate variants.
-
-Failure modes
-─────────────
-- Network failure / 5xx / 429 → load cached parquet, else empty DataFrame.
-- Schema drift on Socrata → return what parsed; missing ``mm_net`` is OK
-  (downstream classifier treats axis as missing).
 """
 
 from __future__ import annotations
@@ -43,29 +19,15 @@ from core.paths import BEHAVIORAL_DIR
 
 logger = logging.getLogger(__name__)
 
-# CFTC Socrata resource ID. ⚠ UNRESOLVED as of 2026-05-31 — see notes:
-#   - 72hh-3qaq (original) → 404 in production log.
-#   - s9da-n2w9 (tried by a parallel edit) → also 404 in production log.
-#   - 72hh-3qpy (Disaggregated Futures-Only) → set here but NOT live-verified
-#     (the sandbox could not reach CFTC to confirm).
-# DEEPER MISMATCH to resolve before trusting COT data: the contracts in
-# _COMMODITY_CODES (E-MINI S&P 500, UST 10Y, VIX) are *financial* futures,
-# which live in the **Traders in Financial Futures (TFF)** report, NOT the
-# Disaggregated report (that one covers physical commodities). TFF also uses
-# different position columns — `lev_money_positions_long_all/_short_all`
-# (leveraged funds) rather than the `m_money_positions_*` (managed money) that
-# _normalise_cot_rows looks for. So fixing COT properly means: (1) point at the
-# correct TFF Futures-Only resource ID from
-# https://publicreporting.cftc.gov/api-docs/, AND (2) teach _normalise_cot_rows
-# to read the lev_money_* columns. Until then COT fails open and is excluded
-# from the score (behavioral confidence simply drops — no garbage ingested).
-_COT_URL = "https://publicreporting.cftc.gov/resource/72hh-3qpy.json"
+# CFTC Socrata resource ID for Traders in Financial Futures (TFF) Futures-Only
+# https://publicreporting.cftc.gov/Commitments-of-Traders/TFF-Futures-Only/gpe5-46if/about_data
+_TFF_URL = "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
 _DATA_DIR = BEHAVIORAL_DIR
 _DEFAULT_STALENESS_DAYS = 7
 
-# (short_name, official CFTC contract_market_name) — formal names are
-# critical here: the Socrata API uses exact-match filters, and even a
-# trailing whitespace or hyphen variant produces an empty result set.
+# (short_name, official CFTC contract_market_name as it appears in TFF)
+# Substring matching is used, so the exact string can be a human‑readable
+# fragment – but using the full official name is most reliable.
 _COMMODITY_CODES: dict[str, str] = {
     "es": "E-MINI S&P 500",
     "tnote": "UST 10Y NOTE",
@@ -114,8 +76,8 @@ def fetch_cot(
 
     Returns
     -------
-    pd.DataFrame indexed by report-date with at least ``mm_net``,
-        ``mm_long``, ``mm_short``. Empty DataFrame if unresolvable.
+    pd.DataFrame indexed by report-date with at least ``lev_net``,
+        ``lev_long``, ``lev_short``. Empty DataFrame if unresolvable.
     """
     contract = contract.lower()
     if contract not in _COMMODITY_CODES:
@@ -141,9 +103,8 @@ def fetch_cot(
                            contract, exc, exc_info=True)
 
     # ── 2. live fetch via Socrata ────────────────────────────────────────
-    # 260 records ≈ 5 years of weekly data. CFTC's contract_market_name
-    # field is the human-readable label; we match by SoQL substring to
-    # tolerate small whitespace differences between weekly releases.
+    # 260 records ≈ 5 years of weekly data. Use substring matching on
+    # contract_market_name to tolerate whitespace or minor differences.
     params = {
         "$where": f"upper(contract_market_name) like upper('%{contract_name}%')",
         "$order": "report_date_as_yyyy_mm_dd DESC",
@@ -151,23 +112,20 @@ def fetch_cot(
     }
     try:
         resp = request_with_retry(
-            "GET", _COT_URL,
+            "GET", _TFF_URL,
             params=params, timeout=20,
             rate_limit_key="cftc", rate_limit_interval_s=1.0,
         )
         resp.raise_for_status()
         rows = resp.json()
     except (OSError, ValueError, RuntimeError) as exc:
-        # Expected when CFTC rotates the Socrata resource ID (404) or rate-
-        # limits us. Fail open to cache/empty so the score excludes COT rather
-        # than ingesting nothing-or-garbage. No stack trace for this path.
         logger.warning("[cot] fetch failed for %s: %s — excluding from score "
-                       "(check resource ID if 404)", contract, exc)
+                       "(check TFF resource ID if 404)", contract, exc)
         return _load_cached_or_empty(parquet_path)
 
-    df = _normalise_cot_rows(rows)
+    df = _normalise_tff_rows(rows)
     if df.empty:
-        logger.warning("[cot] %s: empty result from CFTC", contract)
+        logger.warning("[cot] %s: empty result from CFTC TFF endpoint", contract)
         return _load_cached_or_empty(parquet_path)
 
     # ── 3. cache write ───────────────────────────────────────────────────
@@ -186,11 +144,11 @@ def fetch_cot(
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _normalise_cot_rows(rows: list[dict]) -> pd.DataFrame:
-    """Convert raw Socrata records into a typed, date-indexed DataFrame.
+def _normalise_tff_rows(rows: list[dict]) -> pd.DataFrame:
+    """Convert raw TFF Socrata records into a typed, date-indexed DataFrame.
 
     Socrata returns strings for every field. We coerce the date and the
-    three managed-money positions to numeric, derive ``mm_net``, and
+    three leveraged‑fund positions to numeric, derive ``lev_net``, and
     discard rows where the date can't be parsed.
     """
     if not rows:
@@ -198,8 +156,7 @@ def _normalise_cot_rows(rows: list[dict]) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    # The disaggregated dataset uses different column names depending on
-    # which API version is hit. Cover both.
+    # Date column – TFF uses report_date_as_yyyy_mm_dd
     date_col = None
     for candidate in ("report_date_as_yyyy_mm_dd", "yyyy_report_week_ww"):
         if candidate in df.columns:
@@ -211,23 +168,28 @@ def _normalise_cot_rows(rows: list[dict]) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df[date_col], errors="coerce")
     df = df.dropna(subset=["date"]).set_index("date").sort_index()
 
-    long_col = next((c for c in ("m_money_positions_long",
-                                 "m_money_positions_long_all")
+    # Leveraged funds columns (TFF specific)
+    long_col = next((c for c in ("lev_money_positions_long_all",
+                                 "lev_money_positions_long")
                      if c in df.columns), None)
-    short_col = next((c for c in ("m_money_positions_short",
-                                  "m_money_positions_short_all")
+    short_col = next((c for c in ("lev_money_positions_short_all",
+                                  "lev_money_positions_short")
                       if c in df.columns), None)
+
     if long_col is None or short_col is None:
-        # Schema drift — return what we have so the cache at least
-        # remembers the dates. Downstream classifier sees empty mm_net
+        # Schema drift – return what we have so the cache at least
+        # remembers the dates. Downstream classifier sees empty lev_net
         # and treats positioning as missing.
+        logger.warning("[cot] TFF columns missing: long=%s, short=%s",
+                       long_col, short_col)
         return df
 
-    df["mm_long"] = pd.to_numeric(df[long_col], errors="coerce")
-    df["mm_short"] = pd.to_numeric(df[short_col], errors="coerce")
-    df["mm_net"] = df["mm_long"] - df["mm_short"]
+    df["lev_long"] = pd.to_numeric(df[long_col], errors="coerce")
+    df["lev_short"] = pd.to_numeric(df[short_col], errors="coerce")
+    df["lev_net"] = df["lev_long"] - df["lev_short"]
 
-    return df[["mm_long", "mm_short", "mm_net"]].dropna(subset=["mm_net"])
+    return df[["lev_long", "lev_short", "lev_net"]].dropna(subset=["lev_net"])
+
 
 def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
     if parquet_path.exists():

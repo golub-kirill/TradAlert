@@ -45,6 +45,16 @@ except ImportError:
 
 
 def main() -> None:
+    # Force UTF-8 stdout/stderr so the rich console output (─ → ▸ ✓ █) survives
+    # piping/redirection on Windows (cp1252), where printing them otherwise
+    # raises UnicodeEncodeError. Safe no-op if already UTF-8 or not reconfigurable.
+    import sys as _sys
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     args = _parse_args()
     _setup_logging(args.log)
 
@@ -150,7 +160,7 @@ def main() -> None:
         base_port["chronic_loser_cfg"] = chronic_cfg
         print(f"  ▸ Chronic-loser penalty: ENABLED  "
               f"(lookback={chronic_cfg.get('lookback_days', 90)}d, "
-              f"scale={chronic_cfg.get('scale', {2: 0.5, 3: 0.25, 4: 0.0})})")
+              f"scale={chronic_cfg.get('scale', {2: 0.5, 3: 0.25})})")
 
     # VIX slope gate (--vix-slope-gate). Mutates base_cfg["regime"] directly
     # because the FilterEngine reads regime.vix_slope_block at signal time.
@@ -177,6 +187,23 @@ def main() -> None:
         scfg["allow_shorts"] = True
         print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
               "short entries fire in BEAR regimes)")
+
+    # Time-based max-hold exit (--max-hold-days). Enforces a swing-trading
+    # horizon: a held trade is force-closed at the bar's CLOSE once it has
+    # been held N trading bars. Off by default (key absent in base_port) so
+    # the baseline replays bit-identically. `execution.max_hold_days` in
+    # filters.yaml supplies the default; the CLI flag overrides it.
+    mh_days = exec_cfg.get("max_hold_days")
+    mh_mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+    if args.max_hold_days is not None:
+        mh_days = args.max_hold_days
+    if args.max_hold_mode is not None:
+        mh_mode = args.max_hold_mode.replace("-", "_")
+    if mh_days is not None:
+        base_port["max_hold_days"] = int(mh_days)
+        base_port["max_hold_mode"] = mh_mode
+        print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
+              f"held trades close at the swing horizon — baseline is OFF)")
 
     engine = SweepEngine(
         universe=uni,
@@ -235,7 +262,11 @@ def main() -> None:
 
         wf_report = None
         if args.walk_forward:
-            print("\n  Running walk-forward validation…")
+            re_tune = not args.wf_no_retune
+            _wf_workers = max(args.workers, 0)
+            print(f"\n  Running walk-forward validation…  "
+                  f"({'re-tune sweep per IS window' if re_tune else 'fixed-config temporal stability'}"
+                  f", workers={_wf_workers})")
             wfe = WalkForwardEngine(
                 universe=uni,
                 base_cfg=base_cfg,
@@ -243,7 +274,8 @@ def main() -> None:
                 is_years=3,
                 oos_years=1,
                 step_months=6,
-                re_tune=True,  # re-tune per IS window
+                re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
+                n_workers=_wf_workers,      # --workers now reaches the per-window sweep
             )
             wf_report = wfe.run(progress=_progress)
 
@@ -253,9 +285,11 @@ def main() -> None:
         if wf_report:
             print_walk_forward(wf_report)
 
-        # ── optional SQL journaling ────────────────────────────────────────
-        if args.journal:
+        # ── SQL journaling (ON by default — policy; --no-journal to skip) ──
+        if not args.no_journal:
             _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni)
+        else:
+            print("  ▸ Journaling: OFF (--no-journal) — this run leaves no DB record")
 
         from backtest.sweep import SweepReport
         dummy = SweepReport(
@@ -352,8 +386,8 @@ def main() -> None:
 
         print_report(report)
 
-        # ── optional SQL journaling (baseline of the sweep) ───────────────
-        if args.journal:
+        # ── SQL journaling of the sweep baseline (ON by default — policy) ──
+        if not args.no_journal:
             _journal_baseline(
                 report.baseline, report.baseline.trades,
                 base_cfg, start_date, end_date, uni,
@@ -419,6 +453,13 @@ def _parse_args() -> argparse.Namespace:
                    help="SignalScorer thresholds + weights sweep (settings.yaml)")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
+    p.add_argument("--wf-no-retune", action="store_true",
+                   help="With --walk-forward: skip the per-window re-tune sweep and "
+                        "run the FIXED current config on each IS/OOS window "
+                        "(temporal-stability test). ~18 runs vs ~900 — far faster, "
+                        "and the right test for 'does the shipped config survive OOS'. "
+                        "Re-tune (the default) tests whether parameter selection "
+                        "generalises and is much slower; use --workers N to parallelise it.")
     p.add_argument("--robustness", action="store_true",
                    help="Perturb each param plus/minus 10pct/20pct and report E[R] sensitivity")
     p.add_argument("--start", default=None, metavar="YYYY-MM-DD",
@@ -443,7 +484,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no-csv", action="store_true",
                    help="Skip writing the CSV trade ledger (trades.csv).")
     p.add_argument("--journal", action="store_true",
-                   help="Write baseline run + trades to MySQL (requires DB env vars)")
+                   help="(deprecated — journaling is ON by default) kept for compatibility.")
+    p.add_argument("--no-journal", action="store_true",
+                   help="Skip MySQL journaling for this run (default: journal it, so every "
+                        "run leaves data for the live-reconciliation feed).")
     p.add_argument("--chronic-penalty", action="store_true",
                    help="Enable per-ticker chronic-loser size penalty "
                         "(see config/filters.yaml `chronic_loser_penalty`). "
@@ -462,6 +506,18 @@ def _parse_args() -> argparse.Namespace:
                         "signals.allow_shorts=true so the engine fires shorts "
                         "in BEAR regimes. Off by default so the long-only "
                         "baseline replays identically.")
+    p.add_argument("--max-hold-days", type=int, default=None, metavar="N",
+                   help="Enforce a swing-trading horizon: force-close a held "
+                        "trade at the bar's close once it has been held N "
+                        "trading bars (exit reason 'time_stop'). Off by "
+                        "default so the baseline replays identically. "
+                        "Default source: execution.max_hold_days in filters.yaml.")
+    p.add_argument("--max-hold-mode", default=None,
+                   choices=["hard", "if-not-profit"],
+                   help="With --max-hold-days: 'hard' (default) always exits "
+                        "at the cap; 'if-not-profit' exits at the cap only when "
+                        "the position is not in profit (lets winners run to "
+                        "target).")
     p.add_argument("--log", default="WARNING",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                    help="Console log verbosity. Default: WARNING.")

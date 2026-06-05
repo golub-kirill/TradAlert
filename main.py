@@ -598,6 +598,11 @@ def _save_scan(
 
     if run_id:
         save_scan_results(run_id, results)
+    else:
+        # POLICY: every scan must leave data for live reconciliation. Make a
+        # skipped journal loud rather than silent so the operator notices.
+        print("  ⚠  Scan NOT journaled — DB unavailable. Set DB_* in "
+              "config/secrets.env; live reconciliation depends on this feed.")
 
 
 def _parse_args() -> argparse.Namespace:

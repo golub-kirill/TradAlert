@@ -103,9 +103,10 @@ def test_cot_fail_open(tmp_path: Path):
 
 
 def test_cot_normalise_handles_empty():
-    from core.fetchers.behavioral.cot import _normalise_cot_rows
-    assert _normalise_cot_rows([]).empty
-    assert _normalise_cot_rows([{}]).empty  # no date column
+    # cot.py moved Disaggregated → TFF; the normaliser is now _normalise_tff_rows.
+    from core.fetchers.behavioral.cot import _normalise_tff_rows
+    assert _normalise_tff_rows([]).empty
+    assert _normalise_tff_rows([{}]).empty  # no date column
 
 
 # ─── form4.py ────────────────────────────────────────────────────────────────

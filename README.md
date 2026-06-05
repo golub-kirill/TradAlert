@@ -60,7 +60,8 @@ python main.py [--force] [--allow-shorts]
 | `--force`        | False   | Bypass cache staleness check; re-fetch every ticker.                                                                                                 |
 | `--allow-shorts` | False   | Enable short-side entries (Phase 10). Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
 
-Outputs: stdout report, `data/screenshots/*.webp` charts for fire-signals,
+Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
+fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
 `data/tradealert.log`, MySQL `scan_runs` + `scan_results` (when DB env set).
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
@@ -113,18 +114,20 @@ Window / IO flags:
 | `--out DIR`           | `data/backtest_out` | Output directory.                                    |
 | `--no-html`           | False               | Skip HTML report.                                    |
 | `--no-csv`            | False               | Skip CSV ledger.                                     |
-| `--journal`           | False               | Persist run + trades to MySQL `backtest_*` tables.   |
+| `--journal`           | (default ON)        | Deprecated/no-op — journaling is ON by default. Kept for compatibility. |
+| `--no-journal`        | False               | Opt OUT of MySQL journaling for a throwaway run.     |
 | `--log LEVEL`         | WARNING             | DEBUG / INFO / WARNING / ERROR.                      |
 
 Strategy opt-in flags (each defaults **OFF** so the baseline replays
 bit-identically; turn on to A/B a refinement):
 
-| Flag                | Effect                                                                                                                                                    | Config key                             |
-|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
-| `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling window, scale that ticker's position size down (sliding scale → 0).     | `chronic_loser_penalty` (filters.yaml) |
-| `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected).             | `regime.vix_slope_block`               |
-| `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry (drops red-bar triggers that the 2026-05-27 postmortem tied to early stops). | `signals.require_trigger_bar_up`       |
-| `--allow-shorts`    | Enable **short-side entries** (Phase 10): the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.   | `signals.allow_shorts`                 |
+| Flag                | Effect                                                                                                                                                                                                                                                                                                                                                                                              | Config key                             |
+|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
+| `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling window, scale that ticker's position size down (sliding scale → 0).                                                                                                                                                                                                                                               | `chronic_loser_penalty` (filters.yaml) |
+| `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected).                                                                                                                                                                                                                                                       | `regime.vix_slope_block`               |
+| `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
+| `--allow-shorts`    | Enable **short-side entries** (Phase 10): the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
+| `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` (default) always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). Without it, holds are unbounded (until stop/target), which inflates the win rate vs. a real swing horizon. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
 > loads it at startup, and the `backtest_runs`/`backtest_trades` tables
@@ -199,6 +202,7 @@ Loaded by `python-dotenv` at startup.
 | `regime.{index_symbols,require_all_indices,ma_short,require_ma_short_alignment}` | Trend voting + secondary MA-short gate.                                                   |
 | `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout + manual stop-date calendar.                                            |
 | `execution.{entry_slippage_pct,commission_r}`                                    | Backtest fill model.                                                                      |
+| `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit (OFF by default). `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit`. CLI `--max-hold-days` overrides. |
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
 | `signals.momentum.short`                                                         | Held-long *momentum-fade exit* (legacy name; canonical at `signals.exits.momentum_fade`). |
 | `signals.mean_reversion.long`                                                    | Mean-rev entry: rsi_max, min_hist_delta_atr.                                              |
@@ -295,8 +299,8 @@ in the respective modules.
 |-------------------|--------------------------------|--------------------------|
 | `scan_runs`       | `src/persistence/db.py`        | `main.py`                |
 | `scan_results`    | `src/persistence/db.py`        | `main.py`                |
-| `backtest_runs`   | `backtest/db.py`               | `run_backtest --journal` |
-| `backtest_trades` | `backtest/db.py`               | `run_backtest --journal` |
+| `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) |
+| `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) |
 | `positions`       | `src/core/position_manager.py` | `position_CLI.py`        |
 
 ## Outstanding work

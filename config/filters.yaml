@@ -59,9 +59,17 @@ events: # block: calendar gates
 
 # ── EXECUTION MODEL ───────────────────────────────────────────────────────────
 
-execution: # block: backtest fill model (stage 2)
+execution: # block: backtest fill model
   entry_slippage_pct: 0.0010            # 0.10% added to bar_open on long fills
   commission_r: 0.0050            # round-trip cost in R; subtracted from r_multiple
+  # Time-based max-hold exit (swing-horizon enforcement). OFF by default
+  # (max_hold_days absent/null) so the baseline replays bit-identically.
+  # Enable here or via `--max-hold-days N`. Closes a still-open trade at the
+  # bar CLOSE once held N trading bars; stop/target on the same bar win first.
+  # max_hold_days: 15                   # ~swing horizon (≈ expected_hold_days.high)
+  max_hold_mode: hard                   # 'hard' = always exit at the cap;
+                                        # 'if_not_profit' = exit only when not in
+                                        #   profit at the cap (lets winners run).
 
 
 # ── SIGNAL FILTERS ────────────────────────────────────────────────────────────
@@ -90,7 +98,7 @@ signals: # block: trigger configuration
     # Folded into Trade.effective_r as an R drag ∝ bars_held; longs never charged.
     # v1 is a flat configured rate — a live per-symbol borrow source is a follow-on.
 
-  require_trigger_bar_up: false      # opt-in: only queue T+1 entry when trigger
+  require_trigger_bar_up: true      # opt-in: only queue T+1 entry when trigger
   # bar T closed >= open (no red-bar entries).
   # Targets 11 fast stop-outs from postmortem.
 
@@ -120,8 +128,8 @@ signals: # block: trigger configuration
 
   mean_reversion: # block: counter-trend triggers
     long: # entry: RSI < rsi_max + macd_hist rising
-      rsi_max: 70                       # exclusive ceiling; widened from 35 (sweep best: +0.410 R / 102 trades)
-      min_hist_delta_atr: 0.08          # ATR-multiple; lowered from 0.18 to re-enable MR entries (paired with rsi_max widening above)
+      rsi_max: 30                       # exclusive ceiling;
+      min_hist_delta_atr: 0.18          # ATR-multiple;
     short: # held-long exit: overbought trigger
       rsi_min: 65                       # exclusive floor; higher = more overbought
       min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
@@ -146,20 +154,22 @@ signals: # block: trigger configuration
     #   tighter reward ceiling can be justified. Absent →
     #   falls back to min_rr above. Only affects shorts.
 
-  size_mult_gate: # F3-1: composite (macro×behavioral) position-size gate
-    enabled: false                      # default off so existing sweeps replay identically
+  size_mult_gate: #composite (macro×behavioral) position-size gate
+    enabled: true                      # default off so existing sweeps replay identically
     min: 0.25                           # block entries when regime.size_multiplier < this
 
 
 # ── CHRONIC-LOSER PENALTY ────────────────────────────────────────────────────
 # Per-ticker sliding-scale size penalty after consecutive losses inside a
-# rolling window. Targets emergent losers (the static prune of the postmortem
-# 2026-05-27 already removed the known-bad symbols). Off by default so the
-# 2026-05-27 baseline replays identically.
+# rolling window.
 chronic_loser_penalty:
   enabled: false                        # master switch
   lookback_days: 90                     # losses older than this age off the streak
+  # Scale: consecutive_losses_threshold → size_mult. Monotonic floors, NO hard
+  # block. Ledger analysis (2026-06-03, docs/triage Note 4) showed forward
+  # expectancy stays POSITIVE even after 4+ consecutive losses (~+0.11R), so the
+  # old `4: 0.0` block forfeited profitable trades. 4+ now floors at 0.25 — the
+  # multiplier uses the largest key ≤ streak (see core/ticker_health.py).
   scale: # consecutive_losses_threshold → size_mult
-    2: 0.5                              # 2 in 90d → half size
-    3: 0.25                             # 3 in 90d → quarter size
-    4: 0.0                              # 4+ → block entirely
+    2: 0.5                              # 2 losses in window → half size
+    3: 0.25                             # 3+ → quarter size (floor; was 4: 0.0 block)

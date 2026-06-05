@@ -59,13 +59,24 @@ def test_three_consecutive_losses_quarter():
     assert h.size_multiplier("ABC", date(2026, 5, 27)) == 0.25
 
 
-def test_four_consecutive_losses_block():
-    h = TickerHealth()
+def test_four_losses_block_when_configured():
+    """A ``4: 0.0`` entry blocks entirely — capability retained, just not default."""
+    h = TickerHealth(scale={2: 0.5, 3: 0.25, 4: 0.0})
     for d in [date(2026, 5, 1), date(2026, 5, 5), date(2026, 5, 10), date(2026, 5, 20)]:
         h.record_trade("ABC", d, -1.0)
     assert h.consecutive_losses("ABC", date(2026, 5, 27)) == 4
     assert h.size_multiplier("ABC", date(2026, 5, 27)) == 0.0
     assert h.is_blocked("ABC", date(2026, 5, 27)) is True
+
+
+def test_four_losses_floor_at_quarter_by_default():
+    """Default scale has NO hard block (2026-06-03 change): 4+ losses floor at 0.25."""
+    h = TickerHealth()  # DEFAULT_SCALE = {2: 0.5, 3: 0.25}
+    for d in [date(2026, 5, 1), date(2026, 5, 5), date(2026, 5, 10), date(2026, 5, 20)]:
+        h.record_trade("ABC", d, -1.0)
+    assert h.consecutive_losses("ABC", date(2026, 5, 27)) == 4
+    assert h.size_multiplier("ABC", date(2026, 5, 27)) == 0.25
+    assert h.is_blocked("ABC", date(2026, 5, 27)) is False
 
 
 def test_win_breaks_streak():

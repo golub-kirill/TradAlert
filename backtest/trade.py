@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-ExitReason = Literal["stop", "target", "engine_exit", "open_eod"]
+ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop"]
 
 
 @dataclass

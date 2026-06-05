@@ -56,6 +56,9 @@ _INSERT_SCAN_RESULT_SQL = """
                                                     score,
                                                     reason,
                                                     close,
+                                                    stop_price,
+                                                    target_price,
+                                                    signal_type,
                                                     atr,
                                                     atr_pct,
                                                     dv20,
@@ -72,6 +75,9 @@ _INSERT_SCAN_RESULT_SQL = """
                                   %(score)s,
                                   %(reason)s,
                                   %(close)s,
+                                  %(stop_price)s,
+                                  %(target_price)s,
+                                  %(signal_type)s,
                                   %(atr)s,
                                   %(atr_pct)s,
                                   %(dv20)s,
@@ -205,6 +211,14 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
             "exit_short": "exit_short",
         }.get(sig.direction, "none")
 
+    # Signal geometry — captured only when a real entry/exit fired, so a live
+    # signal can later be scored to a forward R and matched to backtest
+    # expectancy (see scripts/reconcile_live.py). None for non-signals.
+    fired = bool(sig and sig.passed)
+    stop_price = float(sig.stop_price) if fired and getattr(sig, "stop_price", None) else None
+    target_price = float(sig.target_price) if fired and getattr(sig, "target_price", None) else None
+    signal_type = sig.signal_type if fired and getattr(sig, "signal_type", None) else None
+
     return {
         "run_id": run_id,
         "ticker": r.ticker,
@@ -213,6 +227,9 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         "score": sig.score if sig and sig.score > 0 else None,
         "reason": scan.reason or None,
         "close": scan.close,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "signal_type": signal_type,
         "atr": scan.atr,
         "atr_pct": scan.atr_pct,
         "dv20": scan.dv20,

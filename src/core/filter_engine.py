@@ -51,11 +51,6 @@ def _type_name(expected: type | tuple[type, ...]) -> str:
         return expected.__name__
     return " or ".join(t.__name__ for t in expected)
 
-
-# ── exceptions ────────────────────────────────────────────────────────────────
-# ConfigError is defined in `exceptions` and imported above.
-
-
 # ── type aliases ──────────────────────────────────────────────────────────────
 
 TrendState = Literal["BULL", "BEAR", "CHOP"]
@@ -80,9 +75,8 @@ class MarketRegime:
                   by ``_market_regime`` from ``regime.vix_slope_lookback_days``
                   (default 5 bars). Consulted by the entry gate when
                   ``regime.vix_slope_block`` is enabled — see the Feb 2025
-                  postmortem in TODO.md for motivation.
-    macro       : Optional MacroState from Phase 6 (default None).
-    behavioral  : Optional BehavioralState from Phase 8 (default None).
+    macro       : Optional MacroState (default None).
+    behavioral  : Optional BehavioralState (default None).
     """
     trend: TrendState
     volatility: VolState

@@ -93,6 +93,16 @@ class PortfolioConfig:
     # the policy is off and the backtester replays baseline behavior exactly.
     # The tracker's penalty multiplies into signal.size_mult at Phase 2 entry.
     ticker_health: Optional["TickerHealth"] = None
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
+    # baseline replays bit-identically. When set, a still-open trade is closed
+    # at the bar's CLOSE once it has been held ``max_hold_days`` trading bars
+    # (same bar-count convention as Trade.bars_held = exit_idx - entry_idx).
+    # Stop/target on the same bar take precedence (checked first, pessimistic).
+    #   mode "hard"          → always exit at the cap.
+    #   mode "if_not_profit" → exit at the cap only when the position is not in
+    #                          profit at that close (lets winners run to target).
+    max_hold_days: Optional[int] = None
+    max_hold_mode: str = "hard"
 
 
 @dataclass
@@ -503,6 +513,28 @@ class PortfolioBacktester:
                     self._record_close(closed)
                     dd_gate.record(closed.effective_r)
                     closed_this_bar.add(ticker)
+                    continue
+
+                # ── Time-based max-hold exit (opt-in) ────────────────────
+                # Neither stop nor target hit this bar; close at this bar's
+                # CLOSE once the trade has been held max_hold_days bars. Off
+                # when max_hold_days is None → baseline replays identically.
+                if self._cfg.max_hold_days is not None:
+                    entry_pos = int(prepped[ticker].df.index.searchsorted(
+                        pd.Timestamp(trade.entry_date)))
+                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
+                        b_close = float(bar["close"])
+                        in_profit = ((b_close < trade.entry_price) if is_short
+                                     else (b_close > trade.entry_price))
+                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
+                            _close_trade(trade, D_date, b_close, "time_stop",
+                                         prepped[ticker].df.index, t_idx,
+                                         self._cfg.commission_r)
+                            closed = open_trades.pop(ticker)
+                            result.trades.append(closed)
+                            self._record_close(closed)
+                            dd_gate.record(closed.effective_r)
+                            closed_this_bar.add(ticker)
 
             # ── Phase 4: engine signal evaluation at this bar's close ─────
             for ticker in active:
@@ -767,6 +799,26 @@ class PortfolioBacktester:
                     self._record_close(closed)
                     dd_gate.record(closed.effective_r)
                     closed_this_bar.add(ticker)
+                    continue
+
+                # Time-based max-hold exit (opt-in). See run_all() for the
+                # full contract. Off when max_hold_days is None.
+                if self._cfg.max_hold_days is not None:
+                    entry_pos = int(prepped[ticker].df.index.searchsorted(
+                        pd.Timestamp(trade.entry_date)))
+                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
+                        b_close = float(bar["close"])
+                        in_profit = ((b_close < trade.entry_price) if is_short
+                                     else (b_close > trade.entry_price))
+                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
+                            _close_trade(trade, D_date, b_close, "time_stop",
+                                         prepped[ticker].df.index, t_idx,
+                                         self._cfg.commission_r)
+                            closed = open_trades.pop(ticker)
+                            result.trades.append(closed)
+                            self._record_close(closed)
+                            dd_gate.record(closed.effective_r)
+                            closed_this_bar.add(ticker)
 
             # Phase 4: engine signal at close
             for ticker in active:

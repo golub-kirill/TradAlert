@@ -247,6 +247,7 @@ class WalkForwardEngine:
             step_months: int = 6,
             re_tune: bool = False,
             grid: list[ParamSpec] | None = None,
+            n_workers: int = 0,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
@@ -256,6 +257,10 @@ class WalkForwardEngine:
         self._step_months = step_months
         self._re_tune = re_tune
         self._grid = grid if grid is not None else PARAM_GRID
+        # Parallel workers for the per-window re-tune sweep (re_tune=True).
+        # 0/1 = sequential. The baseline (re_tune=False) path runs single
+        # _run_one calls and does not use the pool.
+        self._n_workers = n_workers
 
         # In-memory sweep cache keyed by (is_start, is_end)
         self._sweep_cache: dict[tuple[date, date], SweepPoint] = {}
@@ -409,7 +414,7 @@ class WalkForwardEngine:
                 universe=self._universe,
                 base_cfg=copy.deepcopy(self._base_cfg),
                 base_port_cfg=dict(self._base_port_cfg),
-                n_workers=0,
+                n_workers=self._n_workers,
             )
 
             # Override port params to restrict to IS window

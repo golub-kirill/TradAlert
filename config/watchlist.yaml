@@ -154,3 +154,17 @@ tier_b:
 # it — the tier_b → tier_a promotion flow described in the audit was never
 # implemented. Block removed to avoid the false impression that promotions
 # are gated. When Phase 2 universe expansion is wired up, restore the keys.
+
+# ── Survivorship / selection audit (Phase A1) ─────────────────────────────────
+# Inputs for scripts/frozen_universe_ab.py. Quantifies how much of the backtest
+# edge is hindsight: newer ETFs that didn't exist early were included, and losers
+# were deleted after they lost (see the "pruned …" comments above). Free, no
+# external data (the pruned names need a one-time fetch: scripts/fetch_prices.py).
+survivorship_audit:
+  as_of_dates: ["2005-01-01", "2010-01-01", "2015-01-01"]  # sweep; report discount at each
+  # Names removed from tier_a AFTER seeing them lose. Re-added to the frozen
+  # universe for as-of dates >= their inception (you would NOT have known to prune
+  # them at the time). The pruning bias is usually larger than the look-ahead bias.
+  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT, SU.TO, SHOP.TO]
+  max_hold_days: 25         # apply the shipped cap so the audit reflects the real strategy
+  max_hold_mode: hard

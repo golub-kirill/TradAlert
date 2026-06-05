@@ -47,6 +47,20 @@ def _er_color(er, base):
     return _RESET
 
 
+# Coloring convention (terminal reports) — two deliberate rules:
+#   • Sweep / comparison tables color a metric RELATIVE TO BASELINE via
+#     `_er_color` (better-than-base → green, worse → red).
+#   • Standalone P&L figures color by ABSOLUTE sign via `_pnl_color`
+#     (profit → green, loss → red); pivot 0 for signed R, 1.0 for profit factor.
+# Descriptive / structural figures — trade counts, win rate, dates, drawdown
+# magnitude, average bars held, parameter values — are left UNCOLORED.
+def _pnl_color(value, pivot=0.0, deadband=0.0):
+    """Green above ``pivot``, red below, neutral within ``deadband``."""
+    if value > pivot + deadband: return _GREEN
+    if value < pivot - deadband: return _RED
+    return _RESET
+
+
 def _sparkbar(value, lo, hi, width=10):
     if hi <= lo: return " " * width
     pct = max(0.0, min(1.0, (value - lo) / (hi - lo)))
@@ -65,13 +79,13 @@ def print_baseline(point, equity=None, bootstrap=None, kelly=None,
     print(f"  {sep}")
     print(f"  Trades       : {s.trades_count:>6d}")
     print(f"  Win rate     : {s.win_rate:>6.1%}")
-    print(f"  Expectancy   : {s.expectancy_r:>+7.3f} R")
-    print(f"  Total R      : {s.total_r:>+7.1f} R")
-    print(f"  Profit factor: {min(s.profit_factor, 999):>7.2f}")
+    print(f"  Expectancy   : {_c(f'{s.expectancy_r:>+7.3f}', _pnl_color(s.expectancy_r))} R")
+    print(f"  Total R      : {_c(f'{s.total_r:>+7.1f}', _pnl_color(s.total_r))} R")
+    print(f"  Profit factor: {_c(f'{min(s.profit_factor, 999):>7.2f}', _pnl_color(s.profit_factor, pivot=1.0))}")
     print(f"  Max drawdown : {s.max_drawdown_r:>7.2f} R")
     print(f"  Avg bars held: {s.avg_bars_held:>7.1f}")
-    print(f"  Best trade   : {s.best_trade_r:>+7.2f} R")
-    print(f"  Worst trade  : {s.worst_trade_r:>+7.2f} R")
+    print(f"  Best trade   : {_c(f'{s.best_trade_r:>+7.2f}', _pnl_color(s.best_trade_r))} R")
+    print(f"  Worst trade  : {_c(f'{s.worst_trade_r:>+7.2f}', _pnl_color(s.worst_trade_r))} R")
     print(f"  {sep}")
     for label, breakdown in [
         ("By signal", point.by_signal), ("By regime", point.by_regime),
@@ -82,7 +96,8 @@ def print_baseline(point, equity=None, bootstrap=None, kelly=None,
         for key, st in sorted(breakdown.items()):
             bar = _sparkbar(st.expectancy_r, lo=-2.0, hi=2.0, width=10)
             print(f"    {key:<22s} {st.trades_count:4d}t  "
-                  f"WR {st.win_rate:4.0%}  E[R] {st.expectancy_r:+.3f}  {bar}")
+                  f"WR {st.win_rate:4.0%}  "
+                  f"E[R] {_c(f'{st.expectancy_r:+.3f}', _pnl_color(st.expectancy_r))}  {bar}")
     if equity:    print_equity_curve(equity)
     if bootstrap: print_bootstrap(bootstrap)
     if kelly:     print_kelly(kelly, streaks)
@@ -139,7 +154,7 @@ def print_kelly(kelly, streaks=None, bankroll=50_000, fixed_risk_pct=0.01):
           f"(${kelly.dollar_risk(bankroll, 'half'):>7,.0f})")
     print(f"  Quarter Kelly (ref.) : {kelly.quarter_kelly:.1%}  "
           f"(${kelly.dollar_risk(bankroll, 'quarter'):>7,.0f})")
-    print(f"  Edge per trade       : {kelly.edge_per_trade:+.3f} R")
+    print(f"  Edge per trade       : {_c(f'{kelly.edge_per_trade:+.3f}', _pnl_color(kelly.edge_per_trade))} R")
     print(f"  Breakeven win rate   : {kelly.breakeven_wr:.1%}")
     if streaks:
         print(f"\n  {_c('Consecutive Loss Analysis', _BOLD)}")

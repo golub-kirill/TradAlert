@@ -34,14 +34,16 @@ call yields the live penalty.
 
 Sliding-scale interpretation
 ────────────────────────────
-``scale = {2: 0.5, 3: 0.25, 4: 0.0}`` means:
+The default ``scale = {2: 0.5, 3: 0.25}`` (no hard block) means:
     streak == 0 or 1   → 1.0 (no penalty)
     streak == 2        → 0.5
-    streak == 3        → 0.25
-    streak >= 4        → 0.0 (block)
+    streak >= 3        → 0.25 (floor)
 
 For any streak ``k``, the multiplier is ``scale[max(j for j in scale if j <= k)]``,
-defaulting to 1.0 when no key fits.
+defaulting to 1.0 when no key fits. A ``4: 0.0`` entry would block entirely and
+remains configurable — it was removed from the default on 2026-06-03 because
+forward expectancy stays positive even after 4+ consecutive losses (see
+docs/triage_raw_notes_2026-06.md, Note 4).
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ from typing import Mapping
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SCALE: Mapping[int, float] = {2: 0.5, 3: 0.25, 4: 0.0}
+DEFAULT_SCALE: Mapping[int, float] = {2: 0.5, 3: 0.25}  # floors at 0.25; no hard block (see docstring)
 DEFAULT_LOOKBACK_DAYS: int = 90
 
 
@@ -212,8 +214,7 @@ class TickerHealth:
               lookback_days: 90
               scale:
                 2: 0.5
-                3: 0.25
-                4: 0.0
+                3: 0.25          # 4+ floors here; add `4: 0.0` to block instead
 
         ``fallback_enabled`` is used when the block is missing entirely
         — backtests default to ``False`` (baseline replay stability),

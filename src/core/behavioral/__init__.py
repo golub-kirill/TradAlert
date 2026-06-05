@@ -20,6 +20,25 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _column_or_warn(df, col, axis):
+    """Return ``df[col]`` if present, else log a LOUD warning and return None.
+
+    A non-empty feed that lacks its expected column means the producer's schema
+    drifted (stale cache or feed-format change). We refuse to crash the whole
+    run, but the mismatch is VISIBLE and must be fixed at the source — it is
+    never silently swallowed.
+    """
+    if df is not None and col in getattr(df, "columns", ()):
+        return df[col]
+    logger.warning(
+        "behavioral '%s' axis DISABLED — expected column %r missing from a "
+        "non-empty feed (producer/consumer schema mismatch — FIX the fetcher). "
+        "Got columns=%s",
+        axis, col, list(getattr(df, "columns", [])) if df is not None else None,
+    )
+    return None
+
+
 @dataclass
 class BehavioralState:
     """
@@ -252,11 +271,14 @@ def _classify_breadth(
     breadth_divergence:
     SPY making 20d new high AND breadth < 55% → True
     """
-    pct = float(breadth_df["pct_above_ma200"].iloc[-1])
+    _pct_col = _column_or_warn(breadth_df, "pct_above_ma200", "breadth")
+    if _pct_col is None:
+        return "NEUTRAL", False
+    pct = float(_pct_col.iloc[-1])
 
     # Determine trend direction (last 5 bars)
     if len(breadth_df) >= 5:
-        recent = breadth_df["pct_above_ma200"].iloc[-5:].values
+        recent = _pct_col.iloc[-5:].values
         falling = recent[-1] < recent[0]
     else:
         falling = False
@@ -295,7 +317,9 @@ def _classify_sector_cycle(sector_df: pd.DataFrame) -> str:
     if len(sector_df) < 60:
         return "MID"
 
-    normalized = sector_df["normalized"]
+    normalized = _column_or_warn(sector_df, "normalized", "sector_cycle")
+    if normalized is None:
+        return "MID"
     current = float(normalized.iloc[-1])
     ago_20 = float(normalized.iloc[-20])
     ago_60 = float(normalized.iloc[-60])
@@ -325,13 +349,15 @@ def _classify_positioning(
     < 10th → CROWDED_SHORT
     else → NEUTRAL
     """
-    # COT: managed money net positioning percentile
-    mm_net = cot_es["mm_net"]
-    cot_pctile = _rolling_percentile(mm_net, 260)  # ~5 years of weekly data
+    # COT: leveraged-money net positioning percentile (TFF report → ``lev_net``).
+    # Guarded: a missing/empty feed must degrade this axis, not raise — the
+    # downstream composite already handles a None percentile.
+    _lev = _column_or_warn(cot_es, "lev_net", "positioning(COT)")
+    cot_pctile = _rolling_percentile(_lev, 260) if _lev is not None else None
 
-    # NAAIM: exposure percentile
-    naaim_exp = naaim["exposure"]
-    naaim_pctile = _rolling_percentile(naaim_exp, 260)
+    # NAAIM: exposure percentile.
+    _exp = _column_or_warn(naaim, "exposure", "positioning(NAAIM)")
+    naaim_pctile = _rolling_percentile(_exp, 260) if _exp is not None else None
 
     if cot_pctile is not None and naaim_pctile is not None:
         composite = (cot_pctile + naaim_pctile) / 2
@@ -363,8 +389,8 @@ def _classify_sentiment(aaii: pd.DataFrame) -> str:
     < −1σ → FEAR
     else → NORMAL
     """
-    spread = aaii["spread"]
-    if len(spread) < 52:
+    spread = _column_or_warn(aaii, "spread", "sentiment")
+    if spread is None or len(spread) < 52:
         return "NORMAL"
 
     window = spread.tail(52)
