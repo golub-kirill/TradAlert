@@ -151,7 +151,7 @@ PARAM_GRID: list[ParamSpec] = [
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
 
-    # Phase 1 — 52-week proximity
+    # 52-week proximity
     ParamSpec("scanner.weights.near_52w_high",
               (0, 1, 2, 3, 4),
               "Near 52w high weight", "phase1"),
@@ -159,17 +159,17 @@ PARAM_GRID: list[ParamSpec] = [
               (0, 1, 2, 3, 4),
               "Far from 52w low weight", "phase1"),
 
-    # Phase 2 — RP percentile
+    # RP percentile
     ParamSpec("scanner.weights.rp_percentile",
               (0, 1, 2, 3, 4, 5),
               "RP percentile weight", "phase2"),
 
-    # Phase 3 — MA200 slope
+    # MA200 slope
     ParamSpec("scanner.weights.ma200_slope",
               (0, 1, 2),
               "MA200 slope weight", "phase3"),
 
-    # Phase 4 — VBP exit
+    # VBP exit
     ParamSpec("scanner.exit_weights.vbp_resistance",
               (0, 1, 2, 3),
               "VBP resistance weight", "phase4"),
@@ -180,7 +180,7 @@ PARAM_GRID: list[ParamSpec] = [
               "Min score to alert", "global",
               fmt="{:.0f}"),
 
-    # Phase 8 — Behavioral breadth-divergence penalty. Wired end-to-end in the
+    # Behavioral breadth-divergence penalty. Wired end-to-end in the
     # sweep: data/behavioral/* is loaded, run_prepped receives behavioral_data +
     # settings, and _SETTINGS_ALIASES routes this key to the name the classifier
     # reads. It only subtracts from behavioral_score WHEN a breadth divergence is
@@ -190,7 +190,7 @@ PARAM_GRID: list[ParamSpec] = [
               (0.0, 0.1, 0.2, 0.3),
               "Breadth divergence pen.", "phase8"),
 
-    # Phase 8 — Behavioral size-multiplier floor. The consumer key is
+    # Behavioral size-multiplier floor. The consumer key is
     # `size_mult_floor` (settings.yaml + behavioral classifier). The old
     # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
     # name nobody reads, so this row had no effect. Fixed to `size_mult_floor`.

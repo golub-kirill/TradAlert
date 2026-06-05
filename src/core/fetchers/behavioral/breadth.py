@@ -1,5 +1,5 @@
 """
-S&P 500 breadth and sector rotation fetchers (Phase 7).
+S&P 500 breadth and sector rotation fetchers.
 
 Computes:
 - pct_above_ma200 : % of S&P 500 constituents trading above their MA200.

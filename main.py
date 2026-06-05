@@ -53,7 +53,7 @@ try:
     from core.indicators.rp_rank import build_rp_rank_table  # noqa: E402
     from core.indicators.chart_signal_history import collect_signal_history  # noqa: E402
 
-    # Kept intentionally: graceful-import guard for optional Phase 6/8/9
+    # Kept intentionally: graceful-import guard for the optional
     # modules (macro / calendar / rp_rank / signal_history). A partial or
     # stripped install degrades to long-only core instead of crashing at
     # import; the four consult sites below fall back when this is False.
@@ -126,7 +126,7 @@ def main() -> None:
     # so the file is not read and parsed a second time inside FilterEngine.__init__.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
-    # Phase 10.5: --allow-shorts flips the master switch on. We only mutate
+    # --allow-shorts flips the master switch on. We only mutate
     # when the flag is set, so an unflagged run leaves filters.yaml untouched
     # (allow_shorts defaults false there) and the long-only baseline replays
     # bit-identically.
@@ -621,7 +621,7 @@ def _parse_args() -> argparse.Namespace:
         "--allow-shorts",
         action="store_true",
         default=False,
-        help="Enable short-side entries (Phase 10). Overrides "
+        help="Enable short-side entries. Overrides "
              "signals.allow_shorts in filters.yaml to true. Default off "
              "keeps the long-only baseline replay-stable.",
     )
@@ -697,7 +697,7 @@ def _print_report(
                if r.signal is not None and r.signal.direction == "long"]
     exits = [r for r in signals
              if r.signal is not None and r.signal.direction == "exit_long"]
-    # Phase 10.5: short-side counterparts. Empty unless --allow-shorts fired
+    # Short-side counterparts. Empty unless --allow-shorts fired
     # short entries / exit_short covers, so the baseline summary is unchanged.
     short_entries = [r for r in signals
                      if r.signal is not None and r.signal.direction == "short"]
@@ -769,7 +769,7 @@ def _print_report(
             for line in s.description.splitlines():
                 logger.info("    %s", line)
 
-    # ── short entries (Phase 10.5) ──────────────────────────────────────────
+    # ── short entries ──────────────────────────────────────────
     # Only rendered when short signals exist, so a long-only (baseline) run
     # produces byte-identical summary output.
     if fire_short_entries:

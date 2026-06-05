@@ -68,7 +68,7 @@ class Trade:
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.
     size_mult: float = 1.0
-    # Phase 10 v2: annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
+    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
     # 0.0 (default) = no borrow drag, so longs and pre-v2 runs are unchanged.
     # Set at entry from signals.borrow.*; folded into effective_r as a
     # per-trade R drag proportional to bars_held (see borrow_drag_r).

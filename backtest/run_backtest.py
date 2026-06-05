@@ -510,7 +510,7 @@ def _parse_args() -> argparse.Namespace:
                         "T+1 entry (see config/filters.yaml "
                         "`signals.require_trigger_bar_up`). Off by default.")
     p.add_argument("--allow-shorts", action="store_true",
-                   help="Enable short-side entries (Phase 10): sets "
+                   help="Enable short-side entries: sets "
                         "signals.allow_shorts=true so the engine fires shorts "
                         "in BEAR regimes. Off by default so the long-only "
                         "baseline replays identically.")

@@ -5,24 +5,24 @@ Portfolio-aware bar-replay backtester with concurrent-position cap.
             stops. Entry slippage applied as PortfolioConfig.entry_slippage_pct.
 
     Scoring When a SignalScorer is injected, it enriches each entry signal
-            before the signal is queued (Phase 4). Phase 2 then sorts
+            before the signal is queued. The entry-fill step then sorts
             contested signals by score descending — highest-confidence
             trade wins the slot when the portfolio is at cap.
             No scorer → score defaults to 0.0 for all → alphabetical
             tiebreak preserved.
 
     Regime  Computed once per bar from market_t / vix_t and reused
-            across all Phase 4 engine calls. Saves N engine._market_regime
+            across all per-bar engine calls. Saves N engine._market_regime
             calls per bar.
 
     Commission commission_r subtracted from r_multiple in _close_trade.
 
-Per-bar phase order
+Per-bar pipeline (in order)
 ────────────────────────────────
-    Phase 1  Pending exits fill at open (frees slots before entries compete).
-    Phase 2  Pending entries fill at open, highest-score first, cap respected.
-    Phase 3  Stop/target check on held trades against bar H/L.
-    Phase 4  Engine.signal at close — queues exits and entries for next bar.
+    1  Pending exits fill at open (frees slots before entries compete).
+    2  Pending entries fill at open, highest-score first, cap respected.
+    3  Stop/target check on held trades against bar H/L.
+    4  Engine.signal at close — queues exits and entries for next bar.
              Entry signals enriched with scorer before queuing.
 """
 
@@ -98,7 +98,7 @@ class PortfolioConfig:
     max_drawdown_r: Optional[float] = None
     # Chronic-loser tracker (see core.ticker_health.TickerHealth). When None,
     # the policy is off and the backtester replays baseline behavior exactly.
-    # The tracker's penalty multiplies into signal.size_mult at Phase 2 entry.
+    # The tracker's penalty multiplies into signal.size_mult at entry.
     ticker_health: Optional["TickerHealth"] = None
     # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
     # baseline replays bit-identically. When set, a still-open trade is closed
@@ -239,7 +239,7 @@ class PortfolioBacktester:
     cfg     : PortfolioConfig with max_open_risk > 0.
     scorer  : Optional SignalScorer from scoring.py. When provided, every
               queued entry signal is enriched in-place (score, components,
-              description) and Phase 2 selects by highest score first.
+              description) and the entry-fill step selects by highest score first.
               When None, score defaults to 0.0 and order is alphabetical.
     """
 
@@ -373,7 +373,7 @@ class PortfolioBacktester:
 
             closed_this_bar: set[str] = set()
 
-            # ── Phase 1: pending exits fill at open (frees slots) ─────────
+            # ── Pending exits fill at open (frees slots) ─────────
             for ticker in sorted(active):
                 if ticker not in pending_exits or ticker not in open_trades:
                     continue
@@ -406,7 +406,7 @@ class PortfolioBacktester:
                         signal=pending_entries.pop(ticker),
                     ))
 
-            # ── Phase 2: pending entries fill at open — score-ranked ──────
+            # ── Pending entries fill at open — score-ranked ──────
             # Highest-scoring signal wins the slot when cap is contested.
             # Falls back to score=0.0 (alphabetical) when scorer not used.
             sorted_entries = sorted(
@@ -453,7 +453,7 @@ class PortfolioBacktester:
 
                 bar = prepped[ticker].df.loc[D]
                 raw_entry = float(bar["open"])
-                # Phase 10.3: slippage sign-aware.
+                # Slippage sign-aware.
                 # Long  : buy at a *worse* (higher) price → 1 + slip
                 # Short : sell at a *worse* (lower) price → 1 - slip
                 _is_short = (signal.direction == "short")
@@ -483,7 +483,7 @@ class PortfolioBacktester:
                     borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
                 )
 
-            # ── Phase 3: stop/target check on held trades ─────────────────
+            # ── Stop/target check on held trades ─────────────────
             for ticker in list(open_trades.keys()):
                 if ticker in closed_this_bar or D not in date_sets[ticker]:
                     continue
@@ -495,7 +495,7 @@ class PortfolioBacktester:
                 b_high = float(bar["high"])
 
                 # Pessimistic same-bar: stop wins when both H/L touch.
-                # Phase 10.3 — direction-aware hit conditions and fills.
+                # Direction-aware hit conditions and fills.
                 is_short = (trade.direction == "short")
                 stop_hit = (b_high >= trade.initial_stop) if is_short else (b_low <= trade.initial_stop)
                 if stop_hit:
@@ -548,7 +548,7 @@ class PortfolioBacktester:
                             dd_gate.record(closed.effective_r)
                             closed_this_bar.add(ticker)
 
-            # ── Phase 4: engine signal evaluation at this bar's close ─────
+            # ── Engine signal evaluation at this bar's close ─────
             for ticker in active:
                 if ticker in closed_this_bar:
                     continue
@@ -557,7 +557,7 @@ class PortfolioBacktester:
                 df_t = prepped[ticker].df.iloc[: t_idx + 1]
                 held = ticker in open_trades
 
-                # Phase 10.3 — held_short dispatch when the open trade is short.
+                # Held-short dispatch when the open trade is short.
                 held_short_flag = held and open_trades[ticker].direction == "short"
                 held_long_flag = held and not held_short_flag
                 signal = call_engine_slice(
@@ -576,7 +576,7 @@ class PortfolioBacktester:
 
                 elif not held and signal.direction in ("long", "short"):
                     # Enrich with scorer BEFORE queuing so the score is
-                    # available for Phase 2 ranking on the next bar.
+                    # available for entry ranking on the next bar.
                     if self._scorer is not None:
                         next_earn = (
                             next_earnings_from(
@@ -698,7 +698,7 @@ class PortfolioBacktester:
 
             closed_this_bar = set()
 
-            # Phase 1: pending exits at open
+            # Pending exits at open
             for ticker in sorted(active):
                 if ticker not in pending_exits or ticker not in open_trades:
                     continue
@@ -714,7 +714,7 @@ class PortfolioBacktester:
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
 
-            # Phase 2: pending entries at open, score-ranked
+            # Pending entries at open, score-ranked
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
             if dd_gate.blocked:
@@ -779,7 +779,7 @@ class PortfolioBacktester:
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
                     )
 
-            # Phase 3: stop / target on held trades
+            # Stop / target on held trades
             for ticker in list(open_trades):
                 if ticker in closed_this_bar or D not in date_sets[ticker]:
                     continue
@@ -834,7 +834,7 @@ class PortfolioBacktester:
                             dd_gate.record(closed.effective_r)
                             closed_this_bar.add(ticker)
 
-            # Phase 4: engine signal at close
+            # Engine signal at close
             for ticker in active:
                 if ticker in closed_this_bar:
                     continue

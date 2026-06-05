@@ -387,7 +387,7 @@ class BarReplayBacktester:
                 if final_mult <= 0:
                     pending_entry = None
                 else:
-                    # Phase 10.3: trade direction follows the queued signal.
+                    # Trade direction follows the queued signal.
                     # BarReplayBacktester has no entry_slippage in its
                     # BacktestConfig (that lives only on PortfolioConfig),
                     # so bar_open is the realised entry for both sides.

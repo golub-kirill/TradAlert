@@ -322,7 +322,7 @@ class FilterEngine:
             raw = yaml.safe_load(f)
         return dict(raw.get("sector_map", {}))
 
-    # ── Stage 1 ───────────────────────────────────────────────────────────────
+    # ── scan: liquidity & quality screen ───────────────────────────────────────────────────────────────
 
     def scan(
             self,
@@ -423,7 +423,7 @@ class FilterEngine:
 
         return _snapshot(self._scan_pass_reason(df, row, dv20), True)
 
-    # ── Stage 2 ───────────────────────────────────────────────────────────────
+    # ── signal: entry / exit generation ───────────────────────────────────────────────────────────────
 
     def signal(
             self,
@@ -496,7 +496,7 @@ class FilterEngine:
             logger.debug("signal NONE %s: %s", ticker, result.reason)
         return result
 
-    # ── Stage 2: entry mode ──────────────────────────────────────────────────
+    # ── entry mode ──────────────────────────────────────────────────
 
     def _signal_entry(
             self,
@@ -563,7 +563,7 @@ class FilterEngine:
         if direction == "none":
             return self._fail_result(why, regime, ticker_trend)
 
-        # 5.0 Phase 10 v2: hard-to-borrow gate (shorts only, opt-in).
+        # Hard-to-borrow gate (shorts only, opt-in).
         # Many small caps are HTB / unavailable to borrow; v1 assumed
         # availability. Symbols listed in ``signals.hard_to_borrow_list``
         # cannot be shorted. No effect on longs or when the list is absent.
@@ -597,7 +597,7 @@ class FilterEngine:
         atr_mult = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
         min_rr = self._cfg["signals"]["stop_loss"]["min_rr"]
         is_long_dir = (direction == "long")
-        # Phase 10 v2: shorts have a bounded upside (price floor of $0), so
+        # Shorts have a bounded upside (price floor of $0), so
         # they can warrant a tighter reward ceiling. ``min_rr_short`` lets
         # the short side demand a different R:R. Absent → falls back to
         # ``min_rr`` so longs and pre-v2 configs are unchanged.
@@ -642,7 +642,7 @@ class FilterEngine:
             reason="entry signal fired",
         )
 
-    # ── Stage 2: exit mode ───────────────────────────────────────────────────
+    # ── exit mode ───────────────────────────────────────────────────
 
     def _signal_exit(
             self,
@@ -908,7 +908,7 @@ class FilterEngine:
             if ticker_trend != "DOWNTREND" and self._mean_rev_long(row, prev):
                 return "long", "mean_reversion", "mean-reversion long"
 
-        # Short-side entries (Phase 10.2). Only fire when the master
+        # Short-side entries. Only fire when the master
         # ``signals.allow_shorts`` switch is on AND the regime is
         # BEAR + not HIGH-vol. The ticker-trend gate mirrors the long
         # case: DOWNTREND for momentum shorts, !UPTREND for MR shorts.
@@ -967,7 +967,7 @@ class FilterEngine:
     def _momentum_short_entry(self, row: Series, prev: Series,
                               df: pd.DataFrame) -> bool:
         """
-        Phase 10.2 — Fresh short-entry trigger on downside momentum.
+        Fresh short-entry trigger on downside momentum.
 
         Mirror image of ``_momentum_long``:
           - ``macd_hist`` is currently negative
@@ -1007,7 +1007,7 @@ class FilterEngine:
 
     def _mean_rev_short_entry(self, row: Series, prev: Series) -> bool:
         """
-        Phase 10.2 — Counter-trend short entry into a rally (mirror of mean_rev_long).
+        Counter-trend short entry into a rally (mirror of mean_rev_long).
 
         Fires when ``RSI > signals.mean_reversion.short_entry.rsi_min`` AND
         histogram delta <= -``min_hist_delta_atr * atr`` (downtick).
@@ -1061,7 +1061,7 @@ class FilterEngine:
 
     def _momentum_pop_exit(self, row: Series, prev: Series) -> bool:
         """
-        Phase 10.2 — Held-short exit on momentum pop.
+        Held-short exit on momentum pop.
 
         Mirror of ``_momentum_fade_exit``. Fires when:
           - ``prev["macd_hist"] < 0 < row["macd_hist"]``  (zero-cross UP)
@@ -1082,7 +1082,7 @@ class FilterEngine:
 
     def _mean_rev_short_cover(self, row: Series, prev: Series) -> bool:
         """
-        Phase 10.2 — Held-short exit on extreme oversold + upturn.
+        Held-short exit on extreme oversold + upturn.
 
         Mirror of ``_mean_rev_exit``. Fires when RSI < ``mean_reversion.long.rsi_max``
         AND histogram delta >= ``min_hist_delta_atr * atr`` (signal turning up).
@@ -1101,7 +1101,7 @@ class FilterEngine:
             regime: MarketRegime,
     ) -> SignalResult:
         """
-        Held-short exit detection (Phase 10.2).
+        Held-short exit detection.
 
         Mirror of ``_signal_exit``. Fires on:
           1. regime flip — any non-BEAR trend

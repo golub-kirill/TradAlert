@@ -325,7 +325,7 @@ def _load_config(
     Load and validate config from watchlist.yaml and settings.yaml.
 
     Supports both the legacy flat ``tickers:`` list and the two-tier
-    ``tier_a:`` / ``tier_b:`` structure (Phase 2).  When ``tier_a`` is
+    ``tier_a:`` / ``tier_b:`` structure.  When ``tier_a`` is
     present, only those tickers are fetched; ``tier_b`` entries are
     ignored by the OHLCV fetcher (they are consumed later by the RP
     ranking pipeline).
@@ -353,7 +353,7 @@ def _load_config(
     watchlist = yaml.safe_load(watchlist_path.read_text(encoding="utf-8"))
     settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
 
-    # Two-tier structure (Phase 2): use tier_a for OHLCV fetch.
+    # Two-tier structure: use tier_a for OHLCV fetch.
     # Legacy flat list: fall back to tickers.
     if "tier_a" in watchlist:
         tickers = _flatten_tier(watchlist["tier_a"])
