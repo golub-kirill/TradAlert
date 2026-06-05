@@ -45,13 +45,11 @@ tier_a:
   - XLC                                 # communication services
 
   # ── Factor / style ────────────────────────────────────────────────────────
-  - MTUM                                # momentum
+  # MTUM / SIZE / SPHB pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - QUAL                                # quality
   - USMV                                # low volatility
   - VLUE                                # value
-  - SIZE                                # size
   - SPLV                                # low vol large
-  - SPHB                                # high beta
   - VIG                                 # dividend growth
 
   # ── International equity ──────────────────────────────────────────────────
@@ -60,8 +58,7 @@ tier_a:
   - EEM                                 # emerging markets
   - VWO                                 # emerging markets (alt)
   - EWJ                                 # Japan
-  - EWG                                 # Germany
-  - EWU                                 # UK
+  # EWG / EWU pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - EWZ                                 # Brazil
   - INDA                                # India
   - FXI                                 # China large
@@ -82,7 +79,7 @@ tier_a:
   # ── Commodities ───────────────────────────────────────────────────────────
   - GLD                                 # gold
   - SLV                                 # silver
-  - USO                                 # WTI crude
+  # USO pruned 2026-05-27 — chronic 0% WR (gap/contango). DBC + CPER cover commodity space.
   - UNG                                 # natural gas
   - DBC                                 # broad commodity
   - DBA                                 # agriculture
@@ -108,7 +105,7 @@ tier_a:
   - KWEB                                # China internet
   - ICLN                                # clean energy
   - TAN                                 # solar
-  - LIT                                 # lithium / batteries
+  # LIT pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - JETS                                # airlines
   - ITA                                 # aerospace & defense
   - PHO                                 # water
@@ -122,8 +119,7 @@ tier_a:
   - RY.TO                               # Royal Bank
   - TD.TO                               # TD Bank
   - CNQ.TO                              # Canadian Natural
-  - SU.TO                               # Suncor
-  - SHOP.TO                             # Shopify
+  # SU.TO / SHOP.TO pruned 2026-05-27 — chronic 0% WR; see postmortem.
 
   # ── Individual stocks — 16 with explicit thesis ───────────────────────────
   # mega-cap stable: MSFT, JPM, JNJ, KO
@@ -152,9 +148,23 @@ tier_a:
 tier_b:
   - sp500: true                         # auto-fetch full S&P 500 constituent list
   - tsx60: true                         # auto-fetch full TSX 60 constituent list
-
+  - exclude: [ "ACO.X.TO", ]
 # ── RP promotion rules ──────────────────────────────────────────────────────
-rp_promotion:
-  min_rp_rank: 85                       # promote only when RP rank ≥ 85
-  min_score: 70                         # AND signal score ≥ 70
-  max_promotions_per_day: 5             # cap new exposure per scan
+# F5-D / F5-10: previously defined `rp_promotion:` here, but no code consumes
+# it — the tier_b → tier_a promotion flow described in the audit was never
+# implemented. Block removed to avoid the false impression that promotions
+# are gated. When Phase 2 universe expansion is wired up, restore the keys.
+
+# ── Survivorship / selection audit (Phase A1) ─────────────────────────────────
+# Inputs for scripts/frozen_universe_ab.py. Quantifies how much of the backtest
+# edge is hindsight: newer ETFs that didn't exist early were included, and losers
+# were deleted after they lost (see the "pruned …" comments above). Free, no
+# external data (the pruned names need a one-time fetch: scripts/fetch_prices.py).
+survivorship_audit:
+  as_of_dates: ["2005-01-01", "2010-01-01", "2015-01-01"]  # sweep; report discount at each
+  # Names removed from tier_a AFTER seeing them lose. Re-added to the frozen
+  # universe for as-of dates >= their inception (you would NOT have known to prune
+  # them at the time). The pruning bias is usually larger than the look-ahead bias.
+  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT, SU.TO, SHOP.TO]
+  max_hold_days: 25         # apply the shipped cap so the audit reflects the real strategy
+  max_hold_mode: hard

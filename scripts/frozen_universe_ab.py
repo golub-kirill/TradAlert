@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+Phase A1 — frozen-universe A/B (survivorship / selection-bias audit).
+
+Quantifies how much of the backtest edge is hindsight. For each as-of date D it
+runs the SAME windowed backtest (D → present, shipped 25-bar hard cap) on:
+
+  A (hindsight)  — the CURRENT tier_a (curated with full hindsight: losers deleted,
+                   newer names kept).
+  B (frozen)     — names that actually existed at D (inception <= D), INCLUDING the
+                   deleted losers (re-added) and EXCLUDING names born after D.
+
+The **selection discount** = A − B (Δ total-R / Sharpe / max-DD). It also lists the
+look-ahead inclusions (in A, born after D) and the pruned losers re-added to B.
+
+Reads `survivorship_audit` from config/watchlist.yaml. The pruned losers must be in
+the price cache first — backfill with `scripts/fetch_prices.py`.
+
+    python scripts/frozen_universe_ab.py
+    python scripts/frozen_universe_ab.py --as-of 2010-01-01
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+import time
+from dataclasses import replace
+from datetime import datetime, date
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+for _p in (str(_ROOT), str(_ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+
+def _load_cfg():
+    import yaml
+    with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
+        base_cfg = yaml.safe_load(f)
+    with open(_ROOT / "config" / "watchlist.yaml", encoding="utf-8") as f:
+        wl = yaml.safe_load(f)
+    tier_a = [t for t in wl.get("tier_a", []) if isinstance(t, str)]
+    audit = wl.get("survivorship_audit", {}) or {}
+    return base_cfg, tier_a, audit
+
+
+def _metrics(trades) -> dict:
+    from backtest.equity_curve import build_curve
+    closed = [t for t in trades if t.exit_date is not None]
+    rs = [t.effective_r for t in closed]
+    n = len(rs)
+    ec = build_curve(closed)
+    return {
+        "n": n,
+        "wr": (100 * sum(1 for r in rs if r > 0) / n) if n else 0.0,
+        "total": ec.total_r,
+        "sharpe": ec.sharpe,
+        "max_dd": ec.max_dd,
+    }
+
+
+def _run_subset(uni, base_cfg, base_port, tickers, start, end) -> dict:
+    from backtest.sweep import SweepEngine
+    sub_prepped = {t: uni.prepped[t] for t in tickers if t in uni.prepped}
+    if not sub_prepped:
+        return {"n": 0, "wr": 0.0, "total": 0.0, "sharpe": float("nan"), "max_dd": 0.0}
+    sub = replace(uni, prepped=sub_prepped)          # keep market/vix/macro/behavioral context
+    bp = dict(base_port)
+    bp["start_date"] = start
+    bp["end_date"] = end
+    eng = SweepEngine(universe=sub, base_cfg=base_cfg, base_port_cfg=bp, n_workers=1)
+    return _metrics(eng.baseline().trades)
+
+
+def _f(v, d=2):
+    return "∞" if (isinstance(v, float) and not math.isfinite(v)) else f"{v:.{d}f}"
+
+
+def main() -> None:
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+    ap = argparse.ArgumentParser(description="Frozen-universe survivorship A/B")
+    ap.add_argument("--as-of", nargs="+", default=None, metavar="YYYY-MM-DD",
+                    help="As-of date(s); default: survivorship_audit.as_of_dates in watchlist.yaml")
+    args = ap.parse_args()
+
+    base_cfg, tier_a, audit = _load_cfg()
+    pruned = [t for t in (audit.get("pruned_losers") or []) if isinstance(t, str)]
+    as_of_strs = args.as_of or audit.get("as_of_dates") or ["2010-01-01"]
+    as_of_dates = [datetime.strptime(s, "%Y-%m-%d").date() for s in as_of_strs]
+
+    exec_cfg = base_cfg.get("execution", {})
+    base_port = {
+        "max_concurrent": 6,
+        "earnings_aware": True,
+        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
+        "commission_r": exec_cfg.get("commission_r", 0.005),
+        "close_open_at_eod": True,
+        "max_hold_days": int(audit.get("max_hold_days", 25)),
+        "max_hold_mode": str(audit.get("max_hold_mode", "hard")).replace("-", "_"),
+    }
+
+    from backtest.loader import load_universe
+    candidates = list(dict.fromkeys(tier_a + pruned))  # union, order-preserving
+
+    print(f"\n  Survivorship A/B  ·  cap={base_port['max_hold_days']}d {base_port['max_hold_mode']}"
+          f"  ·  as-of: {', '.join(as_of_strs)}")
+    print(f"  Loading {len(candidates)} candidate tickers (tier_a + pruned)…", flush=True)
+    t0 = time.time()
+    uni = load_universe(
+        candidates,
+        ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
+        earnings_aware=True,
+        cache_dir=_ROOT / "data" / "prices",
+        earnings_dir=_ROOT / "data" / "earnings_history",
+    )
+    print(f"  {uni.summary()}  ({time.time() - t0:.1f}s)")
+
+    incept = {t: p.df.index[0].date() for t, p in uni.prepped.items()}
+    last = uni.date_range.last
+    missing_pruned = [t for t in pruned if t not in uni.prepped]
+    if missing_pruned:
+        print(f"  ⚠ pruned losers WITHOUT cached data (excluded — run "
+              f"scripts/fetch_prices.py {' '.join(missing_pruned)}): {missing_pruned}")
+
+    rows = []
+    for D in as_of_dates:
+        A = [t for t in tier_a if t in uni.prepped]                      # hindsight (current)
+        B = [t for t in candidates if t in uni.prepped and incept[t] <= D]  # frozen as-of D
+        lookahead = sorted(t for t in A if incept[t] > D)               # in A, born after D
+        readd = sorted(t for t in pruned if t in uni.prepped and incept[t] <= D)
+        print(f"\n  ── as-of {D}  ·  test window {D} → {last} ──")
+        print(f"     A hindsight: {len(A)} names | B frozen: {len(B)} names "
+              f"| look-ahead inclusions: {len(lookahead)} | pruned re-added: {len(readd)}")
+        rA = _run_subset(uni, base_cfg, base_port, A, D, last)
+        rB = _run_subset(uni, base_cfg, base_port, B, D, last)
+        rows.append((D, rA, rB, lookahead, readd))
+        print(f"     A  {rA['n']:4d}t  TotalR {rA['total']:+7.1f}  Sharpe {_f(rA['sharpe'])}  maxDD {rA['max_dd']:.1f}")
+        print(f"     B  {rB['n']:4d}t  TotalR {rB['total']:+7.1f}  Sharpe {_f(rB['sharpe'])}  maxDD {rB['max_dd']:.1f}")
+        print(f"     selection discount  ΔTotalR {rB['total']-rA['total']:+7.1f}  "
+              f"ΔSharpe {_f(rB['sharpe']-rA['sharpe'])}")
+        if lookahead:
+            print(f"     look-ahead names: {', '.join(lookahead)}")
+        if readd:
+            print(f"     pruned re-added : {', '.join(readd)}")
+
+    print("\n" + "=" * 78)
+    print(f"  {'As-of':<12} {'A TotalR':>9} {'B TotalR':>9} {'ΔR (B-A)':>9} "
+          f"{'A SR':>6} {'B SR':>6} {'look-ahead':>11} {'re-add':>7}")
+    print("  " + "-" * 74)
+    for D, rA, rB, la, ra in rows:
+        print(f"  {str(D):<12} {rA['total']:>+9.1f} {rB['total']:>+9.1f} "
+              f"{rB['total']-rA['total']:>+9.1f} {_f(rA['sharpe']):>6} {_f(rB['sharpe']):>6} "
+              f"{len(la):>11} {len(ra):>7}")
+    print("=" * 78)
+    print("\n  ΔR (B−A) < 0 ⇒ the hindsight universe (A) out-earns the as-of-honest")
+    print("  universe (B): that gap is the SELECTION DISCOUNT — edge attributable to")
+    print("  survivorship/look-ahead, not to the strategy. A small gap is reassuring.\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -55,7 +55,9 @@ from backtest.trade import Trade
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
 from core.scoring import SignalScorer
+from core.ticker_health import TickerHealth
 from core.ticker_store import TickerStore, next_earnings_from
+from exceptions import InsufficientDataError
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,92 @@ def apply_stop_fill(initial_stop: float, bar_open: float) -> float:
     return min(initial_stop, bar_open)
 
 
+def apply_target_fill(initial_target: float, bar_open: float) -> float:
+    """Realistic target fill price for a long trade. Symmetric to ``apply_stop_fill``.
+
+    Gap-through model: if the bar opened *above* the target (overnight news,
+    gap-up), the target-as-limit order executes at ``bar_open`` — better
+    than ``initial_target``. If triggered intraday (``bar_open <= target
+    <= bar_high``), executes at ``initial_target``.
+
+    Without this, gap-up days are silently truncated to the configured R:R,
+    understating realised edge. Symmetric to the loss-side gap model so
+    headline R-multiple isn't biased by direction.
+
+    Args:
+        initial_target: Target level set at signal time. Never changes.
+        bar_open:       Opening price of the bar on which the target triggered.
+
+    Returns:
+        The fill price a limit-sell-at-target order would have received.
+    """
+    return max(initial_target, bar_open)
+
+
+def apply_stop_fill_short(initial_stop: float, bar_open: float) -> float:
+    """Realistic stop fill price for a SHORT trade. Mirror of ``apply_stop_fill``.
+
+    Gap-through model: for a short, the stop sits *above* entry. If the
+    bar opens *above* the stop (overnight news, gap-up), the buy-to-cover
+    stop-market order executes at ``bar_open`` — worse than the configured
+    stop. If triggered intraday (``bar_open <= stop < bar_high``), executes
+    at the stop level.
+
+    Symmetric to ``apply_stop_fill`` so headline R-multiple isn't biased
+    against the short side.
+    """
+    return max(initial_stop, bar_open)
+
+
+def apply_target_fill_short(initial_target: float, bar_open: float) -> float:
+    """Realistic target fill price for a SHORT trade. Mirror of ``apply_target_fill``.
+
+    For a short, the target sits *below* entry. If the bar opens *below*
+    the target (gap-down), the buy-to-cover limit fills at ``bar_open`` —
+    better than the configured target. Intraday touches fill at the
+    target level.
+    """
+    return min(initial_target, bar_open)
+
+
+def adjust_target_for_slippage(
+        entry_price: float,
+        initial_stop: float,
+        configured_target: float,
+        min_rr: float,
+        direction: str = "long",
+) -> float:
+    """Re-anchor the target to the slipped entry so realised R matches configured.
+
+    Long-side rationale (existing): ``FilterEngine`` sets
+    ``target_price = close + (close - stop) * min_rr`` using the
+    *pre-slippage* close. The backtester then fills at
+    ``close * (1 + entry_slippage_pct)``. ``Trade.compute_r`` computes
+    ``risk_per_share`` from the slipped entry, so a target hit on the
+    pre-slippage target reports r ≈ min_rr − slippage_pct × close / risk
+    — silently below configured min_rr.
+
+    Short-side mirror: stop sits above entry, target below. Slippage
+    pushes the slipped sell-entry below the close, so the pre-slippage
+    target (also below close) is *closer* than min_rr × slipped_risk
+    away. Same drift, opposite sign.
+
+    The ``direction`` parameter selects the sign. Default ``"long"`` so
+    existing callers stay unchanged.
+
+    Returns ``configured_target`` unchanged when ``min_rr <= 0`` (exit
+    signals) or when ``real_risk`` is non-positive (degenerate trade —
+    backtester will short-circuit on negative risk_per_share anyway).
+    """
+    if min_rr <= 0:
+        return configured_target
+    sign = -1 if direction == "short" else 1
+    real_risk = sign * (entry_price - initial_stop)
+    if real_risk <= 0:
+        return configured_target
+    return entry_price + sign * real_risk * min_rr
+
+
 # ── config + result types ────────────────────────────────────────────────────
 
 @dataclass
@@ -109,6 +197,18 @@ class BacktestConfig:
     end_date: Optional[date] = None
     earnings_aware: bool = True
     close_open_at_eod: bool = True
+    # Chronic-loser soft-penalty. When None (default), the policy is off
+    # and the backtester reproduces baseline behavior exactly. Pass an
+    # instance (typically ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``)
+    # to apply the sliding-scale size penalty on a per-ticker basis.
+    ticker_health: Optional["TickerHealth"] = None
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
+    # baseline replays bit-identically. Mirrors PortfolioConfig.max_hold_days:
+    # a still-open trade closes at the bar CLOSE once held this many bars.
+    #   mode "hard"          → always exit at the cap.
+    #   mode "if_not_profit" → exit at the cap only when not in profit.
+    max_hold_days: Optional[int] = None
+    max_hold_mode: str = "hard"
 
 
 @dataclass
@@ -272,22 +372,36 @@ class BarReplayBacktester:
 
             # ── 1. Execute pending fills at this bar's open ──────────────
             if pending_entry is not None and open_trade is None:
-                # P0-6: skip the entry if regime says zero-size; equivalent to
-                # "don't trade at all" for the simple backtester.
-                if getattr(pending_entry, "size_mult", 1.0) <= 0:
+                # Compose final size multiplier from regime/behavioral
+                # (already on the SignalResult) × chronic-loser penalty
+                # (if enabled). Zero or negative → skip the entry, same
+                # contract as the regime-zero short-circuit.
+                base_mult = float(getattr(pending_entry, "size_mult", 1.0))
+                chronic_mult = (
+                    self._cfg.ticker_health.size_multiplier(ticker, today)
+                    if self._cfg.ticker_health is not None
+                    else 1.0
+                )
+                final_mult = base_mult * chronic_mult
+
+                if final_mult <= 0:
                     pending_entry = None
                 else:
+                    # Phase 10.3: trade direction follows the queued signal.
+                    # BarReplayBacktester has no entry_slippage in its
+                    # BacktestConfig (that lives only on PortfolioConfig),
+                    # so bar_open is the realised entry for both sides.
                     open_trade = Trade(
                         ticker=ticker,
                         signal_type=pending_entry.signal_type,
-                        direction="long",
+                        direction=pending_entry.direction,
                         entry_date=today,
                         entry_price=float(bar["open"]),
                         initial_stop=float(pending_entry.stop_price),
                         initial_target=float(pending_entry.target_price),
                         market_regime=pending_entry.market_regime,
                         ticker_trend=pending_entry.ticker_trend,
-                        size_mult=float(getattr(pending_entry, "size_mult", 1.0)),
+                        size_mult=final_mult,
                     )
                     pending_entry = None
 
@@ -301,6 +415,7 @@ class BarReplayBacktester:
                     exit_idx=T,
                 )
                 trades.append(open_trade)
+                self._record_close(ticker, open_trade)
                 open_trade = None
                 pending_exit = False
                 continue  # no new entry the same bar an exit filled
@@ -309,31 +424,68 @@ class BarReplayBacktester:
             if open_trade is not None:
                 stop = open_trade.initial_stop
                 target = open_trade.initial_target
+                is_short = (open_trade.direction == "short")
+                b_open = float(bar["open"])
+                b_low = float(bar["low"])
+                b_high = float(bar["high"])
 
                 # Same-bar pessimistic: if BOTH touched, stop wins.
-                # apply_stop_fill models gap-through: if bar opened below the
-                # stop (e.g. overnight news), fill at bar_open, not stop level.
-                if float(bar["low"]) <= stop:
-                    fill = apply_stop_fill(stop, float(bar["open"]))
+                # Long  : stop hit when bar_low <= stop (price falling)
+                # Short : stop hit when bar_high >= stop (price rallying)
+                stop_hit = (b_high >= stop) if is_short else (b_low <= stop)
+                if stop_hit:
+                    fill = (apply_stop_fill_short(stop, b_open)
+                            if is_short
+                            else apply_stop_fill(stop, b_open))
                     _close_trade(open_trade, today, fill, "stop",
                                  df.index, T)
                     trades.append(open_trade)
+                    self._record_close(ticker, open_trade)
                     open_trade = None
                     continue
 
-                if float(bar["high"]) >= target:
-                    _close_trade(open_trade, today, target, "target",
+                # Long  : target hit when bar_high >= target (price rallying)
+                # Short : target hit when bar_low <= target (price falling)
+                target_hit = (b_low <= target) if is_short else (b_high >= target)
+                if target_hit:
+                    fill = (apply_target_fill_short(target, b_open)
+                            if is_short
+                            else apply_target_fill(target, b_open))
+                    _close_trade(open_trade, today, fill, "target",
                                  df.index, T)
                     trades.append(open_trade)
+                    self._record_close(ticker, open_trade)
                     open_trade = None
                     continue
 
+                # Time-based max-hold exit (opt-in). Neither stop nor target
+                # hit this bar; close at this bar's CLOSE once the trade has
+                # been held max_hold_days bars. Off when None → baseline same.
+                if self._cfg.max_hold_days is not None:
+                    entry_pos = int(df.index.searchsorted(
+                        pd.Timestamp(open_trade.entry_date)))
+                    if (T - entry_pos) >= self._cfg.max_hold_days:
+                        b_close = float(bar["close"])
+                        in_profit = ((b_close < open_trade.entry_price) if is_short
+                                     else (b_close > open_trade.entry_price))
+                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
+                            _close_trade(open_trade, today, b_close, "time_stop",
+                                         df.index, T)
+                            trades.append(open_trade)
+                            self._record_close(ticker, open_trade)
+                            open_trade = None
+                            continue
+
                 # Neither touched — check engine exit signal at this close.
+                # Dispatch by trade direction: held_short signals the engine
+                # to evaluate the cover-short logic in _signal_exit_short.
                 signal = self._call_engine(
                     ticker, df, T, today, market_dfs, vix_df,
-                    earnings_history, held_long=True,
+                    earnings_history,
+                    held_long=(not is_short),
+                    held_short=is_short,
                 )
-                if signal.passed and signal.direction == "exit_long":
+                if signal.passed and signal.direction in ("exit_long", "exit_short"):
                     pending_exit = True
                 continue
 
@@ -342,7 +494,7 @@ class BarReplayBacktester:
                 ticker, df, T, today, market_dfs, vix_df,
                 earnings_history, held_long=False,
             )
-            if signal.passed and signal.direction == "long":
+            if signal.passed and signal.direction in ("long", "short"):
                 pending_entry = signal
 
         # ── End-of-data: close any still-open trade ───────────────────────
@@ -361,8 +513,29 @@ class BarReplayBacktester:
                 exit_idx=end_idx,
             )
             trades.append(open_trade)
+            self._record_close(ticker, open_trade)
 
         return trades, bars_walked
+
+    # ── ledger helper ─────────────────────────────────────────────────────
+
+    def _record_close(self, ticker: str, trade: Trade) -> None:
+        """Forward a closed trade to the chronic-loser tracker, if enabled.
+
+        Safe to call when ``cfg.ticker_health`` is None — no-op in that
+        case. Pulled into a helper so the four close sites stay one-liners.
+        """
+        if self._cfg.ticker_health is None or trade.exit_date is None:
+            return
+        try:
+            self._cfg.ticker_health.record_trade(
+                ticker, trade.exit_date, float(trade.r_multiple),
+            )
+        except Exception as exc:  # noqa: BLE001 - tracker must never break a backtest
+            logger.warning(
+                "[%s] ticker_health.record_trade failed (continuing): %s",
+                ticker, exc,
+            )
 
     # ── engine wrapper ────────────────────────────────────────────────────
 
@@ -376,6 +549,7 @@ class BarReplayBacktester:
             vix_df: pd.DataFrame | None,
             earnings_history: list[date],
             held_long: bool,
+            held_short: bool = False,
     ) -> SignalResult:
         """
         Make one point-in-time engine.signal call.
@@ -410,10 +584,15 @@ class BarReplayBacktester:
                 vix_df=vix_t,
                 earnings_date=next_earn,
                 held_long=held_long,
+                held_short=held_short,
             )
-        except Exception as exc:
-            logger.debug("[%s] engine.signal raised at %s: %s",
+        except InsufficientDataError as exc:
+            logger.debug("[%s] engine.signal insufficient data at %s: %s",
                          ticker, today, exc)
+            return SignalResult(passed=False, reason=f"insufficient data: {exc}")
+        except Exception as exc:
+            logger.warning("[%s] engine.signal raised at %s: %s",
+                           ticker, today, exc)
             return SignalResult(passed=False, reason=f"engine raised: {exc}")
         finally:
             self._engine._today = saved_today
@@ -446,7 +625,9 @@ def _close_trade(
     try:
         entry_pos = int(df_index.searchsorted(pd.Timestamp(trade.entry_date)))
         trade.bars_held = max(0, exit_idx - entry_pos)
-    except Exception:
+    except (TypeError, ValueError, KeyError) as exc:
+        logger.debug("bars_held computation failed for %s (defaulting to 0): %s",
+                     trade.ticker, exc)
         trade.bars_held = 0
 
     trade.r_multiple = trade.compute_r() - commission_r
@@ -485,6 +666,7 @@ def call_engine_slice(
         earnings_history,
         held_long,
         regime=None,
+        held_short: bool = False,
 ):
     """Module-level engine.signal wrapper used by PortfolioBacktester.
 
@@ -508,10 +690,14 @@ def call_engine_slice(
             vix_df=vix_t,
             earnings_date=next_earn,
             held_long=held_long,
+            held_short=held_short,
             regime=regime,
         )
+    except InsufficientDataError as exc:
+        logger.debug("[%s] engine.signal insufficient data at %s: %s", ticker, today, exc)
+        return SignalResult(passed=False, reason=f"insufficient data: {exc}")
     except Exception as exc:
-        logger.debug("[%s] engine.signal raised at %s: %s", ticker, today, exc)
+        logger.warning("[%s] engine.signal raised at %s: %s", ticker, today, exc)
         return SignalResult(passed=False, reason=f"engine raised: {exc}")
     finally:
         engine._today = saved

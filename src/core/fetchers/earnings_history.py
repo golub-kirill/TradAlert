@@ -22,8 +22,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-import yfinance as yf
-
+from core.fetchers.symbology import to_yf_symbol
 from core.validators.yf_tickerValidator import validate_ticker
 from persistence.json_cache import (
     DEFAULT_CACHE_DIR,
@@ -79,11 +78,42 @@ def get_earnings_history(
             return dates
 
     logger.debug("Earnings history fetch ↓ %s", ticker)
-    dates = _fetch(ticker)
+    dates = fetch_earnings_dates_from_yfinance(ticker)
     save_section(
         ticker, _SECTION, {"dates": [d.isoformat() for d in dates]}, cache_dir,
     )
     return dates
+
+
+def fetch_earnings_dates_from_yfinance(ticker: str) -> list[date]:
+    """
+    Query yfinance ``earnings_dates`` and return a sorted, de-duplicated date list.
+
+    Returns ``[]`` on any failure. yfinance ERROR logs are suppressed via
+    ``silence_yfinance``. This is the canonical fetcher used by both the live
+    pipeline and the backtest pipeline.
+    """
+    try:
+        import yfinance as yf
+        yf_ticker = yf.Ticker(to_yf_symbol(ticker))
+        with silence_yfinance():
+            df = yf_ticker.earnings_dates
+        if df is None or df.empty:
+            return []
+
+        out: list[date] = []
+        for ts in df.index:
+            try:
+                d = ts.date() if hasattr(ts, "date") else None
+                if isinstance(d, date):
+                    out.append(d)
+            except Exception:
+                continue
+        return sorted(set(out))
+
+    except Exception as exc:
+        logger.warning("Earnings history fetch failed for %s — %s", ticker, exc)
+        return []
 
 
 def next_earnings_from(history: list[date], asof: date) -> date | None:
@@ -107,35 +137,6 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
 
 
 # ── internals ────────────────────────────────────────────────────────────────
-
-def _fetch(ticker: str) -> list[date]:
-    """
-    Query yfinance ``earnings_dates`` and return a sorted, de-duplicated date list.
-
-    Returns ``[]`` on any failure. yfinance ERROR logs are suppressed via
-    ``silence_yfinance``.
-    """
-    try:
-        yf_ticker = yf.Ticker(ticker)
-        with silence_yfinance():
-            df = yf_ticker.earnings_dates
-        if df is None or df.empty:
-            return []
-
-        out: list[date] = []
-        for ts in df.index:
-            try:
-                d = ts.date() if hasattr(ts, "date") else None
-                if isinstance(d, date):
-                    out.append(d)
-            except Exception:
-                continue
-        return sorted(set(out))
-
-    except Exception as exc:
-        logger.warning("Earnings history fetch failed for %s — %s", ticker, exc)
-        return []
-
 
 def _parse_dates(raw: list[str]) -> list[date]:
     """Coerce ISO date strings from cache to ``date`` objects; skip unparseable entries."""

@@ -11,6 +11,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from core.paths import PRICES_DIR, SETTINGS_YAML
 
 import pandas as pd
 import yaml
@@ -20,10 +21,10 @@ from exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR: Path = Path("data/prices")
+DEFAULT_CACHE_DIR: Path = PRICES_DIR
 # Absolute path so this resolves correctly regardless of the working directory
-# at import time (MINOR-02 in TODO — previously used a CWD-relative path).
-_SETTINGS_PATH: Path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
+# at import time, regardless of the current working directory.
+_SETTINGS_PATH: Path = SETTINGS_YAML
 
 
 def load_default_staleness_h() -> int:
@@ -134,7 +135,7 @@ def save(
     _validate_structure(df)
     path = _path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # P2-5 FIX: atomic write — temp file + os.replace prevents partial-write
+    # Atomic write — temp file + os.replace prevents partial-write
     # corruption if the process is killed mid-write or two threads race.
     tmp = path.with_suffix(path.suffix + ".tmp")
     df.to_parquet(tmp)

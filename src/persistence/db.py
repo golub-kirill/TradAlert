@@ -14,28 +14,18 @@ before this module is imported):
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
-import mysql.connector
 from mysql.connector import Error as MySQLError
-from mysql.connector.abstracts import MySQLConnectionAbstract
-from mysql.connector.pooling import PooledMySQLConnection
 
 from exceptions import ConfigError
+from persistence.db_conn import connect as _connect
 
 if TYPE_CHECKING:
-    # Imported for type hints only — avoids a circular import at runtime
-    # since main.py already imports from this module.
-    from main import TickerResult
+    # Type-only import of the shared DTO (no runtime dependency).
+    from core.types import TickerResult
 
 logger = logging.getLogger(__name__)
-
-# P1-7 FIX: a missing DB_USER/DB_PASSWORD/DB_NAME used to raise KeyError
-# from _connect(), bypassing the surrounding `except MySQLError` and
-# crashing the whole pipeline. We now raise ConfigError, and callers
-# catch (MySQLError, ConfigError) to degrade gracefully.
-_DB_OPTIONAL_KEYS = ("DB_USER", "DB_PASSWORD", "DB_NAME")
 
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
@@ -66,6 +56,9 @@ _INSERT_SCAN_RESULT_SQL = """
                                                     score,
                                                     reason,
                                                     close,
+                                                    stop_price,
+                                                    target_price,
+                                                    signal_type,
                                                     atr,
                                                     atr_pct,
                                                     dv20,
@@ -82,6 +75,9 @@ _INSERT_SCAN_RESULT_SQL = """
                                   %(score)s,
                                   %(reason)s,
                                   %(close)s,
+                                  %(stop_price)s,
+                                  %(target_price)s,
+                                  %(signal_type)s,
                                   %(atr)s,
                                   %(atr_pct)s,
                                   %(dv20)s,
@@ -208,10 +204,20 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
     sig = r.signal
     signal_kind = "none"
     if sig and sig.passed:
-        if sig.direction == "long":
-            signal_kind = "entry_long"
-        elif sig.direction == "exit_long":
-            signal_kind = "exit_long"
+        signal_kind = {
+            "long": "entry_long",
+            "short": "entry_short",
+            "exit_long": "exit_long",
+            "exit_short": "exit_short",
+        }.get(sig.direction, "none")
+
+    # Signal geometry — captured only when a real entry/exit fired, so a live
+    # signal can later be scored to a forward R and matched to backtest
+    # expectancy (see scripts/reconcile_live.py). None for non-signals.
+    fired = bool(sig and sig.passed)
+    stop_price = float(sig.stop_price) if fired and getattr(sig, "stop_price", None) else None
+    target_price = float(sig.target_price) if fired and getattr(sig, "target_price", None) else None
+    signal_type = sig.signal_type if fired and getattr(sig, "signal_type", None) else None
 
     return {
         "run_id": run_id,
@@ -221,6 +227,9 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         "score": sig.score if sig and sig.score > 0 else None,
         "reason": scan.reason or None,
         "close": scan.close,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "signal_type": signal_type,
         "atr": scan.atr,
         "atr_pct": scan.atr_pct,
         "dv20": scan.dv20,
@@ -233,20 +242,3 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
     }
 
 
-def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
-    """Open a MySQL connection. Raises MySQLError or ConfigError on failure."""
-    missing = [k for k in _DB_OPTIONAL_KEYS if not os.environ.get(k)]
-    if missing:
-        # P1-7 FIX: surface a clean ConfigError instead of KeyError.
-        raise ConfigError(
-            ", ".join(missing),
-            reason="DB env var(s) not set — DB writes disabled",
-        )
-    return mysql.connector.connect(
-        host=os.environ.get("DB_HOST", "localhost"),
-        port=int(os.environ.get("DB_PORT", "3306")),
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        database=os.environ["DB_NAME"],
-        connect_timeout=5,
-    )

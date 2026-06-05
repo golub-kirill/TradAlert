@@ -24,6 +24,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from core.paths import FUNDAMENTALS_DIR, SETTINGS_YAML
 from typing import Any
 
 import yaml
@@ -32,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_CACHE_DIR: Path = Path("data/fundamentals")
+DEFAULT_CACHE_DIR: Path = FUNDAMENTALS_DIR
 # Absolute path so this resolves correctly regardless of the working directory
-# at import time (MINOR-02 in TODO — previously used a CWD-relative path).
-_SETTINGS_PATH: Path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
+# at import time, regardless of the current working directory.
+_SETTINGS_PATH: Path = SETTINGS_YAML
 
 
 def staleness_for(section: str, fallback_hours: int) -> int:
@@ -191,7 +192,7 @@ def save_section(
     }
 
     try:
-        # P2-5 FIX: atomic write so a kill mid-write doesn't corrupt the file
+        # Atomic write so a kill mid-write doesn't corrupt the file
         # (json_cache.load_fresh_section would otherwise quarantine the whole
         # file, losing all sections, not just the one we were writing).
         tmp = path.with_suffix(path.suffix + ".tmp")

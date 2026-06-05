@@ -14,23 +14,22 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import date
 from typing import Iterable
 
-import mysql.connector
 from mysql.connector import Error as MySQLError
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 
 from backtest.stats import Stats
 from backtest.trade import Trade
+from exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
 
 # ── constants ────────────────────────────────────────────────────────────────
 
-# DECIMAL(10,4) max — used to clamp profit_factor when there are no losers.
+# DECIMAL(10,4) max — clamps profit_factor when there are no losers.
 _PF_INF_SENTINEL: float = 999999.9999
 
 # ── SQL ──────────────────────────────────────────────────────────────────────
@@ -106,8 +105,8 @@ def save_backtest_run(
         logger.info("backtest_runs ← inserted id=%d  trades=%d  R=%+.2f",
                     new_id, stats.trades_count, stats.total_r)
         return new_id
-    except MySQLError as exc:
-        logger.warning("backtest_runs write failed — %s", exc)
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("backtest_runs write skipped — %s", exc)
         return None
     finally:
         if conn and conn.is_connected():
@@ -134,8 +133,8 @@ def save_backtest_trades(run_id: int, trades: Iterable[Trade]) -> int:
         inserted = cursor.rowcount
         logger.info("backtest_trades ← inserted %d row(s) for run_id=%d",
                     inserted, run_id)
-    except MySQLError as exc:
-        logger.warning("backtest_trades bulk insert failed — %s", exc)
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("backtest_trades bulk insert skipped — %s", exc)
     finally:
         if conn and conn.is_connected():
             conn.close()
@@ -167,12 +166,10 @@ def _trade_to_row(run_id: int, t: Trade) -> dict:
 
 
 def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
-    """Open a MySQL connection from env vars. Same env keys as core.db."""
-    return mysql.connector.connect(
-        host=os.environ.get("DB_HOST", "localhost"),
-        port=int(os.environ.get("DB_PORT", "3306")),
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        database=os.environ["DB_NAME"],
-        connect_timeout=5,
-    )
+    """Open a MySQL connection. Single source of truth in persistence.db_conn.
+
+    Raises ConfigError when DB env vars are unset (callers catch alongside
+    MySQLError to skip journaling gracefully).
+    """
+    from persistence.db_conn import connect
+    return connect()

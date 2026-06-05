@@ -44,7 +44,7 @@ class EquityCurve:
     """
     Full time-series analytics for a backtest run.
 
-    All values in R unless a bankroll is supplied to dollar_equity().
+    All values are in R units.
     """
     equity: pd.Series  # cumulative R, indexed by exit_date
     drawdown: pd.Series  # underwater depth (always ≥ 0)
@@ -88,25 +88,6 @@ class EquityCurve:
         if self.monthly.empty:
             return 0.0
         return float((self.monthly > 0).mean())
-
-    def dollar_equity(
-            self,
-            bankroll: float,
-            kelly_fraction: float = 0.10,
-            r_unit_pct: float = 0.01,
-    ) -> pd.Series:
-        """
-        Convert R equity curve to dollar P&L.
-
-        Parameters
-        ----------
-        bankroll       : Starting capital in dollars.
-        kelly_fraction : Fraction of bankroll risked per trade (e.g. 0.10).
-        r_unit_pct     : What 1 R represents as a fraction of bankroll
-                         (e.g. 0.01 = 1% risk per trade).
-        """
-        dollar_per_r = bankroll * r_unit_pct * kelly_fraction / r_unit_pct
-        return self.equity * dollar_per_r
 
     def summary_lines(self) -> list[str]:
         """Terminal-friendly one-line-per-metric summary."""
@@ -152,7 +133,7 @@ def build_curve(trades: list["Trade"]) -> EquityCurve:
     closed.sort(key=lambda t: (t.exit_date, t.entry_date))
 
     dates = pd.to_datetime([t.exit_date for t in closed])
-    rs = np.array([float(t.r_multiple) for t in closed])
+    rs = np.array([float(t.effective_r) for t in closed])
 
     # ── equity curve ──────────────────────────────────────────────────────────
     equity_vals = np.cumsum(rs)
@@ -169,7 +150,6 @@ def build_curve(trades: list["Trade"]) -> EquityCurve:
     recovery_days: int | None = None
     if max_dd > 0:
         trough_idx = int(dd_vals.argmax())
-        trough_eq = equity_vals[trough_idx]
         trough_pk = peak[trough_idx]
         # Find first bar after trough where equity exceeds the prior peak
         subsequent = np.where(
@@ -260,7 +240,7 @@ def attribution_table(trades: list["Trade"]) -> list[TickerAttribution]:
 
     rows: list[TickerAttribution] = []
     for ticker, ts in groups.items():
-        rs = [t.r_multiple for t in ts]
+        rs = [t.effective_r for t in ts]
         bars = [
             (t.exit_date - t.entry_date).days
             if t.exit_date and t.entry_date else 0
@@ -277,4 +257,7 @@ def attribution_table(trades: list["Trade"]) -> list[TickerAttribution]:
             avg_bars=float(np.mean(bars)) if bars else 0.0,
         ))
 
-    return sorted(rows, key=lambda x: x.total_r, reverse=True)
+    # Tie-break: when total_r ties, worst-trade ascending so chronic
+    # losers float to the bottom even at the same headline R. Postmortem
+    # "Report niceties" — see TODO.md.
+    return sorted(rows, key=lambda x: (-x.total_r, x.worst_r))

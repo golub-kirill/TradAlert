@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TradAlert — sector_map.yaml
+# Read by FilterEngine._load_sector_map() when signals.sector_gate.enabled.
+#
+# Maps each ticker → its sector ETF. The sector gate blocks long entries
+# whose sector ETF is below its MA(trend.ma_fast). Tickers absent from this
+# map are not gated (return True from _sector_strength_ok).
+#
+# F5-C: this file is committed (was previously missing — sector gate silently
+# disabled with a WARNING). Empty mapping = gate effectively disabled even
+# when enabled=true, until a real mapping is supplied.
+#
+# Convention: sector ETFs themselves map to themselves (so the gate doesn't
+# disqualify them while evaluating their own setup).
+# ─────────────────────────────────────────────────────────────────────────────
+
+sector_map: { }

@@ -1,13 +1,35 @@
+# TradAlert runtime dependencies.
+#
+# Versions intentionally unpinned; add explicit pins (`==X.Y.Z`) once the
+# project is on a CI / release cycle. F1-8 / F9-10 follow-ups track that.
+
+# Core data / numerics
 pandas
 numpy
+pyarrow
+
+# Market data
 yfinance
+
+# Config + secrets
 pyyaml
-mplfinance
-matplotlib
-pillow
 python-dotenv
+
+# Persistence
 mysql-connector-python
+
+# HTTP — macro/SEC fetchers + Wikipedia scrapers
 requests
 beautifulsoup4
 lxml
-openpyxl
+
+# Charts
+mplfinance
+matplotlib
+pillow
+
+# Spreadsheet read for AAII sentiment
+xlrd
+
+curl-cffi
+pytest

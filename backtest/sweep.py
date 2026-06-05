@@ -100,7 +100,12 @@ PARAM_GRID: list[ParamSpec] = [
               (0.02, 0.05, 0.08, 0.12, 0.18),
               "Momentum MACD delta gate", "momentum_entry"),
 
-    # Momentum exit (fade trigger)
+    # Momentum exit (fade trigger). NB `signals.momentum.short` is the held-LONG
+    # momentum-fade EXIT (legacy name), not a short entry. The rsi_min floor
+    # below rarely binds — at a MACD zero-cross-down RSI is usually well above
+    # 40 — so sweeping it often shows little/no effect (inert gate, not a wiring
+    # bug). Instrument binding frequency before pruning/widening.
+    # See docs/triage_raw_notes_2026-06.md (Note 2a).
     ParamSpec("signals.momentum.short.rsi_min",
               (25, 30, 35, 40),
               "Momentum fade RSI floor", "momentum_exit"),
@@ -175,13 +180,21 @@ PARAM_GRID: list[ParamSpec] = [
               "Min score to alert", "global",
               fmt="{:.0f}"),
 
-    # Phase 8 — Behavioral breadth divergence penalty
+    # Phase 8 — Behavioral breadth-divergence penalty. Wired end-to-end in the
+    # sweep: data/behavioral/* is loaded, run_prepped receives behavioral_data +
+    # settings, and _SETTINGS_ALIASES routes this key to the name the classifier
+    # reads. It only subtracts from behavioral_score WHEN a breadth divergence is
+    # flagged, so it reads as "no effect" if divergence rarely fires over the
+    # window — dormant, not unwired. Instrument divergence frequency to confirm.
     ParamSpec("behavioral.breadth_divergence_penalty",
               (0.0, 0.1, 0.2, 0.3),
               "Breadth divergence pen.", "phase8"),
 
-    # Phase 8 — Behavioral size multiplier floor
-    ParamSpec("behavioral.size_multiplier_floor",
+    # Phase 8 — Behavioral size-multiplier floor. The consumer key is
+    # `size_mult_floor` (settings.yaml + behavioral classifier). The old
+    # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
+    # name nobody reads, so this row had no effect. Fixed to `size_mult_floor`.
+    ParamSpec("behavioral.size_mult_floor",
               (0.25, 0.35, 0.50, 0.65),
               "Behavioral size floor", "phase8"),
 ]
@@ -455,6 +468,7 @@ class SweepReport:
             {
                 "ticker": t.ticker,
                 "signal_type": t.signal_type,
+                "direction": t.direction,
                 "entry_date": t.entry_date,
                 "exit_date": t.exit_date,
                 "entry_price": t.entry_price,
@@ -654,7 +668,7 @@ class SweepEngine:
         with ProcessPoolExecutor(
                 max_workers=self._n_workers,
                 initializer=_worker_init,
-                initargs=(src_path,),
+                initargs=(src_path, packed_universe),  # universe shipped ONCE per worker
         ) as pool:
             for i, job in enumerate(jobs):
                 spec = job["spec"]
@@ -672,7 +686,6 @@ class SweepEngine:
 
                 fut = pool.submit(
                     _worker_run,
-                    packed_universe,
                     cfg,
                     port_params,
                     spec.dotted,
@@ -736,8 +749,22 @@ class SweepEngine:
         _PORT_FIELDS = {
             "max_concurrent", "start_date", "end_date", "earnings_aware",
             "close_open_at_eod", "entry_slippage_pct", "commission_r",
+            "max_hold_days", "max_hold_mode",
         }
         pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
+
+        # Per-worker chronic-loser tracker. The config dict is passed
+        # through base_port; each worker builds a fresh TickerHealth so
+        # sweep points don't share streak state.
+        chronic_cfg = port_params.get("chronic_loser_cfg")
+        if chronic_cfg:
+            try:
+                from core.ticker_health import TickerHealth
+                pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
+            except Exception as exc:
+                logger.warning("TickerHealth.from_config failed [%s]: %s",
+                               run_id, exc)
+
         try:
             pcfg = PortfolioConfig(**pcfg_kwargs)
         except Exception as exc:
@@ -770,8 +797,9 @@ class SweepEngine:
                         _settings = _yaml.safe_load(_f)
                     if not is_baseline:
                         _apply_settings_mutation(_settings, param_name, param_value)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[sweep] settings load/mutation failed for %s=%s: %s",
+                                   param_name, param_value, exc)
 
         bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
         result = bt.run_prepped(
@@ -820,17 +848,30 @@ class SweepEngine:
 
 # ── worker helpers (module-level so ProcessPoolExecutor can pickle them) ──────
 
-def _worker_init(src_root: str) -> None:
-    """Called once per worker process to set up sys.path."""
+# Per-worker universe cache. The 75 MB UniverseData is shipped to each worker
+# process ONCE via the pool initializer (initargs) and unpickled here, instead of
+# being passed (and re-deserialised) on every job — which made the IPC, not the
+# backtest, the bottleneck and defeated --workers scaling. See _run_parallel.
+_WORKER_UNIVERSE = None
+
+
+def _worker_init(src_root: str, packed: bytes | None = None) -> None:
+    """Called once per worker process: set up sys.path, then cache the universe.
+
+    sys.path must be set before unpickling so UniverseData and its dependencies
+    are importable.
+    """
     import sys
     src = os.path.join(src_root, "src")
     for p in (src_root, src):
         if p not in sys.path:
             sys.path.insert(0, p)
+    if packed is not None:
+        global _WORKER_UNIVERSE
+        _WORKER_UNIVERSE = _unpack_universe(packed)
 
 
 def _worker_run(
-        packed: bytes,
         cfg: dict,
         port_params: dict,
         param_name: str,
@@ -841,10 +882,12 @@ def _worker_run(
     """
     Worker entry-point for ProcessPoolExecutor.
 
-    Deserialises the universe snapshot, constructs the engine, and calls
-    the same hot-path used in the sequential path.
+    Uses the per-worker cached universe (set once in _worker_init) and calls
+    the same hot-path used in the sequential path — no per-job deserialisation.
     """
-    universe = _unpack_universe(packed)
+    universe = _WORKER_UNIVERSE
+    if universe is None:
+        raise RuntimeError("worker universe not initialised (initargs missing)")
 
     engine_obj = _SweepRunHelper(universe, cfg, port_params)
     return engine_obj._run_one(
@@ -923,7 +966,7 @@ _SETTINGS_ALIASES: dict[str, str] = {
     "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
     "scanner.min_score_to_alert": "scanner.min_score_to_alert",
     "behavioral.breadth_divergence_penalty": "behavioral.breadth_divergence_penalty",
-    "behavioral.size_multiplier_floor": "behavioral.size_multiplier_floor",
+    "behavioral.size_mult_floor": "behavioral.size_mult_floor",
     # SCORING_GRID — entry thresholds
     "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",
     "scanner.entry_thresholds.rsi_healthy_half_w": "scanner.entry_thresholds.rsi_healthy_half_w",

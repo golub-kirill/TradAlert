@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from exceptions import ConfigError
+
 if TYPE_CHECKING:
     from core.filter_engine import MarketRegime, SignalResult
     from core.position_manager import Position
@@ -109,6 +111,9 @@ class ExitThresholds:
     vol_expansion_ratio: float = 0.5
     vbp_near_atr_mult: float = 0.5
     vbp_far_atr_mult: float = 3.0
+    vbp_lookback: int = 120
+    vbp_n_bins: int = 24
+    vbp_volume_percentile: int = 70
 
 
 def _load_entry_thresholds(settings: dict) -> EntryThresholds:
@@ -134,6 +139,7 @@ def _load_entry_thresholds(settings: dict) -> EntryThresholds:
 def _load_exit_thresholds(settings: dict) -> ExitThresholds:
     """Load exit thresholds from settings.scanner.exit_thresholds with defaults."""
     raw = settings.get("scanner", {}).get("exit_thresholds", {}) or {}
+    vbp = settings.get("scanner", {}).get("vbp", {}) or {}
     defaults = ExitThresholds()
     return ExitThresholds(
         rsi_overbought_floor=float(raw.get("rsi_overbought_floor", defaults.rsi_overbought_floor)),
@@ -142,6 +148,9 @@ def _load_exit_thresholds(settings: dict) -> ExitThresholds:
         vol_expansion_ratio=float(raw.get("vol_expansion_ratio", defaults.vol_expansion_ratio)),
         vbp_near_atr_mult=float(raw.get("vbp_near_atr_mult", defaults.vbp_near_atr_mult)),
         vbp_far_atr_mult=float(raw.get("vbp_far_atr_mult", defaults.vbp_far_atr_mult)),
+        vbp_lookback=int(vbp.get("lookback", defaults.vbp_lookback)),
+        vbp_n_bins=int(vbp.get("n_bins", defaults.vbp_n_bins)),
+        vbp_volume_percentile=int(vbp.get("volume_percentile", defaults.vbp_volume_percentile)),
     )
 
 
@@ -163,6 +172,16 @@ class SignalScorer:
 
         self._entry_weights: dict[str, int] = sc.get("weights", {})
         self._exit_weights: dict[str, int] = sc.get("exit_weights", {})
+
+        # insider_buying / short_interest are backed by placeholder fetchers
+        # (Form 4 text-match, yfinance short %). A non-zero weight must not
+        # silently shape the score until they are validated — fail loudly.
+        for _k in ("insider_buying", "short_interest"):
+            if float(self._entry_weights.get(_k, 0) or 0) > 0:
+                raise ConfigError(
+                    f"scanner.weights.{_k}",
+                    reason="must be 0 until the backing fetcher is validated",
+                )
         self._min_score: int = sc.get("min_score_to_alert", _DEFAULT_MIN_SCORE)
         self._hold_low: int = mh.get("expected_hold_days_low", _DEFAULT_HOLD_LOW)
         self._hold_high: int = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)
@@ -199,17 +218,19 @@ class SignalScorer:
         current_price : Latest live price, if available.
         rp_ranks      : Ticker → RP percentile rank [0, 99] (Phase 2).
         """
-        if signal.direction == "long":
+        if signal.direction in ("long", "short"):
             score, components = _score_entry(
                 df, regime, earnings_date, self._entry_weights, self._filters_cfg,
                 self._entry_thr,
                 market_dfs=market_dfs, signal_type=signal.signal_type,
                 rp_ranks=rp_ranks, ticker=ticker,
+                direction=signal.direction,
             )
-        elif signal.direction == "exit_long":
+        elif signal.direction in ("exit_long", "exit_short"):
             score, components = _score_exit(
                 df, regime, self._exit_weights, self._exit_thr,
                 market_dfs=market_dfs,
+                direction=signal.direction,
             )
         else:
             score, components = 0.0, {}
@@ -232,6 +253,78 @@ class SignalScorer:
         )
 
 
+# ── direction-flip helpers ────────────────────────────────────────────────────
+
+# Components whose long-biased score has the same shape (0=bad, 1=good) but whose underlying *condition* is
+# direction-biased. For shorts, the long-style value is inverted via ``1 - score``. Components NOT in this list are
+# either already direction-agnostic (volume_spike, no_earnings_risk) or have their own direction-aware logic (
+# rsi_healthy, bb_zscore, short_interest).
+_FLIP_FOR_SHORT_ENTRY: tuple[str, ...] = (
+    "trend_up",
+    "ma50_slope",
+    "ma200_slope",
+    "breakout_20d",
+    "near_52w_high",
+    "far_from_52w_low",
+    "macd_bullish",
+    "relative_strength",
+    "insider_buying",
+)
+
+# Phase 10 v2: mean-reversion shorts fade an overbought RALLY — they short
+# strength *near the highs*. So the "position vs 52w range" axes should keep
+# their long-style sense (near the high = good setup), unlike momentum shorts
+# which want weakness. We flip everything else but leave those two unflipped.
+# (Fuller per-axis mirror functions remain a follow-on; see TODO.)
+_FLIP_FOR_SHORT_ENTRY_MR: tuple[str, ...] = tuple(
+    k for k in _FLIP_FOR_SHORT_ENTRY
+    if k not in ("near_52w_high", "far_from_52w_low")
+)
+
+_FLIP_FOR_SHORT_EXIT: tuple[str, ...] = (
+    # Exit sub-scores mostly compute "bearish for held longs". For exit_short
+    # they need to flip the sense — "bullish surge against held short" is the
+    # exit trigger. See ``_score_exit`` for the component list.
+    "regime_flip",
+    "macd_cross_down",
+    "rs_divergence",
+)
+
+
+def _flip_if_short(
+        components: dict[str, float],
+        direction: str,
+        flip_keys: tuple[str, ...] = _FLIP_FOR_SHORT_ENTRY,
+) -> None:
+    """Mutate ``components`` in place: invert direction-biased scores for shorts.
+
+    No-op when ``direction != "short"``. Only keys present in both
+    ``components`` and ``flip_keys`` are touched. Each value is mapped
+    ``v -> 1.0 - v`` which preserves the 0-1 range and zeros become ones.
+
+    Notes
+    -----
+    For Phase 10.4 v1 we accept the asymmetry that this simple inversion
+    isn't perfect for mean-reversion shorts (which want different
+    geometry than momentum shorts on some axes — e.g. near_52w_high is
+    actually GOOD for an MR-short into a rally). Polish in v2.
+    """
+    if direction != "short":
+        return
+    for key in flip_keys:
+        if key in components:
+            components[key] = max(0.0, min(1.0, 1.0 - float(components[key])))
+
+
+def _ma_series(df: pd.DataFrame, period: int, col: str) -> pd.Series:
+    """MA(period) series — the precomputed ``col`` when present (attach_indicators
+    uses the same period), else an on-the-fly rolling mean. Reading the column
+    avoids an O(n) rolling recompute per scored bar."""
+    if col in df.columns:
+        return df[col]
+    return df["close"].rolling(period, min_periods=period).mean()
+
+
 # ── entry sub-scores ──────────────────────────────────────────────────────────
 
 def _score_entry(
@@ -245,16 +338,25 @@ def _score_entry(
         signal_type: str = "momentum",
         rp_ranks: dict[str, float] | None = None,
         ticker: str | None = None,
+        direction: str = "long",
 ) -> tuple[float, dict[str, float]]:
-    """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
+    """Return (weighted_score_0_to_100, component_dict_0_to_1).
+
+    ``direction`` defaults to ``"long"`` so existing callers stay
+    unchanged. Pass ``"short"`` to flip direction-biased components
+    (see ``_FLIP_FOR_SHORT_ENTRY``) before the weighted average. The
+    flip happens after each component is computed in long-style, so
+    the returned ``components`` dict is short-correct."""
     row = df.iloc[-1]
     prev = df.iloc[-2]
 
     components: dict[str, float] = {}
 
     # 1. trend_up — close > MA50 > MA200
-    ma50 = df["close"].rolling(50, min_periods=50).mean().iloc[-1]
-    ma200 = df["close"].rolling(200, min_periods=200).mean().iloc[-1]
+    ma_fast_s = _ma_series(df, 50, "ma_fast")
+    ma_slow_s = _ma_series(df, 200, "ma_slow")
+    ma50 = ma_fast_s.iloc[-1]
+    ma200 = ma_slow_s.iloc[-1]
     close = float(row["close"])
     if close > ma50 > ma200:
         components["trend_up"] = 1.0
@@ -264,7 +366,7 @@ def _score_entry(
         components["trend_up"] = 0.0
 
     # 2. ma50_slope — MA50 change over last 20 bars as % of price
-    ma50_series = df["close"].rolling(50, min_periods=50).mean().dropna()
+    ma50_series = ma_fast_s.dropna()
     if len(ma50_series) >= 21:
         slope_pct = (ma50_series.iloc[-1] - ma50_series.iloc[-21]) / ma50_series.iloc[-21] * 100
         components["ma50_slope"] = max(
@@ -278,7 +380,7 @@ def _score_entry(
     # Mirror of ma50_slope; gated on the weights dict so the sub-score is silently
     # absent (not 0) when the user hasn't enabled it in settings.yaml.
     if "ma200_slope" in weights:
-        ma200_series = df["close"].rolling(200, min_periods=200).mean().dropna()
+        ma200_series = ma_slow_s.dropna()
         if len(ma200_series) >= 21:
             slope_pct = (
                     (ma200_series.iloc[-1] - ma200_series.iloc[-21])
@@ -383,6 +485,16 @@ def _score_entry(
         components["short_interest"] = _score_short_interest(
             ticker, regime.trend)
 
+    # Phase 10.4: invert direction-biased components for short entries.
+    # Has no effect when direction == "long" (the default).
+    # Phase 10 v2: mean-reversion shorts keep the 52w-range axes long-style
+    # (they fade strength near the highs), so they use a narrower flip list.
+    flip_keys = (
+        _FLIP_FOR_SHORT_ENTRY_MR if signal_type == "mean_reversion"
+        else _FLIP_FOR_SHORT_ENTRY
+    )
+    _flip_if_short(components, direction, flip_keys)
+
     return _weighted_average(components, weights), components
 
 
@@ -394,6 +506,7 @@ def _score_exit(
         weights: dict[str, int],
         thr: ExitThresholds,
         market_dfs: dict | None = None,
+        direction: str = "exit_long",
 ) -> tuple[float, dict[str, float]]:
     """Return (weighted_score_0_to_100, component_dict_0_to_1)."""
     row = df.iloc[-1]
@@ -450,6 +563,12 @@ def _score_exit(
     if "vbp_resistance" in weights:
         components["vbp_resistance"] = _score_vbp_resistance(df, thr)
 
+    # Phase 10.4: invert direction-biased components for exit_short.
+    _flip_if_short(
+        components,
+        "short" if direction == "exit_short" else "long",
+        _FLIP_FOR_SHORT_EXIT,
+    )
     return _weighted_average(components, weights), components
 
 
@@ -574,7 +693,8 @@ def _score_rs_entry(
             return 0.4
         else:
             return 0.0
-    except Exception:
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, AttributeError) as exc:
+        logger.debug("rs_entry score failed (neutral fallback): %s", exc)
         return 0.5
 
 
@@ -605,7 +725,8 @@ def _score_rs_exit(
         rs20 = (t0 / t20) / (s0 / s20) - 1.0
         # rs20 < 0 means underperforming → exit signal
         return max(0.0, min(1.0, -rs20 * 10.0))
-    except Exception:
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, AttributeError) as exc:
+        logger.debug("rs_exit score failed (neutral fallback): %s", exc)
         return 0.5
 
 
@@ -653,7 +774,8 @@ def _score_weekly_trend(df: pd.DataFrame) -> float:
             return 0.6
         else:
             return 0.0
-    except Exception:
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, AttributeError) as exc:
+        logger.debug("weekly_trend score failed (neutral fallback): %s", exc)
         return 0.5
 
 
@@ -709,7 +831,7 @@ def _score_vbp_resistance(
     if len(df) < 120:
         return 0.0
 
-    vbp = compute_vbp(df, lookback=120, n_bins=24)
+    vbp = compute_vbp(df, lookback=thr.vbp_lookback, n_bins=thr.vbp_n_bins)
     if vbp.empty:
         return 0.0
 
@@ -718,7 +840,7 @@ def _score_vbp_resistance(
     if atr <= 0:
         return 0.0
 
-    node = nearest_high_volume_node_above(vbp, close, volume_percentile=70)
+    node = nearest_high_volume_node_above(vbp, close, volume_percentile=thr.vbp_volume_percentile)
     if node is None:
         return 0.0
 
@@ -778,7 +900,8 @@ def _score_insider_buying(ticker: str | None) -> float:
     try:
         from core.fetchers.behavioral.form4 import fetch_form4
         data = fetch_form4(ticker)
-    except Exception:
+    except (ImportError, KeyError, ValueError, TypeError, AttributeError, OSError) as exc:
+        logger.debug("form4 fetch for %s failed (neutral fallback): %s", ticker, exc)
         return 0.5
 
     buys_30 = data.get("buys_30d", 0)
@@ -786,7 +909,6 @@ def _score_insider_buying(ticker: str | None) -> float:
     sells_90 = data.get("sells_90d", 0)
     buy_val_30 = data.get("buy_value_30d", 0.0)
     sell_val_90 = data.get("sell_value_90d", 0.0)
-    distinct_30 = data.get("distinct_insiders_30d", 0)
     cluster = data.get("cluster_buy_30d", False)
 
     if cluster and buy_val_30 >= 250_000:
@@ -822,7 +944,8 @@ def _score_short_interest(
     try:
         from core.fetchers.behavioral.short_interest import fetch_short_interest
         data = fetch_short_interest(ticker)
-    except Exception:
+    except (ImportError, KeyError, ValueError, TypeError, AttributeError, OSError) as exc:
+        logger.debug("short_interest fetch for %s failed (neutral fallback): %s", ticker, exc)
         return 0.5
 
     si_pct = data.get("short_percent_of_float")
@@ -988,7 +1111,7 @@ def _regime_detail(
             if idx_df is None or len(idx_df) < 50:
                 continue
             last = float(idx_df["close"].iloc[-1])
-            ma50 = float(idx_df["close"].rolling(50, min_periods=50).mean().iloc[-1])
+            ma50 = float(idx_df["close"].iloc[-50:].mean())
             if ma50 > 0:
                 dist = (last - ma50) / ma50 * 100
                 sign = "+" if dist >= 0 else ""

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import logging
+from datetime import date
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -121,7 +122,14 @@ def chart(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / (ticker.upper() + ".webp")
+    # Filename embeds the SIGNAL BAR's date (the last bar in the chart), e.g.
+    # URA_4jun26 (no leading-zero day, lowercase 3-letter month, 2-digit year),
+    # so daily screenshots don't overwrite each other AND the name matches the bar
+    # that fired. Falls back to today if df is empty. Built manually for
+    # cross-platform support (Windows strftime lacks %-d).
+    _d = df.index[-1] if len(df) else date.today()
+    _stamp = f"{_d.day}{_d.strftime('%b').lower()}{_d.strftime('%y')}"
+    out_path = output_dir / f"{ticker.upper()}_{_stamp}.webp"
 
     ma50 = df["close"].rolling(50, min_periods=1).mean()
     ma200 = df["close"].rolling(200, min_periods=1).mean()

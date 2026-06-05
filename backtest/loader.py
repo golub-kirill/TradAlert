@@ -332,6 +332,11 @@ def _load_parquet(ticker: str, cache_dir: Path) -> pd.DataFrame | None:
             )
             return None
 
+    # At this point one of the two strategies populated df; the else-branch
+    # of the outer try/except returns None above. The assert documents the
+    # invariant and lets the type checker drop the ``| None`` for the rest
+    # of this function — fixes 5 PyCharm None-deref flags in this block.
+    assert df is not None
     # Normalise index
     if not isinstance(df.index, pd.DatetimeIndex):
         # Parquet may store the timestamp as a column
@@ -354,10 +359,3 @@ def _load_parquet(ticker: str, cache_dir: Path) -> pd.DataFrame | None:
         return None
 
     return df
-
-
-def available_tickers(cache_dir: Path = CACHE_DIR) -> list[str]:
-    """Return every ticker that has a parquet file in cache_dir."""
-    return sorted(
-        p.stem for p in cache_dir.glob("*.parquet")
-    )
