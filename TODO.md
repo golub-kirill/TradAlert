@@ -31,14 +31,11 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   Remaining configs (OFF baseline, `if_not_profit`, 10–30d sweep, deflated Sharpe) in
   ADR-001/verification still predate the fix; relative comparisons unaffected
   (monotonic transform).
-- ⏸ **`Trade.compute_r` 0R on gap-through-stop entry — INVESTIGATED 2026-06-04, ~non-issue.**
-  Only **7 of 1098** trades gap through; the stop fills at the same open so
-  `exit ≈ entry − slippage` *always* → realized loss is just the entry slippage (~−0.03R
-  each, ~**−0.25R** total on a +132R ledger). The TODO's "understates the left tail"
-  premise was overstated — these are cost-only scratches, not hidden losers.
-  **Recommended: document** it in `compute_r` (gap-through = scored ≈0 by design) and
-  close; the `intended_risk` plumbing (4 files) isn't worth 0.25R. *Decision pending*
-  (user picked "record true loss", but the measured impact is immaterial — re-confirm).
+- ✅ **`Trade.compute_r` 0R on gap-through entry — DOCUMENTED & CLOSED 2026-06-04.**
+  7 of ~1098 trades gap through; the same-bar stop fills exit ≈ entry, so the loss is
+  slippage-only (~**−0.25R** total — ~1% of the headline's ±~26R bootstrap SE, i.e.
+  immaterial). Not a hidden left-tail. Documented as by-design in `compute_r`'s
+  docstring; the `intended_risk` plumbing (4 files) isn't worth 0.25R.
 
 **Universe-agnostic (NORTH STAR #2):**
 - ✅ **`compute_sp500_breadth` full-universe — FIXED 2026-06-04** (`breadth.py`).

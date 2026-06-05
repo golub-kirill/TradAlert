@@ -145,6 +145,15 @@ class Trade:
         backtester always populates exit_price first, so this is safe to
         call as the last step of close_trade().
 
+        Gap-through entries (risk ≤ 0) are scored 0R *by design* — this is NOT a
+        hidden left-tail loss. When the T+1 open gaps past the stop, the same-bar
+        stop logic fills the exit at that same open, so exit ≈ entry and the only
+        realized cost is entry/exit slippage. Measured 2026-06-04: 7 of ~1098
+        trades gap through, ≈ −0.25R total — roughly 1% of the headline's bootstrap
+        SE (±~26R), i.e. immaterial. Booking the true slippage loss would require
+        threading the *intended* (signal-based) risk through the close path; not
+        worth the added surface area for 0.25R (see TODO).
+
         Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
         the stop and the target, the backtester records the STOP fill (the
         worse outcome). So compute_r can return a loss even on a bar that
