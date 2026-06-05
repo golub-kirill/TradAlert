@@ -140,7 +140,7 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_concurrent": 6,  # 6 × 5% = 30% aggregate open risk cap
+        "max_open_risk": 6.0,  # aggregate open-risk budget in size_mult units (~6 full-size positions)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),

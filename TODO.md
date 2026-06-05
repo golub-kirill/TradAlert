@@ -43,9 +43,15 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   alphabetical A–C bias); now iterates the full universe with a vectorised row-wise
   mean (warmup/missing-date semantics preserved). Smoke-tested: 6887 rows 1999–2026,
   recent ~59% above MA200.
-- ◻ **`portfolio.max_concurrent: 6`** is a fixed cap tuned to ~91 names — wrong for a
-  tiny list, a bottleneck for a huge one. Make it relative (e.g. % of universe / risk
-  budget) or document the assumption.
+- ✅ **`portfolio.max_concurrent` → `max_open_risk` risk budget — DONE 2026-06-04.**
+  Re-expressed the cap as an aggregate-risk budget in `size_mult` units (default 6.0):
+  each open position consumes its own size_mult, so a half-size (regime/chronic-reduced)
+  position uses half a slot — universe-agnostic *by being a true risk control* (a count
+  that scales with universe size would blow the risk budget; this doesn't). Renamed the
+  field everywhere (config/sweep/scripts/tests); gate is now `Σ size_mult + candidate >
+  budget`. Pinned by `test_portfolio_risk_budget.py` (full-size == old count cap;
+  half-size doubles capacity). Headline re-run measures the shift (positions can pack
+  tighter in reduced-size regimes).
 
 **Hygiene / reproducibility:**
 - ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now

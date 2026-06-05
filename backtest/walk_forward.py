@@ -229,7 +229,7 @@ class WalkForwardEngine:
     ----------
     universe      : Pre-loaded UniverseData (from loader.load_universe).
     base_cfg      : FilterEngine config dict (filters.yaml content).
-    base_port_cfg : Portfolio parameters dict (max_concurrent, etc.).
+    base_port_cfg : Portfolio parameters dict (max_open_risk, etc.).
     is_years      : In-sample window length in years.  Default 3.
     oos_years     : Out-of-sample window length in years.  Default 1.
     step_months   : Months to slide each window forward.  Default 6.

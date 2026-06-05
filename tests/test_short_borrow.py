@@ -113,7 +113,7 @@ def _flat_prepped(n: int = 12) -> dict:
 
 def test_portfolio_stamps_borrow_rate_on_short_trades():
     eng = _ShortEngine(rate=0.05)
-    bt = PortfolioBacktester(eng, PortfolioConfig(max_concurrent=5), scorer=None)
+    bt = PortfolioBacktester(eng, PortfolioConfig(max_open_risk=5.0), scorer=None)
     result = bt.run_prepped(_flat_prepped(), skipped={})
 
     shorts = [t for t in result.trades if t.direction == "short"]
@@ -126,7 +126,7 @@ def test_portfolio_stamps_borrow_rate_on_short_trades():
 
 def test_portfolio_default_no_borrow_when_rate_zero():
     eng = _ShortEngine(rate=0.0)
-    bt = PortfolioBacktester(eng, PortfolioConfig(max_concurrent=5), scorer=None)
+    bt = PortfolioBacktester(eng, PortfolioConfig(max_open_risk=5.0), scorer=None)
     result = bt.run_prepped(_flat_prepped(), skipped={})
     shorts = [t for t in result.trades if t.direction == "short"]
     assert shorts

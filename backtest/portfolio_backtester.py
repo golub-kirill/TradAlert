@@ -69,7 +69,14 @@ class PortfolioConfig:
 
     Attributes
     ----------
-    max_concurrent       : Hard cap on open positions. Must be ≥ 1.
+    max_open_risk        : Aggregate open-risk budget, in size_mult units. Each
+                           open position consumes its own ``size_mult`` (a full-size
+                           position = 1.0; a regime/chronic-reduced 0.25× position =
+                           0.25). A new entry is dropped when it would push total open
+                           risk past this budget. This is a risk control, so it is
+                           intentionally universe-agnostic (independent of watchlist
+                           size). Must be > 0. Replaces the old raw-count cap
+                           ``max_concurrent`` (budget B ≈ B full-size positions).
     start_date           : Earliest entry date. None → warmup end.
     end_date             : Latest entry date. None → end of data.
     earnings_aware       : Reconstruct historical earnings for buffer gate.
@@ -81,7 +88,7 @@ class PortfolioConfig:
                            new entries until recovery to 50% of drawdown.
                            None → disabled.
     """
-    max_concurrent: int
+    max_open_risk: float
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     earnings_aware: bool = True
@@ -107,7 +114,7 @@ class PortfolioConfig:
 
 @dataclass
 class CappedSignal:
-    """An entry signal dropped because the portfolio was at max_concurrent."""
+    """An entry signal dropped because the portfolio was at its max_open_risk budget."""
     date: date
     ticker: str
     signal: SignalResult
@@ -229,7 +236,7 @@ class PortfolioBacktester:
     Parameters
     ----------
     engine  : FilterEngine. Its _today is mutated per call via try/finally.
-    cfg     : PortfolioConfig with max_concurrent ≥ 1.
+    cfg     : PortfolioConfig with max_open_risk > 0.
     scorer  : Optional SignalScorer from scoring.py. When provided, every
               queued entry signal is enriched in-place (score, components,
               description) and Phase 2 selects by highest score first.
@@ -242,8 +249,8 @@ class PortfolioBacktester:
             cfg: PortfolioConfig,
             scorer: SignalScorer | None = None,
     ):
-        if cfg.max_concurrent < 1:
-            raise ValueError(f"max_concurrent must be ≥ 1, got {cfg.max_concurrent}")
+        if cfg.max_open_risk <= 0:
+            raise ValueError(f"max_open_risk must be > 0, got {cfg.max_open_risk}")
         self._engine = engine
         self._cfg = cfg
         self._scorer = scorer
@@ -413,13 +420,6 @@ class PortfolioBacktester:
                     # set when flat) but guard for safety.
                     pending_entries.pop(ticker, None)
                     continue
-                if len(open_trades) >= self._cfg.max_concurrent:
-                    result.capped_signals.append(CappedSignal(
-                        date=D_date,
-                        ticker=ticker,
-                        signal=pending_entries.pop(ticker),
-                    ))
-                    continue
 
                 signal = pending_entries.pop(ticker)
                 # Compose final multiplier: regime/behavioral (already on
@@ -434,6 +434,18 @@ class PortfolioBacktester:
                 final_mult = base_mult * chronic_mult
 
                 if final_mult <= 0:
+                    result.capped_signals.append(CappedSignal(
+                        date=D_date, ticker=ticker, signal=signal,
+                    ))
+                    continue
+
+                # Risk-budget cap (size_mult units): each open position consumes
+                # its own size_mult, so a half-size position uses half a slot. Drop
+                # the entry when it would push aggregate open risk past the budget.
+                # Replaces the old raw-count cap (len(open_trades) >= N), which
+                # ignored per-position sizing and was tuned to a fixed universe.
+                open_risk = sum(t.size_mult for t in open_trades.values())
+                if open_risk + final_mult > self._cfg.max_open_risk:
                     result.capped_signals.append(CappedSignal(
                         date=D_date, ticker=ticker, signal=signal,
                     ))
@@ -724,11 +736,6 @@ class PortfolioBacktester:
                     if ticker in closed_this_bar:
                         pending_entries.pop(ticker, None)
                         continue
-                    if len(open_trades) >= self._cfg.max_concurrent:
-                        result.capped_signals.append(
-                            CappedSignal(D_date, ticker, pending_entries.pop(ticker))
-                        )
-                        continue
                     signal = pending_entries.pop(ticker)
                     base_mult = float(getattr(signal, "size_mult", 1.0))
                     chronic_mult = (
@@ -738,6 +745,13 @@ class PortfolioBacktester:
                     )
                     final_mult = base_mult * chronic_mult
                     if final_mult <= 0:  # regime + chronic-loser
+                        result.capped_signals.append(
+                            CappedSignal(D_date, ticker, signal)
+                        )
+                        continue
+                    # Risk-budget cap (size_mult units) — see the long path above.
+                    open_risk = sum(t.size_mult for t in open_trades.values())
+                    if open_risk + final_mult > self._cfg.max_open_risk:
                         result.capped_signals.append(
                             CappedSignal(D_date, ticker, signal)
                         )
