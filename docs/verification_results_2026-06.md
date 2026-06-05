@@ -112,6 +112,14 @@ uncapped headline (0.59).
 > raises Sortino). The transform is monotonic, so all *relative* comparisons (mode A
 > vs B, OFF vs ON, horizon sweep) are unchanged — only refresh the absolute figures
 > when a headline run is next journaled.
+>
+> **Refreshed headline (2026-06-04, rf=0, `run_id=6`).** Re-ran the canonical
+> `--max-hold-days 25 --max-hold-mode hard` (full history): **Sharpe 0.58, Sortino
+> 1.02**, +87.5R over 1211 trades (WR 48.8%, PF 1.28, Calmar 0.12; `time_stop` 193t @
+> 80% WR). This is the rf=0/`/N` value for the shipped config; the old-convention
+> tables above are left as-is (internally consistent), so compare to them only on
+> *direction*, not absolute level. Other configs (OFF baseline, `if_not_profit`, the
+> 10–30d sweep, deflated Sharpe) are not yet re-journaled under rf=0.
 
 ### Biases still NOT addressed (the honest gaps)
 1. **Survivorship — Phase A (biggest).** `tier_a` is hand-picked; the

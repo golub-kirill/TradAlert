@@ -26,10 +26,11 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   scale-invariant** Sharpe (dropped the hardcoded "1R ≈ 10%" cash-rate conversion that
   conflicted with the 1%-fixed-risk policy); Sortino downside deviation now uses the
   **textbook /N** form (was /down-month-count). Conventions pinned by `test_core_math.py`
-  (199 passed). **Figure refresh pending:** the 0.44–0.59 Sharpe / Sortino values in
-  ADR-001 + verification docs predate the fix and tick up slightly (~+0.05 Sharpe; /N
-  raises Sortino) — refresh absolutes on the next journaled headline run; relative
-  comparisons (mode/horizon/AB) are unaffected (monotonic transform).
+  (199 passed). **Figures partly refreshed:** the 25d-hard headline was re-journaled
+  under rf=0 (`run_id=6`, 2026-06-04 → **Sharpe 0.58, Sortino 1.02**, +87.5R, 1211t).
+  Remaining configs (OFF baseline, `if_not_profit`, 10–30d sweep, deflated Sharpe) in
+  ADR-001/verification still predate the fix; relative comparisons unaffected
+  (monotonic transform).
 - ⏸ **`Trade.compute_r` 0R on gap-through-stop entry — INVESTIGATED 2026-06-04, ~non-issue.**
   Only **7 of 1098** trades gap through; the stop fills at the same open so
   `exit ≈ entry − slippage` *always* → realized loss is just the entry slippage (~−0.03R
@@ -40,9 +41,11 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   (user picked "record true loss", but the measured impact is immaterial — re-confirm).
 
 **Universe-agnostic (NORTH STAR #2):**
-- ◻ **`compute_sp500_breadth` truncates `constituents[:100]`** (`breadth.py:59`) →
-  A-C alphabetical bias + assumes a fixed count. Thread the full universe (or make it
-  a true sample). Direct NORTH STAR #2 violation.
+- ✅ **`compute_sp500_breadth` full-universe — FIXED 2026-06-04** (`breadth.py`).
+  Dropped the `constituents[:100]` truncation (was using ~100 of **503** S&P names,
+  alphabetical A–C bias); now iterates the full universe with a vectorised row-wise
+  mean (warmup/missing-date semantics preserved). Smoke-tested: 6887 rows 1999–2026,
+  recent ~59% above MA200.
 - ◻ **`portfolio.max_concurrent: 6`** is a fixed cap tuned to ~91 names — wrong for a
   tiny list, a bottleneck for a huge one. Make it relative (e.g. % of universe / risk
   budget) or document the assumption.

@@ -54,9 +54,12 @@ def compute_sp500_breadth(
         logger.warning("[breadth] no S&P 500 constituents available")
         return _load_cached_or_empty(parquet_path)
 
-    all_dates = set()
-    ticker_ma200 = {}
-    for ticker in constituents[:100]:  # see TODO: full universe
+    # Full S&P 500 universe — no truncation. The old ``constituents[:100]`` skewed
+    # breadth toward alphabetically-early (A–C) names and baked in a fixed count,
+    # violating the universe-agnostic rule (NORTH STAR #2). Tickers without at least
+    # 200 cached bars are skipped.
+    above_by_ticker: dict[str, pd.Series] = {}
+    for ticker in constituents:
         try:
             df = cache_load(ticker)
         except (FileNotFoundError, OSError, ValueError) as exc:
@@ -65,22 +68,17 @@ def compute_sp500_breadth(
         if len(df) < 200:
             continue
         ma200 = df["close"].rolling(200, min_periods=200).mean()
-        above = (df["close"] > ma200).astype(float)
-        ticker_ma200[ticker] = above
-        all_dates.update(df.index)
+        above_by_ticker[ticker] = (df["close"] > ma200).astype(float)
 
-    if not ticker_ma200:
+    if not above_by_ticker:
         return _load_cached_or_empty(parquet_path)
 
-    all_dates_sorted = sorted(all_dates)
-    pct = pd.Series(index=all_dates_sorted, dtype=float)
-    for d in all_dates_sorted:
-        vals = [s.get(d) for s in ticker_ma200.values() if d in s.index]
-        vals = [v for v in vals if pd.notna(v)]
-        if vals:
-            pct.loc[d] = 100.0 * sum(vals) / len(vals)
-
-    pct = pct.dropna()
+    # Row-wise % of constituents above their MA200 across the union of dates.
+    # Vectorised (replaces the per-date Python loop) so the full universe stays cheap;
+    # ``skipna`` drops dates a ticker didn't trade, matching the prior semantics
+    # (MA200-warmup bars stay counted as below, exactly as before).
+    above_df = pd.DataFrame(above_by_ticker)
+    pct = (100.0 * above_df.mean(axis=1, skipna=True)).dropna()
     out = pd.DataFrame({"pct_above_ma200": pct})
 
     try:
