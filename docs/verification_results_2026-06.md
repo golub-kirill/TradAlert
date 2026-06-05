@@ -120,6 +120,15 @@ uncapped headline (0.59).
 > tables above are left as-is (internally consistent), so compare to them only on
 > *direction*, not absolute level. Other configs (OFF baseline, `if_not_profit`, the
 > 10–30d sweep, deflated Sharpe) are not yet re-journaled under rf=0.
+>
+> **Cap change → risk budget (2026-06-04, `run_id=7`).** The portfolio cap was then
+> re-expressed from a raw count (`max_concurrent=6`) to an aggregate-risk budget
+> (`max_open_risk=6.0`, in `size_mult` units). Re-running the same 25d-hard headline:
+> **+95.7R / 1365 trades, Sharpe 0.55, Sortino 0.97** (PF 1.27, Calmar 0.12, WR 48.6%;
+> `time_stop` 213t @ 81%). vs `run_id=6`: +154 trades (+13%), +8.2R (+9%), Sharpe
+> −0.03. Reading: the budget admits more concurrent positions when they're sized down
+> in cautious regimes — more deployment and absolute R, marginally lower risk-adjusted.
+> **`run_id=7` is now the current shipped-config headline.**
 
 ### Biases still NOT addressed (the honest gaps)
 1. **Survivorship — Phase A (biggest).** `tier_a` is hand-picked; the

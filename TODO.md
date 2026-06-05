@@ -50,8 +50,9 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   that scales with universe size would blow the risk budget; this doesn't). Renamed the
   field everywhere (config/sweep/scripts/tests); gate is now `Σ size_mult + candidate >
   budget`. Pinned by `test_portfolio_risk_budget.py` (full-size == old count cap;
-  half-size doubles capacity). Headline re-run measures the shift (positions can pack
-  tighter in reduced-size regimes).
+  half-size doubles capacity). **Measured (`run_id=7` vs `run_id=6`, 25d-hard):**
+  1211→1365 trades (+13%), +87.5→+95.7R (+9%), Sharpe 0.58→0.55, Sortino 1.02→0.97 —
+  more deployment in reduced-size regimes, slightly lower risk-adjusted.
 
 **Hygiene / reproducibility:**
 - ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now
