@@ -197,6 +197,14 @@ on it.
 > effective-R figures above (size-scaled by macro×behavioral×size-gate). Decisions
 > use effective-R (report / compare / A/B); the raw ledger is for correctness checks.
 
+> Note (2026-06-04): the Sharpe/Sortino figures in this ADR were computed under the
+> *old* `stats_utils` convention (5% risk-free converted at "1R ≈ 10% of equity";
+> Sortino downside averaged over down-months only). That has been corrected to
+> **rf=0, scale-invariant Sharpe** and **textbook /N Sortino** — see the metrics
+> methodology note in `docs/verification_results_2026-06.md`. The Sharpe numbers
+> above tick up ~0.05 under rf=0; relative comparisons (hard vs if_not_profit, the
+> horizon sweep) are unaffected. Refresh absolutes on the next journaled run.
+
 **Pending gate — V5:** walk-forward (OOS) + robustness on 25d hard, to confirm the
 shrunken edge isn't itself overfit, before it becomes the validation headline.
 

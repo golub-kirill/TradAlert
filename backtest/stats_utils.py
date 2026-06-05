@@ -10,8 +10,8 @@ Public API
 ──────────
     bootstrap_ci(r_multiples, metric, n, ci)  → BootstrapResult
     kelly_fraction(win_rate, avg_win_r, avg_loss_r)  → KellyResult
-    sharpe_ratio(monthly_r, risk_free_annual)  → float
-    sortino_ratio(monthly_r, risk_free_annual)  → float
+    sharpe_ratio(monthly_r)  → float   (annualised, rf=0, scale-invariant)
+    sortino_ratio(monthly_r)  → float  (annualised, rf=0, downside dd over /N)
     consecutive_loss_stats(r_multiples)  → ConsecutiveLossStats
     drawdown_series(r_multiples)  → np.ndarray   (running drawdown in R)
     max_drawdown(r_multiples)  → float
@@ -320,56 +320,60 @@ def kelly_fraction(
 
 # ── Sharpe / Sortino ──────────────────────────────────────────────────────────
 
-def sharpe_ratio(
-        monthly_r: Sequence[float],
-        risk_free_annual: float = 0.05,
-) -> float:
+def sharpe_ratio(monthly_r: Sequence[float]) -> float:
     """
-    Annualised Sharpe ratio from a monthly R-multiple series.
+    Annualised Sharpe ratio of a monthly R-multiple series, risk-free = 0.
 
-    Uses excess return over a risk-free rate expressed in R units.
-    With typical Kelly half-fraction sizing (~10% of equity per 1R),
-    1R ≈ 10% return, so a 5% annual risk-free ≈ 0.042 R/month.
+    The backtester is pure-R: ``monthly_r`` is the sum of trade R-multiples per
+    calendar month (``EquityCurve.monthly``). R is unit-less — 1R is whatever
+    fraction of equity the deployed sizing risks per trade — so there is no
+    equity-per-R baked into the backtest. We therefore report the **scale-invariant**
+    Sharpe (mean / std of the monthly R series, annualised by √12) with **no
+    risk-free hurdle**. Subtracting a fixed cash rate would require assuming a
+    1R↔equity-% factor that the backtest does not define; doing so would make the
+    ratio depend on the chosen risk fraction rather than on the strategy's edge.
+    Absolute return-over-cash (which *does* depend on the risk fraction) is reported
+    separately, not folded in here.
 
-    Returns NaN when std == 0.
+    (Earlier versions subtracted a 5% risk-free rate converted at a hardcoded
+    "1R ≈ 10% of equity" — inconsistent with the project's 1%-fixed-risk policy and
+    not scale-invariant. rf=0 removes that assumption; see ADR-001 / verification docs.)
+
+    Returns NaN when fewer than 2 months or when std == 0.
     """
-    arr = np.array(monthly_r, dtype=float)
+    arr = np.asarray(monthly_r, dtype=float)
     if len(arr) < 2:
         return float("nan")
-
-    rf_monthly = (1 + risk_free_annual) ** (1 / 12) - 1
-    # Express rf in R units: assume 1R ≈ 10% return (half-Kelly context)
-    rf_r = rf_monthly / 0.10
-    excess = arr - rf_r
-    std = excess.std(ddof=1)
+    std = arr.std(ddof=1)
     if std == 0:
         return float("nan")
-    return float(excess.mean() / std * math.sqrt(12))
+    return float(arr.mean() / std * math.sqrt(12))
 
 
-def sortino_ratio(
-        monthly_r: Sequence[float],
-        risk_free_annual: float = 0.05,
-) -> float:
+def sortino_ratio(monthly_r: Sequence[float]) -> float:
     """
-    Annualised Sortino ratio — penalises only downside deviation.
+    Annualised Sortino ratio of a monthly R-multiple series, risk-free = 0.
 
-    Returns NaN when there are no negative months.
+    Uses the standard *target downside deviation*: the squared shortfall below 0 is
+    averaged over **all** months (upside months contribute 0), i.e.
+    ``dd = sqrt(mean(min(r, 0) ** 2))`` over the full series — **not** averaged over
+    only the down-months. The "/N" form is the textbook definition and keeps the
+    number comparable to published Sortinos; the prior "/n_down" form divided by the
+    count of negative months, which inflates the denominator and understates Sortino.
+    Risk-free = 0, consistent with :func:`sharpe_ratio`.
+
+    Returns +inf when there are no negative months, NaN when < 2 months.
     """
-    arr = np.array(monthly_r, dtype=float)
+    arr = np.asarray(monthly_r, dtype=float)
     if len(arr) < 2:
         return float("nan")
-
-    rf_monthly = (1 + risk_free_annual) ** (1 / 12) - 1
-    rf_r = rf_monthly / 0.10
-    excess = arr - rf_r
-    downside = excess[excess < 0]
-    if len(downside) == 0:
-        return float("inf")
-    dd_std = math.sqrt((downside ** 2).mean())
+    if not (arr < 0).any():
+        return float("inf")  # no downside → undefined denominator, +inf by convention
+    shortfall = np.minimum(arr, 0.0)
+    dd_std = math.sqrt((shortfall ** 2).mean())  # mean over ALL months → /N
     if dd_std == 0:
         return float("nan")
-    return float(excess.mean() / dd_std * math.sqrt(12))
+    return float(arr.mean() / dd_std * math.sqrt(12))
 
 
 # ── Drawdown ──────────────────────────────────────────────────────────────────

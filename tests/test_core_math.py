@@ -110,6 +110,27 @@ def test_sharpe_nan_on_zero_variance_and_sign_otherwise():
     pos = sharpe_ratio([0.5, 1.0, -0.2, 0.8, 0.3, 0.6])
     assert math.isfinite(pos) and pos > 0
     assert sortino_ratio([0.5, 1.0, 0.3]) == float("inf")  # no negatives
+    assert math.isnan(sharpe_ratio([1.0]))                 # < 2 obs → nan
+
+
+def test_sharpe_is_rf_zero_scale_invariant():
+    # rf = 0 ⇒ Sharpe = mean/std(ddof=1) * sqrt(12), no risk-free hurdle.
+    series = [1.0, -2.0, 3.0, 0.5]
+    arr = np.array(series)
+    expected = arr.mean() / arr.std(ddof=1) * math.sqrt(12)
+    assert sharpe_ratio(series) == pytest.approx(expected)
+    # Scale-invariant: multiplying every month by a constant leaves Sharpe unchanged.
+    assert sharpe_ratio([3.0 * x for x in series]) == pytest.approx(sharpe_ratio(series))
+
+
+def test_sortino_downside_deviation_is_over_N():
+    # dd must average squared shortfall over ALL months (/N), not just down-months.
+    series = [1.0, 1.0, 1.0, -1.0]            # one down-month of -1.0, N = 4
+    dd = math.sqrt(((-1.0) ** 2) / 4)          # /N: 0.5  (the old /n_down gave 1.0)
+    expected = (np.mean(series)) / dd * math.sqrt(12)
+    assert sortino_ratio(series) == pytest.approx(expected)
+    # Down-month dominates: /N is strictly more generous than the old /n_down form.
+    assert sortino_ratio(series) > 0
 
 
 # ── OHLCV validator ───────────────────────────────────────────────────────────

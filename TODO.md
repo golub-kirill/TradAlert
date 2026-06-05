@@ -22,10 +22,14 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
 (NORTH STAR #2) → hygiene. Run/clear these before the bigger bets.
 
 **Metric-correctness (we quote these numbers — fix first):**
-- ◻ **Sharpe/Sortino methodology** (`stats_utils.sharpe_ratio`) — TOP actionable patch.
-  Hardcodes "1R ≈ 10%" while sizing is 1% fixed-risk; Sortino divides by downside-*count*
-  (inflates). Every Sharpe in the ADR/validation (0.44–0.59) rides on this — correct or
-  document the convention.
+- ✅ **Sharpe/Sortino methodology — FIXED 2026-06-04** (`stats_utils`). Now **rf=0,
+  scale-invariant** Sharpe (dropped the hardcoded "1R ≈ 10%" cash-rate conversion that
+  conflicted with the 1%-fixed-risk policy); Sortino downside deviation now uses the
+  **textbook /N** form (was /down-month-count). Conventions pinned by `test_core_math.py`
+  (199 passed). **Figure refresh pending:** the 0.44–0.59 Sharpe / Sortino values in
+  ADR-001 + verification docs predate the fix and tick up slightly (~+0.05 Sharpe; /N
+  raises Sortino) — refresh absolutes on the next journaled headline run; relative
+  comparisons (mode/horizon/AB) are unaffected (monotonic transform).
 - ⏸ **`Trade.compute_r` 0R on gap-through-stop entry — INVESTIGATED 2026-06-04, ~non-issue.**
   Only **7 of 1098** trades gap through; the stop fills at the same open so
   `exit ≈ entry − slippage` *always* → realized loss is just the entry slippage (~−0.03R

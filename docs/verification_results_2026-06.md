@@ -100,6 +100,19 @@ config holds up on data it wasn't fit to. The weakest: OOS-positive is only
 marginally significant (p≈0.068), and the deflated Sharpe (~0.44) is well below the
 uncapped headline (0.59).
 
+> **Metrics methodology (2026-06-04, `stats_utils`).** Sharpe and Sortino are now
+> computed on the monthly-R series with **risk-free = 0**, annualised by √12, making
+> them **scale-invariant** (independent of the deployed risk fraction). Sortino uses
+> the textbook **target downside deviation over /N** — squared shortfall below 0
+> averaged over *all* months, not only the down-months. The prior code subtracted a 5%
+> cash rate converted at a hardcoded "1R ≈ 10% of equity" (inconsistent with the
+> 1%-fixed-risk policy) and averaged Sortino downside over the down-month count only.
+> **Every Sharpe/Sortino figure above and in `ADR-001` predates this fix**: they tick
+> **up** slightly on the next run (rf=0 drops a ~0.04 R/mo hurdle → Sharpe ≈ +0.05; /N
+> raises Sortino). The transform is monotonic, so all *relative* comparisons (mode A
+> vs B, OFF vs ON, horizon sweep) are unchanged — only refresh the absolute figures
+> when a headline run is next journaled.
+
 ### Biases still NOT addressed (the honest gaps)
 1. **Survivorship — Phase A (biggest).** `tier_a` is hand-picked; the
    frozen-universe A/B (TODO Phase A1) is still open. The walk-forward does nothing
