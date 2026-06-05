@@ -140,7 +140,8 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_open_risk": 6.0,  # aggregate open-risk budget in size_mult units (~6 full-size positions)
+        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size positions);
+        # risk-adjusted optimum from the 2026-06-04 budget sweep (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
@@ -210,7 +211,7 @@ def main() -> None:
     if args.max_open_risk is not None:
         base_port["max_open_risk"] = float(args.max_open_risk)
         print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
-              f"(size_mult units; default 6.0)")
+              f"(size_mult units; default 5.0)")
 
     engine = SweepEngine(
         universe=uni,
@@ -527,7 +528,7 @@ def _parse_args() -> argparse.Namespace:
                         "target).")
     p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
                    help="Aggregate open-risk budget in size_mult units (default "
-                        "6.0). Each open position consumes its own size_mult, so a "
+                        "5.0). Each open position consumes its own size_mult, so a "
                         "new entry is dropped once total open risk would exceed "
                         "this budget. Lower → fewer concurrent positions.")
     p.add_argument("--log", default="WARNING",

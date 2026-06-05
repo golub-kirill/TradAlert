@@ -128,7 +128,25 @@ uncapped headline (0.59).
 > `time_stop` 213t @ 81%). vs `run_id=6`: +154 trades (+13%), +8.2R (+9%), Sharpe
 > −0.03. Reading: the budget admits more concurrent positions when they're sized down
 > in cautious regimes — more deployment and absolute R, marginally lower risk-adjusted.
-> **`run_id=7` is now the current shipped-config headline.**
+>
+> **Budget sweep → default lowered to 5.0 (2026-06-04).** Swept `max_open_risk` at the
+> 25d-hard config (exploratory, un-journaled):
+>
+> | Budget | Trades | Total R | PF | Sharpe | Sortino | Calmar |
+> |--------|--------|---------|----|--------|---------|--------|
+> | 4.0 | 983 | +55.7 | 1.22 | 0.44 | 0.74 | 0.09 |
+> | **5.0** | 1194 | +87.2 | **1.29** | **0.58** | **1.03** | 0.12 |
+> | 6.0 | 1365 | +95.7 | 1.27 | 0.55 | 0.97 | 0.12 |
+> | 8.0 | 1633 | +98.9 | 1.23 | 0.48 | 0.85 | 0.12 |
+>
+> Sharpe/Sortino/PF all peak at **5.0**; total R keeps rising with budget but quality
+> erodes. 5.0 reproduces the old count-cap=6 posture (`run_id=6`: +87.5R/0.58) under
+> the principled risk-budget mechanism. Default set to **5.0** (NS#1: risk-adjusted),
+> giving up ~9% of total R vs 6.0 for +0.03 Sharpe. *Caveat:* this is the in-sample
+> Sharpe-max — 5.0 is defensible as a round number matching the prior effective level,
+> not a fine-tuned peak; an OOS walk-forward of 5.0-vs-6.0 is the proper confirmation
+> (deferred). **Shipped-default headline is now 25d-hard @ budget 5.0 (`run_id=8`:
+> +87.2R, Sharpe 0.58, Sortino 1.03, PF 1.29, 1194 trades).**
 
 ### Biases still NOT addressed (the honest gaps)
 1. **Survivorship — Phase A (biggest).** `tier_a` is hand-picked; the

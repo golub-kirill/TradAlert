@@ -114,7 +114,7 @@ def main() -> None:
     base_cfg, tickers = _load_cfg()
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_open_risk": 6.0,
+        "max_open_risk": 5.0,
         "earnings_aware": True,
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
         "commission_r": exec_cfg.get("commission_r", 0.005),

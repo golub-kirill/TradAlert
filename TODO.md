@@ -52,7 +52,10 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   budget`. Pinned by `test_portfolio_risk_budget.py` (full-size == old count cap;
   half-size doubles capacity). **Measured (`run_id=7` vs `run_id=6`, 25d-hard):**
   1211→1365 trades (+13%), +87.5→+95.7R (+9%), Sharpe 0.58→0.55, Sortino 1.02→0.97 —
-  more deployment in reduced-size regimes, slightly lower risk-adjusted.
+  more deployment in reduced-size regimes, slightly lower risk-adjusted. **Budget sweep
+  (4/5/6/8) → default lowered to 5.0** (Sharpe peaks 0.58 @ 5.0 vs 0.55 @ 6.0; +87.2R,
+  PF 1.29). Added `--max-open-risk` CLI flag. Caveat: in-sample optimum — OOS
+  walk-forward of 5.0-vs-6.0 deferred (see Phase C / V5).
 
 **Hygiene / reproducibility:**
 - ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now
