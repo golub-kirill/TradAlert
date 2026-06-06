@@ -135,6 +135,15 @@ uncapped headline (0.59).
 > `ADR-001` *Decision update* for the caveat — the extra edge leans on the unvalidated long-hold
 > tail, so forward-test via `reconcile_fills.py` before sizing up.
 >
+> **Scoring OFF + v3 universe → current headline (2026-06-05, `run_id=11`, ADR-003).** Two more
+> changes landed: the watchlist grew to 213 names (deep Canadian bench, no survivorship pruning),
+> and the `SignalScorer` was made opt-in and turned OFF by default (its entry score is
+> non-predictive of R, corr −0.03, and ranking by it picked weaker trades). On the broad universe
+> with scoring off: **+116.7R, Sharpe 0.66, Sortino 1.16, PF 1.30, E[R] +0.075** over 1560 trades,
+> bootstrap E[R] CI [+0.036, +0.113]. Scoring-ON control (`run_id=10`) on the same code: +68.9R,
+> Sharpe 0.42 — so −40% of the edge was the scoring layer. This is the broad/honest universe, so
+> the gain is not survivorship. **This is the current headline.**
+>
 > **Cap change → risk budget (2026-06-04, `run_id=7`).** The portfolio cap was then
 > re-expressed from a raw count (`max_concurrent=6`) to an aggregate-risk budget
 > (`max_open_risk=6.0`, in `size_mult` units). Re-running the same 25d-hard headline:

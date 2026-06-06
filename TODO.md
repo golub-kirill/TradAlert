@@ -70,14 +70,11 @@ reconciliation in ACTIVE above.
 - ◻ Verify AAII/NAAIM/COT parses still match live pages (layout-drift risk).
 
 **Reporting / observability**
-- ◻ **Entry score is NOT predictive of R (measured 2026-06-05, run_id=10, 1495 trades).**
-  corr(entry_score, r_multiple) = **−0.03** (noise). Worse, the budget fills highest-score-first,
-  so it prefers the 75+ band (avg +0.030R) over the 70–75 band (+0.128R) — actively selecting
-  weaker trades under competition. This is why the broad 213 universe underperforms both its
-  ETF-only and stocks-only subsets. **Next: re-run with score-ranking OFF (or a different
-  entry tiebreak) — if the combined edge recovers toward the subsets' +0.06, the scoring layer
-  is hurting and should be re-calibrated or dropped for selection.** (Pairs with ADR-002, which
-  already rejected the *exit* score.)
+- ◻ **Re-calibrate or retire the SignalScorer** (now OFF by default — ADR-003). corr(entry_score,
+  R)=−0.03 (noise); turning scoring off lifted Sharpe 0.42→0.66. The scorer is retained behind
+  `--scoring` for study — either make it predictive (corr>0) or delete it. Until then it's dead
+  weight. Also: should the live `min_score_to_alert` gate be replaced by a smarter entry tiebreak
+  (e.g. `min_rr`/ATR) rather than no ranking at all?
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
@@ -98,7 +95,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **238**).
+- `pytest tests/` green at the end of every step (currently **244**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -111,6 +108,15 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Scoring made opt-in, default OFF** (2026-06-05, ADR-003) — the entry score is non-predictive
+  of R (corr −0.03) and its highest-score-first budget fill selected weaker trades. `--scoring`
+  flag (run_backtest + main.py; `SweepEngine(use_scoring=)`), default OFF. **New headline run_id=11
+  (213 universe, scoring OFF): +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075** — vs scoring-ON
+  run_id=10 (+68.9R, 0.42). Chart badge no longer shows "LONG 0". `tests/test_scoring_toggle.py`
+  + `tests/test_chart_no_scoring.py` (+6).
+- **Watchlist v3 → 213 names** (2026-06-05) — deep Canadian bench + US large-caps, no survivorship
+  pruning; the composition test (ETF 0.39 / stocks 0.56 / combined 0.42 Sharpe) surfaced the
+  scoring leak above. `data/prices` all fetched/valid.
 - **Live = backtest on the max-hold exit** (2026-06-05) — extracted the time-stop decision into
   `core.exits.max_hold_exit_due` (one rule, shared); refactored the 3 backtester sites to use it
   and **wired it into `main.py`** so the live scanner force-exits a held long at the cap (25d
