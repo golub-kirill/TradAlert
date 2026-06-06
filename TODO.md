@@ -70,10 +70,14 @@ reconciliation in ACTIVE above.
 - ◻ Verify AAII/NAAIM/COT parses still match live pages (layout-drift risk).
 
 **Reporting / observability**
-- ◻ **Score-vs-R analysis (profit lever).** `entry_score` is now journaled (was always 0).
-  Re-run a headline backtest, then bucket realized R by `entry_score` — if high-score trades
-  earn materially more, raising `scanner.min_score_to_alert` concentrates capital on better
-  setups (more R per trade). If score is *not* predictive, the whole scoring layer is suspect.
+- ◻ **Entry score is NOT predictive of R (measured 2026-06-05, run_id=10, 1495 trades).**
+  corr(entry_score, r_multiple) = **−0.03** (noise). Worse, the budget fills highest-score-first,
+  so it prefers the 75+ band (avg +0.030R) over the 70–75 band (+0.128R) — actively selecting
+  weaker trades under competition. This is why the broad 213 universe underperforms both its
+  ETF-only and stocks-only subsets. **Next: re-run with score-ranking OFF (or a different
+  entry tiebreak) — if the combined edge recovers toward the subsets' +0.06, the scoring layer
+  is hurting and should be re-calibrated or dropped for selection.** (Pairs with ADR-002, which
+  already rejected the *exit* score.)
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
