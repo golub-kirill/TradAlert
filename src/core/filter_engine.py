@@ -57,7 +57,7 @@ TrendState = Literal["BULL", "BEAR", "CHOP"]
 VolState = Literal["LOW", "NORMAL", "HIGH"]
 TickerTrend = Literal["UPTREND", "DOWNTREND", "CHOP"]
 Direction = Literal["long", "short", "exit_long", "exit_short", "none"]
-SignalType = Literal["momentum", "mean_reversion", "regime", "none"]
+SignalType = Literal["momentum", "mean_reversion", "regime", "time_stop", "none"]
 
 
 # ── result types ──────────────────────────────────────────────────────────────

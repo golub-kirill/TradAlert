@@ -131,7 +131,7 @@ def _summarise_transactions(tx: pd.DataFrame) -> dict:
         - "Sale", "Sell", "S - Open market sale"       → sell
         - "Stock Gift", "Option Exercise", "Stock Award" → ignored
     """
-    today = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    today = pd.Timestamp.now("UTC").tz_localize(None).normalize()
     cutoff_30 = today - timedelta(days=30)
     cutoff_90 = today - timedelta(days=90)
 

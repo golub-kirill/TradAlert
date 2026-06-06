@@ -41,6 +41,7 @@ from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
 from core.fetchers.live_price import get_live_price  # noqa: E402
 from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
+from core.exits import max_hold_exit_due  # noqa: E402
 from core.scoring import SignalScorer  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
 from core.fetchers.http import mask_api_keys_filter  # noqa: E402
@@ -426,6 +427,33 @@ def _run_pipeline(
                 error=str(exc),
             ))
             continue
+
+        # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
+        # Keep the live feed in step with the backtester's swing-horizon cap
+        # (ADR-001): force an exit on a held long that has reached the cap and —
+        # in if_not_profit mode — is not in profit. Shares core.exits with the
+        # backtester so live and backtest never diverge. Engine exits take
+        # precedence (we only override a non-exit signal).
+        if held_long and held_position is not None and signal.direction != "exit_long":
+            _exec_cfg = engine._cfg.get("execution", {})
+            _mh_days = _exec_cfg.get("max_hold_days")
+            if _mh_days is not None:
+                _mh_mode = str(_exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+                _entry_pos = int(df.index.searchsorted(pd.Timestamp(held_position.entry_date)))
+                if max_hold_exit_due(
+                        bars_held=(len(df) - 1) - _entry_pos,
+                        current_close=float(df["close"].iloc[-1]),
+                        entry_price=held_position.entry_price, side="long",
+                        max_hold_days=int(_mh_days), mode=_mh_mode):
+                    logger.info("[%s] max-hold time-stop exit (%d bars, %s)",
+                                ticker, int(_mh_days), _mh_mode)
+                    signal = SignalResult(
+                        passed=True, direction="exit_long", signal_type="time_stop",
+                        market_regime=signal.market_regime,
+                        ticker_trend=signal.ticker_trend,
+                        reason=f"max-hold {int(_mh_days)} bars reached "
+                               f"({_mh_mode}) — time-stop exit",
+                    )
 
         # ── 8. live price + 9. score ──────────────────────────────────────────
         if signal.passed:

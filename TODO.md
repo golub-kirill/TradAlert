@@ -25,11 +25,6 @@ These are the live-performance items that actually move NORTH STAR #1.
   registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
   catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
   days, so the meaningful read on "winning now" is ~5 weeks of daily runs out.
-- ◻ **Wire the max-hold exit into the live scanner.** The backtest default is now `25d
-  if_not_profit`, but `main.py` doesn't emit a time-based exit — held positions only exit on
-  engine/stop/target. So live ≠ backtest: the trader must manually close a held long at ~25 bars
-  when it's not in profit, or the rule needs wiring into the live exit path (read `positions`
-  entry_date, flag age ≥ 25 bars && not in profit). Required for live to match the headline config.
 - ◻ **Log real/paper fills so the real meter has data.** The reconciler is built
   (`scripts/reconcile_fills.py` — realized R on closed `positions` vs `backtest_trades` by
   direction) and `position_CLI.py open --date` backfills retroactive opens. `positions` is
@@ -91,7 +86,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **233**).
+- `pytest tests/` green at the end of every step (currently **238**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -104,6 +99,11 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Live = backtest on the max-hold exit** (2026-06-05) — extracted the time-stop decision into
+  `core.exits.max_hold_exit_due` (one rule, shared); refactored the 3 backtester sites to use it
+  and **wired it into `main.py`** so the live scanner force-exits a held long at the cap (25d
+  if_not_profit) just like the backtest. `tests/test_exits.py` (+5). Also fixed the lone pandas
+  `Timestamp.utcnow` deprecation (`form4.py`).
 - **Trading default → 25d `if_not_profit`** (2026-06-05) — switched the default exit from `hard`
   (validation-conservatism) to the economically-correct "let winners run" mode, which dominates
   every metric at realistic frictions: **headline +74.5R, Sharpe 0.50, PF 1.26** (vs hard

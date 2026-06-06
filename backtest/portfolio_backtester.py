@@ -50,6 +50,7 @@ from backtest.earnings_history import (
     next_earnings_from,
 )
 from backtest.trade import Trade
+from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
@@ -534,19 +535,21 @@ class PortfolioBacktester:
                 if self._cfg.max_hold_days is not None:
                     entry_pos = int(prepped[ticker].df.index.searchsorted(
                         pd.Timestamp(trade.entry_date)))
-                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
-                        b_close = float(bar["close"])
-                        in_profit = ((b_close < trade.entry_price) if is_short
-                                     else (b_close > trade.entry_price))
-                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
-                            _close_trade(trade, D_date, b_close, "time_stop",
-                                         prepped[ticker].df.index, t_idx,
-                                         self._cfg.commission_r)
-                            closed = open_trades.pop(ticker)
-                            result.trades.append(closed)
-                            self._record_close(closed)
-                            dd_gate.record(closed.effective_r)
-                            closed_this_bar.add(ticker)
+                    b_close = float(bar["close"])
+                    if max_hold_exit_due(
+                            bars_held=t_idx - entry_pos, current_close=b_close,
+                            entry_price=trade.entry_price,
+                            side=("short" if is_short else "long"),
+                            max_hold_days=self._cfg.max_hold_days,
+                            mode=self._cfg.max_hold_mode):
+                        _close_trade(trade, D_date, b_close, "time_stop",
+                                     prepped[ticker].df.index, t_idx,
+                                     self._cfg.commission_r)
+                        closed = open_trades.pop(ticker)
+                        result.trades.append(closed)
+                        self._record_close(closed)
+                        dd_gate.record(closed.effective_r)
+                        closed_this_bar.add(ticker)
 
             # ── Engine signal evaluation at this bar's close ─────
             for ticker in active:
@@ -820,19 +823,21 @@ class PortfolioBacktester:
                 if self._cfg.max_hold_days is not None:
                     entry_pos = int(prepped[ticker].df.index.searchsorted(
                         pd.Timestamp(trade.entry_date)))
-                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
-                        b_close = float(bar["close"])
-                        in_profit = ((b_close < trade.entry_price) if is_short
-                                     else (b_close > trade.entry_price))
-                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
-                            _close_trade(trade, D_date, b_close, "time_stop",
-                                         prepped[ticker].df.index, t_idx,
-                                         self._cfg.commission_r)
-                            closed = open_trades.pop(ticker)
-                            result.trades.append(closed)
-                            self._record_close(closed)
-                            dd_gate.record(closed.effective_r)
-                            closed_this_bar.add(ticker)
+                    b_close = float(bar["close"])
+                    if max_hold_exit_due(
+                            bars_held=t_idx - entry_pos, current_close=b_close,
+                            entry_price=trade.entry_price,
+                            side=("short" if is_short else "long"),
+                            max_hold_days=self._cfg.max_hold_days,
+                            mode=self._cfg.max_hold_mode):
+                        _close_trade(trade, D_date, b_close, "time_stop",
+                                     prepped[ticker].df.index, t_idx,
+                                     self._cfg.commission_r)
+                        closed = open_trades.pop(ticker)
+                        result.trades.append(closed)
+                        self._record_close(closed)
+                        dd_gate.record(closed.effective_r)
+                        closed_this_bar.add(ticker)
 
             # Engine signal at close
             for ticker in active:

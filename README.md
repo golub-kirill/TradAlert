@@ -66,6 +66,11 @@ fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwri
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
+Held long positions (from the `positions` table) are also force-exited live when
+they reach the max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`)
+— a `time_stop` EXIT — using the same `core.exits.max_hold_exit_due` rule as the
+backtester, so live and backtest stay in step.
+
 ### `position_CLI.py` — manual positions
 
 ```bash

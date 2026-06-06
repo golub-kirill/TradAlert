@@ -52,6 +52,7 @@ from typing import Optional
 import pandas as pd
 
 from backtest.trade import Trade
+from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
 from core.scoring import SignalScorer
@@ -464,17 +465,19 @@ class BarReplayBacktester:
                 if self._cfg.max_hold_days is not None:
                     entry_pos = int(df.index.searchsorted(
                         pd.Timestamp(open_trade.entry_date)))
-                    if (T - entry_pos) >= self._cfg.max_hold_days:
-                        b_close = float(bar["close"])
-                        in_profit = ((b_close < open_trade.entry_price) if is_short
-                                     else (b_close > open_trade.entry_price))
-                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
-                            _close_trade(open_trade, today, b_close, "time_stop",
-                                         df.index, T)
-                            trades.append(open_trade)
-                            self._record_close(ticker, open_trade)
-                            open_trade = None
-                            continue
+                    b_close = float(bar["close"])
+                    if max_hold_exit_due(
+                            bars_held=T - entry_pos, current_close=b_close,
+                            entry_price=open_trade.entry_price,
+                            side=("short" if is_short else "long"),
+                            max_hold_days=self._cfg.max_hold_days,
+                            mode=self._cfg.max_hold_mode):
+                        _close_trade(open_trade, today, b_close, "time_stop",
+                                     df.index, T)
+                        trades.append(open_trade)
+                        self._record_close(ticker, open_trade)
+                        open_trade = None
+                        continue
 
                 # Neither touched — check engine exit signal at this close.
                 # Dispatch by trade direction: held_short signals the engine
