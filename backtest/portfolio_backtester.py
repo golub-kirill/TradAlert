@@ -482,6 +482,8 @@ class PortfolioBacktester:
                     ticker_trend=signal.ticker_trend,
                     size_mult=final_mult,  # regime × chronic-loser
                     borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
+                    entry_score=signal.score,
+                    entry_score_components=dict(signal.score_components),
                 )
 
             # ── Stop/target check on held trades ─────────────────
@@ -780,6 +782,8 @@ class PortfolioBacktester:
                         market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
                         size_mult=final_mult,  # regime × chronic-loser
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
+                        entry_score=signal.score,
+                        entry_score_components=dict(signal.score_components),
                     )
 
             # Stop / target on held trades

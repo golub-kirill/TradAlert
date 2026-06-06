@@ -70,6 +70,10 @@ reconciliation in ACTIVE above.
 - ◻ Verify AAII/NAAIM/COT parses still match live pages (layout-drift risk).
 
 **Reporting / observability**
+- ◻ **Score-vs-R analysis (profit lever).** `entry_score` is now journaled (was always 0).
+  Re-run a headline backtest, then bucket realized R by `entry_score` — if high-score trades
+  earn materially more, raising `scanner.min_score_to_alert` concentrates capital on better
+  setups (more R per trade). If score is *not* predictive, the whole scoring layer is suspect.
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
