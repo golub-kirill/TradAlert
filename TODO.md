@@ -69,13 +69,27 @@ Order: things that distort the *metrics we decide on* → universe-agnostic fixe
   named (`_RS_EXIT_SCALE=10`, `_BB_Z_HALFWIDTH=2`, de-dupes the `/2` used twice). `dv20`
   window left inline — it's the definitional "20-day" coupled to the `_20d` config-key
   name, not a config knob. No behavior change (values identical); 202 passed.
-- ◻ **`json_cache.save_section` RMW not lock-safe** — safe today (single writer); add a
-  file lock or document the single-writer assumption.
-- ◻ **Dual earnings cache** — `earnings_history.py` (`data/fundamentals/`) vs
-  `earnings_history_store.py` (`data/earnings_history/`); two staleness clocks can
-  drift. Consolidate.
-- ◻ **VBP not canonical** — `compute_vbp` bins `close × volume` in the close bin, not
-  the H-L spread (`scanner.vbp.*` is wired, the algorithm isn't). Rewrite or rename.
+- ✅ **`json_cache.save_section` RMW — DOCUMENTED 2026-06-05.** Single-writer-per-ticker-
+  file invariant holds by construction (watchlist fetch submits one task per ticker →
+  one writer per `{TICKER}.json`). Fixed the misleading "concurrent sections" comment
+  (RMW preserves other sections across SEQUENTIAL writes, not concurrent ones) and
+  documented the concurrency contract. No lock taken — the race can't occur, and a
+  cross-process lock would add a dependency for nothing.
+- ✅ **Dual earnings cache — RESOLVED / DOCUMENTED 2026-06-05.** The substantive drift
+  (the two caches seeing different yfinance date lists) was already fixed: both fetch
+  through the single canonical `fetch_earnings_dates_from_yfinance`, so content is
+  unified. Only the on-disk *layout* differs (live sectioned `data/fundamentals/` vs
+  backtest standalone `data/earnings_history/`), kept separate by design; the remaining
+  two-clock difference is benign (historical dates are stable). Corrected the store's
+  docstring (incomplete sentences + overstated "may drift"). Full file-layout merge
+  deferred — it would change the backtest's cache source (reproducibility shift) for
+  little benefit now that content is unified.
+- ✅ **VBP made canonical — REWRITTEN 2026-06-05.** `compute_vbp` now distributes each
+  bar's share-volume across the price bins its `[low, high]` range spans (proportional
+  to overlap), over the window low-to-high range — instead of dumping `close × volume`
+  into the close bin. Volume-conserving; zero-range bars land in one bin. Used only by
+  the `vbp_resistance` exit-score (live advisory; no backtest impact per ADR-002).
+  Pinned by `tests/test_vbp.py` (5 tests). Suite 207 passed.
 
 **Verified DONE this session (do NOT re-do):** ✅ `DEFAULT_SCALE` + `run_backtest`
 print-fallback synced to `{2:0.5,3:0.25}` (`ticker_health.py:59`); ✅ sweep dead-key
