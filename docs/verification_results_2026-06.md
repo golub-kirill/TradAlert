@@ -174,8 +174,12 @@ uncapped headline (0.59).
    on full history. The **re-tune walk-forward** (`--walk-forward --workers N`, now
    parallel) plus a deflated-Sharpe / White's-reality-check across *all* configs tried
    is required to close this.
-3. **Friction stress — Phase B.** Defaults are on, but the sweep showed slippage
-   bites hard (0→+117R, 0.002→+65R). Re-measure at 0.002–0.003.
+3. **Friction stress — Phase B (measured 2026-06-05, `scripts/friction_sweep.py`).** Slippage
+   bites hard. Current universe/data, 25d-hard @ budget 5.0: 0→**+117.3R**/0.72 Sharpe,
+   0.0005→+95.9R/0.60, 0.001→+75.6R/0.48, **0.002→+43.8R/0.29**, 0.003→+14.7R/0.10; commission
+   is mild (0→0.01 ≈ +48.5R→+39.1R). Defaults raised to a conservative `entry_slippage_pct=0.002`
+   (new headline baseline = +43.8R, Sharpe 0.29) and `borrow.annual_rate_default=0.03` (shorts
+   only). The edge is thin and **highly slippage-sensitive** — the single biggest win-now risk.
 4. **Locked OOS — Phase C.** Tune ≤2015, lock, test 2016–2026 once.
 
 ### De-biasing roadmap (system-design view)

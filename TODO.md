@@ -40,8 +40,6 @@ Edge after de-biasing is real-but-thin. Evidence: `docs/verification_results_202
 `docs/adr/ADR-001-max-hold-exit.md`. Phase A (survivorship) is closed; Phase E = the live
 reconciliation in ACTIVE above.
 
-- ◻ **Phase B — realistic frictions**: costs/slippage/borrow ON by default + sweep
-  (slippage bites hard: 0→+117.5R, 0.002→+65.7R).
 - ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016–2026 once.
 - ◻ **Phase D — multiple-testing correction**: deflated Sharpe / White reality check.
 - ◻ **V5 — walk-forward + robustness on 25d-hard** (headline OOS gate). NB: the 5.0 open-risk
@@ -100,6 +98,11 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Phase B — realistic frictions** (2026-06-05) — `entry_slippage_pct` raised 0.001→**0.002**
+  and `borrow.annual_rate_default` 0.0→**0.03** (shorts only) as conservative defaults;
+  `scripts/friction_sweep.py` measures the sensitivity. Slippage bites hard: 0→+117.3R/0.72,
+  0.001→+75.6R/0.48, **0.002→+43.8R/0.29**, 0.003→+14.7R/0.10 (commission mild). Edge is thin
+  and slippage-sensitive — flagged in `verification_results` as the top win-now risk.
 - **Behavioral key-mismatch fix + bind diagnostic** — backtest loader keyed behavioral parquet
   by stem (`sp500_breadth`/`sector_ratios`) but the classifier reads `breadth`/`sector_rotation`,
   so breadth (weight-4 axis) was NEUTRAL-pinned in every backtest/sweep; fixed via

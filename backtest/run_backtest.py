@@ -144,7 +144,7 @@ def main() -> None:
         # risk-adjusted optimum from the 2026-06-04 budget sweep (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
-        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
+        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
         "commission_r": exec_cfg.get("commission_r", 0.005),
         "close_open_at_eod": True,
     }
