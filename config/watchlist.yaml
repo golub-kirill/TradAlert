@@ -1,9 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# TradAlert — watchlist.yaml (v2 — diversified universe)
+# TradAlert — watchlist.yaml (v3 — big diversified universe)
 # Master ticker list. Loaded by core.fetchers.fetcher._load_config().
 #
-# Replaces v1 (watchlist_v1_survivors.yaml) to kill survivorship bias.
-# ~130 tier_a tickers split across asset classes; no single bucket > 15%.
+# Designed to FIGHT survivorship bias, not feed it: names are NOT pruned for past
+# P&L (deleting losers inflates the backtest without predicting winners). The list
+# is large and diversified on purpose — a broad universe is the opposite of a
+# hindsight-picked one, and it proves the logic is universe-agnostic (NORTH STAR #2).
+#
+# Composition note: v3 adds a deep Canadian (.TO) bench plus liquid US large-caps,
+# so individual stocks are now a larger share than the prior ETF-heavy v2. Single-
+# name gap/earnings risk is higher; the earnings buffer + gap-risk gate + open-risk
+# budget (5.0) are the controls. The ATR%>=1.0 entry gate auto-skips quiet names
+# (bonds/FX/low-vol) on any given day — they stay listed for asset-class breadth.
 #
 # Suffix conventions
 #   .TO   Toronto Stock Exchange (TSX)
@@ -11,7 +19,7 @@
 #
 # Two-tier structure
 #   tier_a  — scanned + tradeable (current watchlist)
-#   tier_b  — fetched for RP ranking only; promoted when RP rank ≥ threshold
+#   tier_b  — fetched for RP ranking only; promoted when RP rank >= threshold
 #             AND signal fires (two-tier universe expansion)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -45,7 +53,6 @@ tier_a:
   - XLC                                 # communication services
 
   # ── Factor / style ────────────────────────────────────────────────────────
-  # MTUM / SIZE / SPHB pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - QUAL                                # quality
   - USMV                                # low volatility
   - VLUE                                # value
@@ -58,7 +65,6 @@ tier_a:
   - EEM                                 # emerging markets
   - VWO                                 # emerging markets (alt)
   - EWJ                                 # Japan
-  # EWG / EWU pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - EWZ                                 # Brazil
   - INDA                                # India
   - FXI                                 # China large
@@ -79,7 +85,6 @@ tier_a:
   # ── Commodities ───────────────────────────────────────────────────────────
   - GLD                                 # gold
   - SLV                                 # silver
-  # USO pruned 2026-05-27 — chronic 0% WR (gap/contango). DBC + CPER cover commodity space.
   - UNG                                 # natural gas
   - DBC                                 # broad commodity
   - DBA                                 # agriculture
@@ -105,44 +110,184 @@ tier_a:
   - KWEB                                # China internet
   - ICLN                                # clean energy
   - TAN                                 # solar
-  # LIT pruned 2026-05-27 — chronic 0% WR; see postmortem.
   - JETS                                # airlines
   - ITA                                 # aerospace & defense
   - PHO                                 # water
   - ARKK                                # disruptive innovation (stress test)
 
-  # ── Canadian (TSX) — keep what you actually trade ─────────────────────────
-  - ZQQ.TO                              # Nasdaq-100 hedged CAD
-  - XIU.TO                              # TSX 60
-  - XIC.TO                              # TSX composite
-  - ENB.TO                              # Enbridge
-  - RY.TO                               # Royal Bank
-  - TD.TO                               # TD Bank
-  - CNQ.TO                              # Canadian Natural
-  # SU.TO / SHOP.TO pruned 2026-05-27 — chronic 0% WR; see postmortem.
-
-  # ── Individual stocks — 16 with explicit thesis ───────────────────────────
-  # mega-cap stable: MSFT, JPM, JNJ, KO
-  # cyclicals: CAT, DE
-  # defensives: PG, WMT
-  # volatile growth stress test: NVDA, TSLA
-  # energy: XOM, CVX
-  # tech: GOOGL, AAPL, AMZN, META
+  # ── US mega/large-cap tech & semis ────────────────────────────────────────
   - MSFT
   - GOOGL
   - AAPL
   - AMZN
   - META
   - NVDA
+  - AVGO                                # Broadcom
+  - AMD
+  - QCOM
+  - MU
+  - INTC
+  - CSCO
+  - TXN
+  - ORCL
+  - CRM
+  - ADBE
+  - NFLX
+  - IBM
+  - AMAT
+  - LRCX
+
+  # ── US financials ─────────────────────────────────────────────────────────
   - JPM
+  - BAC
+  - WFC
+  - GS
+  - MS
+  - C
+  - V
+  - MA
+  - AXP
+  - SCHW
+  - BLK
+
+  # ── US health care ────────────────────────────────────────────────────────
   - JNJ
+  - UNH
+  - LLY
+  - ABBV
+  - MRK
+  - PFE
+  - TMO
+  - ABT
+  - AMGN
+  - GILD
+  - BMY
+
+  # ── US consumer ───────────────────────────────────────────────────────────
   - KO
   - PG
   - WMT
+  - COST
+  - HD
+  - MCD
+  - NKE
+  - SBUX
+  - LOW
+  - TGT
+  - DIS
+  - BKNG
+
+  # ── US industrials ────────────────────────────────────────────────────────
+  - CAT
+  - BA
+  - HON
+  - GE
+  - UPS
+  - LMT
+  - RTX
+  - DE
+  - MMM
+
+  # ── US energy ─────────────────────────────────────────────────────────────
   - XOM
   - CVX
-  - CAT
+  - COP
+  - SLB
+  - EOG
+  - MPC
+  - PSX
+  - OXY
+
+  # ── US communication / high-beta growth (stress) ──────────────────────────
+  - T                                   # AT&T (US) — distinct from T.TO (Telus)
+  - VZ
+  - CMCSA
   - TSLA
+
+  # ── Canadian indices / sector ETFs (TSX) ──────────────────────────────────
+  - ZQQ.TO                              # Nasdaq-100 hedged CAD
+  - XIU.TO                              # TSX 60
+  - XIC.TO                              # TSX composite
+  - VFV.TO                              # S&P 500 (CAD)
+  - ZEB.TO                              # CA banks
+  - XFN.TO                              # CA financials
+  - XEG.TO                              # CA energy
+  - XMA.TO                              # CA materials
+  - XGD.TO                              # CA gold miners
+  - XIT.TO                              # CA tech
+  - XRE.TO                              # CA REITs
+  - ZUT.TO                              # CA utilities
+
+  # ── Canadian banks / financials ───────────────────────────────────────────
+  - RY.TO                               # Royal Bank
+  - TD.TO                               # TD Bank
+  - BMO.TO                              # Bank of Montreal
+  - BNS.TO                              # Scotiabank
+  - CM.TO                               # CIBC
+  - NA.TO                               # National Bank
+  - MFC.TO                              # Manulife
+  - SLF.TO                              # Sun Life
+  - POW.TO                              # Power Corp
+  - IFC.TO                              # Intact Financial
+  - BN.TO                               # Brookfield Corp
+  - BAM.TO                              # Brookfield Asset Management
+
+  # ── Canadian energy / pipelines ───────────────────────────────────────────
+  - ENB.TO                              # Enbridge
+  - CNQ.TO                              # Canadian Natural
+  - SU.TO                               # Suncor (re-added — pruning by P&L = survivorship)
+  - CVE.TO                              # Cenovus
+  - IMO.TO                              # Imperial Oil
+  - TRP.TO                              # TC Energy
+  - PPL.TO                              # Pembina
+  - TOU.TO                              # Tourmaline
+  - ARX.TO                              # ARC Resources
+
+  # ── Canadian materials / mining ───────────────────────────────────────────
+  - ABX.TO                              # Barrick Gold
+  - K.TO                                # Kinross Gold
+  - AEM.TO                              # Agnico Eagle
+  - FNV.TO                              # Franco-Nevada
+  - WPM.TO                              # Wheaton Precious Metals
+  - NTR.TO                              # Nutrien
+  - TECK-B.TO                           # Teck Resources
+  - FM.TO                               # First Quantum
+  - LUN.TO                              # Lundin Mining
+  - IVN.TO                              # Ivanhoe Mines
+
+  # ── Canadian rail / industrials ───────────────────────────────────────────
+  - CNR.TO                              # CN Rail
+  - CP.TO                               # CP Rail
+  - WSP.TO                              # WSP Global
+  - TIH.TO                              # Toromont
+  - TFII.TO                             # TFI International
+  - STN.TO                              # Stantec
+
+  # ── Canadian tech ─────────────────────────────────────────────────────────
+  - SHOP.TO                             # Shopify (re-added — survivorship)
+  - CSU.TO                              # Constellation Software
+  - OTEX.TO                             # OpenText
+  - GIB-A.TO                            # CGI
+  - DSG.TO                              # Descartes Systems
+  - KXS.TO                              # Kinaxis
+
+  # ── Canadian telecom / utilities ──────────────────────────────────────────
+  - BCE.TO                              # BCE
+  - T.TO                                # Telus
+  - RCI-B.TO                            # Rogers
+  - FTS.TO                              # Fortis
+  - EMA.TO                              # Emera
+  - H.TO                                # Hydro One
+  - CU.TO                               # Canadian Utilities
+  - AQN.TO                              # Algonquin Power
+
+  # ── Canadian consumer ─────────────────────────────────────────────────────
+  - ATD.TO                              # Alimentation Couche-Tard
+  - L.TO                                # Loblaw
+  - DOL.TO                              # Dollarama
+  - QSR.TO                              # Restaurant Brands
+  - MRU.TO                              # Metro
+  - WN.TO                               # George Weston
 
 # ── Tier B: RP ranking only ────────────────────
 tier_b:
@@ -157,14 +302,13 @@ tier_b:
 
 # ── Survivorship / selection audit ─────────────────────────────────
 # Inputs for scripts/frozen_universe_ab.py. Quantifies how much of the backtest
-# edge is hindsight: newer ETFs that didn't exist early were included, and losers
-# were deleted after they lost (see the "pruned …" comments above). Free, no
-# external data (the pruned names need a one-time fetch: scripts/fetch_prices.py).
+# edge is hindsight. v3 re-added SU.TO and SHOP.TO to tier_a (they were pruned
+# after losing — that pruning WAS the bias), so they leave pruned_losers below.
 survivorship_audit:
   as_of_dates: ["2005-01-01", "2010-01-01", "2015-01-01"]  # sweep; report discount at each
   # Names removed from tier_a AFTER seeing them lose. Re-added to the frozen
   # universe for as-of dates >= their inception (you would NOT have known to prune
   # them at the time). The pruning bias is usually larger than the look-ahead bias.
-  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT, SU.TO, SHOP.TO]
+  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT]
   max_hold_days: 25         # apply the shipped cap so the audit reflects the real strategy
   max_hold_mode: hard

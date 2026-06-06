@@ -9,7 +9,7 @@
 >
 > ## ★ NORTH STAR #2: UNIVERSE-AGNOSTIC — don't tune to the watchlist.
 > The watchlist is an input that **changes** (a handful or hundreds). Logic and parameters
-> must hold across **any size/composition** — never overfit to the current ~91 names or
+> must hold across **any size/composition** — never overfit to the current ~213 names or
 > their count. Prefer **relative/percentile/adaptive** knobs over absolute counts. (Known
 > offenders fixed: `max_concurrent`→`max_open_risk` budget, breadth now full-universe —
 > keep the principle in mind for any new knob.)
@@ -78,7 +78,11 @@ reconciliation in ACTIVE above.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
 **Watchlist expansion** (mind NORTH STAR #2)
-- ◻ ~15 more `.TO` ETFs into tier_a; ≤20% individual stocks; >5y history.
+- ◻ **Re-run the headline on the v3 universe** (213 names) to confirm universe-agnosticism —
+  if per-trade E[R]/Sharpe hold (~+0.07 / ~0.50) the edge isn't watchlist-specific; if they
+  collapse, the old 91-name edge was survivorship. (v3 grew tier_a 91→213, deep Canadian bench
+  + US large-caps, all >5y history; individual-stock share now ~50% — a deliberate departure
+  from the old ETF-heavy ≤20% rule, accepted for more momentum vehicles.)
 
 **Architecture / performance**
 - ◻ Split FilterEngine god-class / main.py / sweep.py; `ApplicationContext` DI;
