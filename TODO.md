@@ -45,8 +45,9 @@ reconciliation in ACTIVE above.
 - ◻ **V5 — walk-forward + robustness on 25d-hard** (headline OOS gate). NB: the 5.0 open-risk
   budget already passed a fixed-config walk-forward (2026-06-05); V5 is the full re-tune
   robustness gate for the *headline config*.
-- ◻ Refresh the remaining Sharpe/Sortino figures (OFF baseline, `if_not_profit`, horizon sweep,
-  deflated) under the rf=0 convention — they predate the fix (relative ranks unaffected).
+- ◻ Refresh the **deflated** Sharpe under rf=0 — still pending Phase D (White's reality check).
+  (OFF baseline, `if_not_profit`, the 10–30d horizon sweep were refreshed 2026-06-05 at the new
+  slippage=0.002 default — see the `ADR-001` rf=0-refresh block.)
 - ◻ Behavioral sweep rows now use **real** breadth/sector (key-mismatch fixed 2026-06-05) — the
   pre-fix sweeps ran with breadth NEUTRAL-pinned, so re-run any behavioral-param tuning.
 
@@ -98,6 +99,10 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **rf=0 figure refresh** (2026-06-05) — re-ran OFF baseline / `if_not_profit` / 10–30d horizon
+  sweep under rf=0 at the new slippage=0.002 default; `ADR-001` gains an rf=0-refresh table,
+  `verification_results` updated. Headline 25d-hard now **+43.8R, Sharpe 0.29** (was +87.5R/0.58
+  at slippage 0.001 — friction bump drives the drop). Deflated Sharpe still pending Phase D.
 - **Phase B — realistic frictions** (2026-06-05) — `entry_slippage_pct` raised 0.001→**0.002**
   and `borrow.annual_rate_default` 0.0→**0.03** (shorts only) as conservative defaults;
   `scripts/friction_sweep.py` measures the sensitivity. Slippage bites hard: 0→+117.3R/0.72,

@@ -203,7 +203,31 @@ on it.
 > **rf=0, scale-invariant Sharpe** and **textbook /N Sortino** — see the metrics
 > methodology note in `docs/verification_results_2026-06.md`. The Sharpe numbers
 > above tick up ~0.05 under rf=0; relative comparisons (hard vs if_not_profit, the
-> horizon sweep) are unaffected. Refresh absolutes on the next journaled run.
+> horizon sweep) are unaffected. Refreshed below.
+
+## rf=0 refresh (2026-06-05)
+
+Re-measured under the corrected `stats_utils` (rf=0 Sharpe, `/N` Sortino) **and** the new
+realistic-friction default (`entry_slippage_pct` 0.001 → **0.002**), on the current 91-ticker
+universe (2000–2026; the 2026-06-03 tables above used 75 tickers @ slippage 0.001). Two things
+moved at once, so absolute levels differ materially — and the **slippage bump dominates** (per
+`scripts/friction_sweep.py`, 25d-hard runs +75.6R/0.48 → +43.8R/0.29 going 0.001 → 0.002).
+**Relative conclusions are unchanged:** `if_not_profit` dominates `hard` on every metric, the
+hard edge peaks near 25 bars, and PF > 1 at every horizon.
+
+| Config | Trades | WR | E[R] | Total R | PF | Sharpe | Avg held |
+|--------|-------:|----|------|--------:|----|-------:|---------:|
+| OFF baseline (no cap)   | 1019 | 45.3% | +0.062 | +63.3 | 1.22 | 0.43 | 13.0 |
+| 25d **hard** (headline) | 1124 | 46.9% | +0.039 | +43.8 | 1.14 | 0.29 | 11.1 |
+| 25d if_not_profit       | 1056 | 44.2% | +0.071 | +74.5 | 1.26 | 0.50 | 12.3 |
+| 30d hard                | 1093 | 46.5% | +0.039 | +42.3 | 1.14 | 0.27 | 11.6 |
+| 30d if_not_profit       | 1042 | 44.7% | +0.068 | +70.4 | 1.25 | 0.48 | 12.6 |
+
+Hard-mode horizon sweep — Total R / Sharpe: 10d +14.7/0.10 · 15d +32.8/0.22 · 20d +42.7/0.30 ·
+**25d +43.8/0.29** · 30d +42.3/0.27. Generated with `scripts/compare_max_hold.py --days 10 15
+20 25 30 --modes hard if_not_profit` (exploratory; not journaled). The `time_stop` cohort still
+behaves exactly as designed — `hard` cuts winners (25d: 169 cut @ 76.9% WR), `if_not_profit`
+cuts only losers (25d: 66 cut @ 0% WR).
 
 **Pending gate — V5:** walk-forward (OOS) + robustness on 25d hard, to confirm the
 shrunken edge isn't itself overfit, before it becomes the validation headline.

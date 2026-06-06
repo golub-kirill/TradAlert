@@ -121,6 +121,14 @@ uncapped headline (0.59).
 > *direction*, not absolute level. Other configs (OFF baseline, `if_not_profit`, the
 > 10–30d sweep, deflated Sharpe) are not yet re-journaled under rf=0.
 >
+> **rf=0 refresh + friction bump (2026-06-05).** The "other configs" above are now refreshed
+> (OFF baseline, `if_not_profit`, the 10–30d sweep) — see the **rf=0 refresh** table in
+> `ADR-001`. They were re-run at the **new** `entry_slippage_pct=0.002` default, so the
+> slippage bump (not the metric) drives most of the change. The canonical **25d-hard headline
+> is now +43.8R, Sharpe 0.29** (down from `run_id=6`'s +87.5R/0.58 at slippage 0.001) — the
+> edge is materially thinner under the conservative friction default. Deflated Sharpe still
+> awaits Phase D. Relative rankings (if_not_profit > hard; 25d near-peak; PF > 1 everywhere) hold.
+>
 > **Cap change → risk budget (2026-06-04, `run_id=7`).** The portfolio cap was then
 > re-expressed from a raw count (`max_concurrent=6`) to an aggregate-risk budget
 > (`max_open_risk=6.0`, in `size_mult` units). Re-running the same 25d-hard headline:
