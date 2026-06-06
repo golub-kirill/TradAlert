@@ -21,6 +21,19 @@
 The metric / universe-agnostic / hygiene cleanup tier is cleared (see *Recently shipped*).
 These are the live-performance items that actually move NORTH STAR #1.
 
+**Current headline:** `run_id=11` — 213-name universe, 25d `if_not_profit`, budget 5.0,
+slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR-003).
+
+- ◻ **OOS-validate the scoring-OFF headline (in progress).** Fixed-config walk-forward running
+  `--wf-no-retune --workers 14` (`logs/wf_scoring_off.txt`). Early windows promising (OOS often ≥
+  IS; only 1999–2002 negative). **Next chat:** read the final IS→OOS degradation; then run the
+  FULL re-tune gate over the whole range (`--walk-forward --workers 14`, no `--wf-no-retune`) —
+  the parameter-selection / data-snooping test. NB walk-forward results are not journaled
+  (logs/ only), so capture the verdict into `verification_results` when it lands.
+- ◻ **Real-life "textbook" check.** Sanity-check the engine against first principles: hand-work a
+  known trade (entry/stop/target → realized R) and confirm the backtester reproduces it, and/or
+  benchmark the strategy vs buy-and-hold SPY over the same window — does the edge beat the
+  textbook passive baseline on a risk-adjusted basis?
 - ◻ **Let the live feed mature.** Scheduling is done — `scripts/register_daily_scan.ps1`
   registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
   catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
@@ -42,9 +55,10 @@ reconciliation in ACTIVE above.
 
 - ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016–2026 once.
 - ◻ **Phase D — multiple-testing correction**: deflated Sharpe / White reality check.
-- ◻ **V5 — walk-forward + robustness on 25d-hard** (headline OOS gate). NB: the 5.0 open-risk
-  budget already passed a fixed-config walk-forward (2026-06-05); V5 is the full re-tune
-  robustness gate for the *headline config*.
+- ◻ **V5 — full re-tune walk-forward over the whole range** (headline OOS gate, `--walk-forward
+  --workers 14`). The headline is now the **scoring-OFF 213-universe if_not_profit** config
+  (`run_id=11`), not 25d-hard. The fixed-config (`--wf-no-retune`) WF on it is running (ACTIVE
+  above); V5 is the slower re-tune gate that tests parameter-selection generalisation.
 - ◻ Refresh the **deflated** Sharpe under rf=0 — still pending Phase D (White's reality check).
   (OFF baseline, `if_not_profit`, the 10–30d horizon sweep were refreshed 2026-06-05 at the new
   slippage=0.002 default — see the `ADR-001` rf=0-refresh block.)
