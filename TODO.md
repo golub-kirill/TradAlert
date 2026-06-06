@@ -52,9 +52,9 @@ reconciliation in ACTIVE above.
 - ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016–2026 once.
 - ◻ **Phase D — multiple-testing correction**: deflated Sharpe / White reality check.
 - ◻ **V5 — full re-tune walk-forward over the whole range** (headline OOS gate, `--walk-forward
-  --workers 14`). The headline is now the **scoring-OFF 213-universe if_not_profit** config
-  (`run_id=11`), not 25d-hard. The fixed-config (`--wf-no-retune`) WF on it is running (ACTIVE
-  above); V5 is the slower re-tune gate that tests parameter-selection generalisation.
+  --workers 14`; see the ACTIVE item). The fixed-config (`--wf-no-retune`) WF on the scoring-OFF
+  `run_id=11` headline **PASSED** (`run_id=12`: 68% OOS, p≈0.009, −0.006 degradation). V5 is the
+  slower re-tune gate that tests parameter-selection generalisation — the remaining de-bias step.
 - ◻ Refresh the **deflated** Sharpe under rf=0 — still pending Phase D (White's reality check).
   (OFF baseline, `if_not_profit`, the 10–30d horizon sweep were refreshed 2026-06-05 at the new
   slippage=0.002 default — see the `ADR-001` rf=0-refresh block.)
@@ -89,11 +89,12 @@ reconciliation in ACTIVE above.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
 **Watchlist expansion** (mind NORTH STAR #2)
-- ◻ **Re-run the headline on the v3 universe** (213 names) to confirm universe-agnosticism —
-  if per-trade E[R]/Sharpe hold (~+0.07 / ~0.50) the edge isn't watchlist-specific; if they
-  collapse, the old 91-name edge was survivorship. (v3 grew tier_a 91→213, deep Canadian bench
-  + US large-caps, all >5y history; individual-stock share now ~50% — a deliberate departure
-  from the old ETF-heavy ≤20% rule, accepted for more momentum vehicles.)
+- ☑ **Universe-agnosticism checked on v3** (2026-06-06). The 91→213 expansion showed the edge IS
+  somewhat watchlist-sensitive (scoring-ON dropped E[R] +0.071→+0.046), but the composition test
+  traced that to the scoring layer, and the honest broad edge with scoring OFF (+0.075/0.66) then
+  passed fixed-config OOS. So the logic holds across composition once the noise gate is removed.
+- ◻ Consider more `.TO` / sector ETFs and a survivorship-free constituent feed (date-stamped
+  membership) so the universe itself isn't hindsight-selected.
 
 **Architecture / performance**
 - ◻ Split FilterEngine god-class / main.py / sweep.py; `ApplicationContext` DI;
@@ -116,8 +117,12 @@ reconciliation in ACTIVE above.
 
 ---
 
-## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
+## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #2)
 
+- **Fixed-config OOS validation** (2026-06-06, `run_id=12`) — `--wf-no-retune --workers 14`, 47
+  windows: IS +0.066 → OOS +0.072 (degradation −0.006), **68% OOS-profitable, p≈0.009**. The
+  scoring-OFF headline is temporally stable; `verification_results` updated. (Re-tune V5 + deflated
+  Sharpe still pending.)
 - **Scoring made opt-in, default OFF** (2026-06-05, ADR-003) — the entry score is non-predictive
   of R (corr −0.03) and its highest-score-first budget fill selected weaker trades. `--scoring`
   flag (run_backtest + main.py; `SweepEngine(use_scoring=)`), default OFF. **New headline run_id=11
