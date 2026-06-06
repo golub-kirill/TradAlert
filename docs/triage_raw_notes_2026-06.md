@@ -90,6 +90,17 @@ comment so the next reader doesn't re-file this as a bug. Also worth a docstring
 that `signals.momentum.short` = the held-long fade exit, since the name invites
 exactly this confusion.
 
+**Measured (2026-06-05, `scripts/instrument_binds.py`).** Over the 91-ticker watchlist:
+429 fade-eligible bars (MACD cross-down + magnitude gate). The `rsi_min=30` floor withholds
+36 of them (8.4%); the `rsi_max=65` ceiling withholds 0 (0.0%). So the **floor is an active
+predicate, not inert** — the "rarely binds" hypothesis above was wrong. The sweep's flatness
+is therefore exit-substitution (a withheld fade defers to stop / max-hold / a later fade),
+not an inert gate. Keep the floor; pruning the sweep row is still defensible as "non-moving",
+but not on inert-gate grounds. (The 8.4% is unconditional over all bars, not just held-long
+bars, so it is an upper bound on P&L impact.)
+
+**Resolved 2026-06-05.** Floor KEPT (active predicate, not inert); sweep row unchanged.
+
 ### 2b — "Breadth divergence pen." (`behavioral.breadth_divergence_penalty`)
 
 **What it actually is.** The key is read by the behavioral sizer
@@ -114,6 +125,27 @@ True across the backtest (and, when True, whether the resulting `size_mult` chan
 any entry via `size_mult_gate`). If it genuinely never fires, that's a data/threshold
 question for the behavioral layer, not a sweep bug. A clarifying comment was added at the
 ParamSpec so it isn't re-filed as a wiring bug.
+
+**Measured (2026-06-05, `scripts/instrument_binds.py`).** Two findings — both correct the
+"wired-but-dormant" conclusion above:
+1. **Wiring defect, not dormancy.** `loader.load_universe` keys behavioral parquet by stem
+   (`sp500_breadth`, `sector_ratios`), but `classify_behavioral_state` reads `breadth` /
+   `sector_rotation`, and nothing remaps between them (`portfolio_backtester` passes the dict
+   straight through at `:369`/`:694`). So breadth is **missing in every backtest/sweep** —
+   `breadth_divergence` is structurally False regardless of the penalty. The 2026-06-03
+   "wired end-to-end" note routed the penalty *value* but missed that the *data* never
+   arrives. (The live path is fine: `fetch_all_behavioral` emits `breadth`/`sector_rotation`.)
+2. **Inert even if fixed.** With correct keys the flag fires on 6 / 6833 days (0.09%) over
+   1999–2026, last on 2015-10-19. So the penalty can't move results either way — the sweep
+   row can be pruned. Fixing the loader key is a separable live/backtest-fidelity correctness
+   fix (negligible P&L: ~6 historical days).
+
+**Resolved 2026-06-05.** Both actions landed: (1) `loader._BEHAVIORAL_KEY_ALIASES` remaps
+`sp500_breadth`→`breadth` and `sector_ratios`→`sector_rotation`, so backtests now feed the
+classifier the same key contract as live (breadth, the weight-4 axis, and sector are no
+longer NEUTRAL-pinned). (2) The `breadth_divergence_penalty` PARAM_GRID row was pruned (inert).
+NB the key fix changes the sweep's behavioral axes — re-run behavioral sweep rows if they are
+tuned for a headline config.
 
 ### Bonus finding — "Behavioral size floor" was a genuine dead key (FIXED 2026-06-03)
 

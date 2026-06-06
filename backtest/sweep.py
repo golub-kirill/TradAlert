@@ -29,7 +29,7 @@ Public API
     SweepEngine.baseline()          -> SweepPoint
     SweepEngine.run_ofat(grid)      -> SweepReport
 
-    PARAM_GRID                      : default OFAT spec (18 parameters)
+    PARAM_GRID                      : default OFAT spec (23 parameters)
     PORTFOLIO_GRID                  : portfolio-level sweep spec
 """
 
@@ -179,16 +179,6 @@ PARAM_GRID: list[ParamSpec] = [
               (55, 60, 65, 70, 75),
               "Min score to alert", "global",
               fmt="{:.0f}"),
-
-    # Behavioral breadth-divergence penalty. Wired end-to-end in the
-    # sweep: data/behavioral/* is loaded, run_prepped receives behavioral_data +
-    # settings, and _SETTINGS_ALIASES routes this key to the name the classifier
-    # reads. It only subtracts from behavioral_score WHEN a breadth divergence is
-    # flagged, so it reads as "no effect" if divergence rarely fires over the
-    # window — dormant, not unwired. Instrument divergence frequency to confirm.
-    ParamSpec("behavioral.breadth_divergence_penalty",
-              (0.0, 0.1, 0.2, 0.3),
-              "Breadth divergence pen.", "phase8"),
 
     # Behavioral size-multiplier floor. The consumer key is
     # `size_mult_floor` (settings.yaml + behavioral classifier). The old
@@ -965,7 +955,6 @@ _SETTINGS_ALIASES: dict[str, str] = {
     "scanner.weights.ma200_slope": "scanner.weights.ma200_slope",
     "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
     "scanner.min_score_to_alert": "scanner.min_score_to_alert",
-    "behavioral.breadth_divergence_penalty": "behavioral.breadth_divergence_penalty",
     "behavioral.size_mult_floor": "behavioral.size_mult_floor",
     # SCORING_GRID — entry thresholds
     "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",

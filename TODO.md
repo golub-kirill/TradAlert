@@ -49,6 +49,8 @@ reconciliation in ACTIVE above.
   robustness gate for the *headline config*.
 - ◻ Refresh the remaining Sharpe/Sortino figures (OFF baseline, `if_not_profit`, horizon sweep,
   deflated) under the rf=0 convention — they predate the fix (relative ranks unaffected).
+- ◻ Behavioral sweep rows now use **real** breadth/sector (key-mismatch fixed 2026-06-05) — the
+  pre-fix sweeps ran with breadth NEUTRAL-pinned, so re-run any behavioral-param tuning.
 
 ---
 
@@ -71,8 +73,6 @@ reconciliation in ACTIVE above.
 **Reporting / observability**
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
-- ◻ (cheap) Instrument how often the momentum-fade RSI floor / breadth-divergence flag
-  actually *bind* — to decide prune/keep.
 
 **Watchlist expansion** (mind NORTH STAR #2)
 - ◻ ~15 more `.TO` ETFs into tier_a; ≤20% individual stocks; >5y history.
@@ -87,7 +87,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **221**).
+- `pytest tests/` green at the end of every step (currently **233**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -100,6 +100,12 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Behavioral key-mismatch fix + bind diagnostic** — backtest loader keyed behavioral parquet
+  by stem (`sp500_breadth`/`sector_ratios`) but the classifier reads `breadth`/`sector_rotation`,
+  so breadth (weight-4 axis) was NEUTRAL-pinned in every backtest/sweep; fixed via
+  `loader._BEHAVIORAL_KEY_ALIASES`. `scripts/instrument_binds.py` measures bind frequency
+  (fade RSI floor 8.4% — active, kept; breadth divergence 0.09% — inert, sweep row pruned).
+  `tests/test_instrument_binds.py` + `tests/test_loader_behavioral_keys.py` (+12); triage 2a/2b.
 - **Real-fill reconciliation** — `scripts/reconcile_fills.py` scores realized R on closed
   `positions` (initial-stop risk unit) vs `backtest_trades` by direction, flags drift; lists
   open positions as carried risk. `data/positions_schema.sql` added (fresh-clone DDL);
