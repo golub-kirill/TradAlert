@@ -709,12 +709,15 @@ def _header_badge(signal, passed_count, total_count):
     if signal and signal.passed:
         direction = signal.direction or ""
         score = getattr(signal, "score", 0.0)
+        # Omit the score when it's 0 — i.e. scoring is OFF (signal un-enriched).
+        # Showing "LONG  0" would read as a 0/100 confidence, which is wrong.
+        sfx = "  {:.0f}".format(score) if score > 0 else ""
         if _is_long_direction(direction):
-            return ("▲ LONG  {:.0f}".format(score), _C_UP)
+            return ("▲ LONG" + sfx, _C_UP)
         if _is_short_direction(direction):
-            return ("▼ SHORT  {:.0f}".format(score), _C_DOWN)
+            return ("▼ SHORT" + sfx, _C_DOWN)
         if _is_exit_direction(direction):
-            return ("✕ EXIT  {:.0f}".format(score), _C_AMBER)
+            return ("✕ EXIT" + sfx, _C_AMBER)
     if total_count:
         pct = passed_count / total_count
         if pct >= 0.75:
