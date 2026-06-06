@@ -144,6 +144,15 @@ uncapped headline (0.59).
 > Sharpe 0.42 — so −40% of the edge was the scoring layer. This is the broad/honest universe, so
 > the gain is not survivorship. **This is the current headline.**
 >
+> **OOS validation — fixed-config walk-forward (2026-06-06, `run_id=12`).** Ran `--walk-forward
+> --wf-no-retune --workers 14` on the scoring-OFF headline: 47 rolling 3yr-IS/1yr-OOS windows.
+> **IS E[R] +0.066 → OOS +0.072 (degradation −0.006 — OOS slightly *better*); 32/47 = 68% of OOS
+> windows profitable, binomial p ≈ 0.009.** Improves on the prior 25d-hard V5b (62%, p ≈ 0.068).
+> Conclusion: the headline edge is **temporally stable** — not in-sample luck. **Caveat:** this is
+> the fixed-config test only; the parameter-selection / data-snooping correction (full re-tune
+> walk-forward = V5, + deflated Sharpe = Phase D) is still pending before the edge is fully
+> de-biased.
+>
 > **Cap change → risk budget (2026-06-04, `run_id=7`).** The portfolio cap was then
 > re-expressed from a raw count (`max_concurrent=6`) to an aggregate-risk budget
 > (`max_open_risk=6.0`, in `size_mult` units). Re-running the same 25d-hard headline:

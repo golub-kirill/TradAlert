@@ -16,20 +16,16 @@
 
 ---
 
-## ★ ACTIVE — win now (NORTH STAR #1)
-
-The metric / universe-agnostic / hygiene cleanup tier is cleared (see *Recently shipped*).
-These are the live-performance items that actually move NORTH STAR #1.
-
 **Current headline:** `run_id=11` — 213-name universe, 25d `if_not_profit`, budget 5.0,
 slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR-003).
 
-- ◻ **OOS-validate the scoring-OFF headline (in progress).** Fixed-config walk-forward running
-  `--wf-no-retune --workers 14` (`logs/wf_scoring_off.txt`). Early windows promising (OOS often ≥
-  IS; only 1999–2002 negative). **Next chat:** read the final IS→OOS degradation; then run the
-  FULL re-tune gate over the whole range (`--walk-forward --workers 14`, no `--wf-no-retune`) —
-  the parameter-selection / data-snooping test. NB walk-forward results are not journaled
-  (logs/ only), so capture the verdict into `verification_results` when it lands.
+- ☑ **Fixed-config OOS validation PASSED** (2026-06-06, `run_id=12`). `--wf-no-retune --workers 14`:
+  47 windows, IS +0.066 → OOS +0.072 (degradation −0.006), **68% OOS-profitable, p≈0.009**. The
+  scoring-OFF headline is temporally stable (recorded in `verification_results`).
+- ◻ **Run the FULL re-tune walk-forward (V5)** over the whole range (`--walk-forward --workers 14`,
+  no `--wf-no-retune`) — the parameter-selection / data-snooping test the fixed-config WF does NOT
+  cover. Then deflated-Sharpe / White reality check (Phase D). This is what's left to fully de-bias
+  the +0.075 / Sharpe 0.66 headline.
 - ◻ **Real-life "textbook" check.** Sanity-check the engine against first principles: hand-work a
   known trade (entry/stop/target → realized R) and confirm the backtester reproduces it, and/or
   benchmark the strategy vs buy-and-hold SPY over the same window — does the edge beat the
@@ -47,7 +43,7 @@ slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR
 
 ---
 
-## Validation & de-biasing (paused per NORTH STAR #1 until live is healthy)
+## Validation & de-biasing
 
 Edge after de-biasing is real-but-thin. Evidence: `docs/verification_results_2026-06.md`,
 `docs/adr/ADR-001-max-hold-exit.md`. Phase A (survivorship) is closed; Phase E = the live
