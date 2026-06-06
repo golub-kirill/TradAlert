@@ -1,5 +1,5 @@
 """
-Contract tests for the six behavioral / macro fetchers restored in Phase 9.
+Contract tests for the six behavioral / macro fetchers.
 
 All fetchers must:
   1. Return the documented shape even when network is unreachable.

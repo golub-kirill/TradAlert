@@ -21,15 +21,16 @@
 The metric / universe-agnostic / hygiene cleanup tier is cleared (see *Recently shipped*).
 These are the live-performance items that actually move NORTH STAR #1.
 
-- ◻ **Run `main.py` DAILY (schedule it).** The live feed is the only way to judge "winning
-  now" and it's only ~1 week old. Windows Task Scheduler → `main.py` after the US close;
-  signals mature in ~25 trading days.
-- ◻ **Live-vs-backtest reconciliation on REAL fills.** `scripts/reconcile_live.py` exists, but
-  replaying live signals through cached prices ≈ a *delayed backtest* (signal-fidelity only).
-  The real meter reconciles **actual fills** (`positions`, currently empty) vs the model —
-  blocked on logging real/paper trades (see `position_CLI` below).
-- ◻ **`position_CLI.py open --date YYYY-MM-DD`** (retroactive opens) — needed to backfill
-  `positions` so the real reconciliation above has data.
+- ◻ **Let the live feed mature.** Scheduling is done — `scripts/register_daily_scan.ps1`
+  registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
+  catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
+  days, so the meaningful read on "winning now" is ~5 weeks of daily runs out.
+- ◻ **Log real/paper fills so the real meter has data.** The reconciler is built
+  (`scripts/reconcile_fills.py` — realized R on closed `positions` vs `backtest_trades` by
+  direction) and `position_CLI.py open --date` backfills retroactive opens. `positions` is
+  still **empty**, so the remaining work is operational: log actual/paper trades (with a
+  `--stop`, the risk unit), then `python scripts/reconcile_fills.py` reads the live edge.
+  Signals mature in ~25 trading days, so meaningful drift numbers are ~5 weeks out.
 
 ---
 
@@ -86,7 +87,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **207**).
+- `pytest tests/` green at the end of every step (currently **221**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -99,6 +100,15 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Real-fill reconciliation** — `scripts/reconcile_fills.py` scores realized R on closed
+  `positions` (initial-stop risk unit) vs `backtest_trades` by direction, flags drift; lists
+  open positions as carried risk. `data/positions_schema.sql` added (fresh-clone DDL);
+  `tests/test_reconcile_fills.py` (+7). README "Reconciliation" section.
+- **Daily scheduling** — `scripts/register_daily_scan.ps1` + `scripts/run_daily.bat` register
+  a Windows Task Scheduler job running `main.py` Mon–Fri at a local time, only-when-logged-on,
+  catching up missed runs; wrapper appends to `logs/scheduler.log`. README "Schedule it daily".
+- **`position_CLI.py open --date YYYY-MM-DD`** — retroactive opens (default today, ISO,
+  rejects future dates) to backfill `positions`; `tests/test_position_cli.py` (+7).
 - **Sharpe/Sortino** → rf=0 scale-invariant + textbook `/N` (`stats_utils`); headline `run_id=8`
   (25d-hard @ budget 5.0) = +87.2R, Sharpe 0.58, Sortino 1.03.
 - **`max_concurrent` → `max_open_risk`** aggregate-risk budget (default 5.0 = Sharpe-optimal,

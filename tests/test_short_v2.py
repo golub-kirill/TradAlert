@@ -1,5 +1,5 @@
 """
-Phase 10 v2 polish tests — asymmetric ``min_rr_short`` and the
+Tests for the asymmetric ``min_rr_short`` and the
 hard-to-borrow short block list, both in ``FilterEngine._signal_entry``.
 
 Both features are opt-in and short-only: longs and pre-v2 configs are

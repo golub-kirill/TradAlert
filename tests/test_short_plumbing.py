@@ -1,12 +1,12 @@
 """
-Phase 10.1 plumbing tests — exercise the sign-of helper, the symmetric
+Plumbing tests — exercise the sign-of helper, the symmetric
 Trade math, the short-side fill helpers, and the direction-aware
 adjust_target_for_slippage.
 
 These tests must pass while ``signals.allow_shorts`` is still False —
-the plumbing is in place but the backtester doesn't fire short trades
-until Phase 10.3. The goal here is to lock down the math contract so
-the integration phases can build on a stable foundation.
+the plumbing is in place but the backtester does not fire short trades
+yet. The goal here is to lock down the math contract so the
+integration layer can build on a stable foundation.
 """
 
 from __future__ import annotations
@@ -169,11 +169,11 @@ def test_short_fill_directionality(stop, target, bar_open):
     assert tf <= target, f"short target fill {tf} should be <= target {target}"
 
 
-# ─── apply_*_fill — long-side regression (Phase 2 must still pass) ───────────
+# ─── apply_*_fill — long-side regression (must still pass unchanged) ─────────
 
 
 def test_long_fill_helpers_unchanged():
-    """Phase 2 contract: long helpers behave exactly as before."""
+    """Long helpers behave exactly as before."""
     assert apply_stop_fill(100.0, 102.0) == 100.0  # intraday
     assert apply_stop_fill(100.0, 97.0) == 97.0  # gap-down
     assert apply_target_fill(120.0, 115.0) == 120.0  # intraday
@@ -184,7 +184,7 @@ def test_long_fill_helpers_unchanged():
 
 
 def test_adjust_target_long_default_direction():
-    """Default direction='long' preserves Phase 3 semantics."""
+    """Default direction='long' preserves long-side semantics."""
     adj = adjust_target_for_slippage(
         entry_price=100.1, initial_stop=95.0,
         configured_target=112.5, min_rr=2.5,

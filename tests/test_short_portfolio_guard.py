@@ -1,5 +1,5 @@
 """
-Phase 10.6 validation — check #6: the portfolio must never hold a long
+Validation check #6: the portfolio must never hold a long
 and a short on the same ticker at once.
 
 ``PortfolioBacktester`` keys ``open_trades`` by ticker and only queues a

@@ -1,5 +1,5 @@
 """
-Phase 10 v2 polish — signal_type-aware short flip.
+signal_type-aware short flip.
 
 Mean-reversion shorts fade an overbought rally *near the highs*, so the
 "position vs 52-week range" axes (``near_52w_high``, ``far_from_52w_low``)

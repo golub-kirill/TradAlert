@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS scan_results (
     run_id       INT UNSIGNED NOT NULL,
     ticker       VARCHAR(16)  NOT NULL,
     passed       TINYINT(1)   NOT NULL DEFAULT 0,
-    -- full set of directions the scorer/engine can emit (incl. Phase 10 shorts)
+    -- full set of directions the scorer/engine can emit (long + short entries/exits)
     signal_kind  ENUM('none','entry_long','exit_long','entry_short','exit_short')
                               NOT NULL DEFAULT 'none',
     score        DECIMAL(5,2) NULL,

@@ -1,5 +1,5 @@
 """
-Phase 10 v2 polish tests — stock-borrow cost for shorts.
+Stock-borrow cost for shorts.
 
 Unit-level: ``Trade.borrow_drag_r`` / ``effective_r`` arithmetic and the
 long/zero-rate/open guards. Wiring-level: ``PortfolioBacktester`` reads

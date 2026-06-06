@@ -58,13 +58,36 @@ python main.py [--force] [--allow-shorts]
 | Flag             | Default | Description                                                                                                                                          |
 |------------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--force`        | False   | Bypass cache staleness check; re-fetch every ticker.                                                                                                 |
-| `--allow-shorts` | False   | Enable short-side entries (Phase 10). Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
+| `--allow-shorts` | False   | Enable short-side entries. Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
 
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
 `data/tradealert.log`, MySQL `scan_runs` + `scan_results` (when DB env set).
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
+
+#### Schedule it daily (Windows)
+
+The live feed only judges "winning now" if it runs every trading day. Register a
+Task Scheduler job that runs `main.py` after the US/TSX close (Mon–Fri):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1          # 18:00 local
+powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1 -At 17:30 # custom time
+```
+
+The task fires on **local** time, so pick a time after the 4:00 PM ET close in
+your timezone with a buffer for EOD data to settle. It runs only when you are
+logged on (no stored password) and catches up a run missed because the PC was
+off. `scripts\run_daily.bat` is the wrapper it invokes — it runs `main.py` with
+the project venv and appends a run/exit record to `logs\scheduler.log` (the
+detailed app log stays in `data\tradealert.log`). Manage it with:
+
+```powershell
+Get-ScheduledTask -TaskName 'TradAlert Daily Scan' | Get-ScheduledTaskInfo  # status / next run
+Start-ScheduledTask -TaskName 'TradAlert Daily Scan'                        # run once now
+Unregister-ScheduledTask -TaskName 'TradAlert Daily Scan' -Confirm:$false   # remove
+```
 
 ### `position_CLI.py` — manual positions
 
@@ -74,15 +97,18 @@ python position_CLI.py {list | open | close | stop} ...
 
 | Sub-command | Required args    | Options                                          | Effect                        |
 |-------------|------------------|--------------------------------------------------|-------------------------------|
-| `list`      | —                | —                                                | List all positions.           |
-| `open`      | `ticker` `price` | `--side long` (default), `--stop F`, `--notes S` | Insert new position.          |
-| `close`     | `id` `price`     | —                                                | Close by id.                  |
-| `stop`      | `id` `price`     | —                                                | Update stop on open position. |
+| `list`      | —                | —                                                                   | List all positions.           |
+| `open`      | `ticker` `price` | `--side long` (default), `--stop F`, `--date YYYY-MM-DD`, `--notes S` | Insert new position.          |
+| `close`     | `id` `price`     | —                                                                   | Close by id.                  |
+| `stop`      | `id` `price`     | —                                                                   | Update stop on open position. |
 
-`--side short` is accepted (Phase 10 plumbing). The short signal/exit
-pipeline is wired and gated behind `main.py --allow-shorts`; the
-end-to-end short backtest validation is still in progress (see TODO.md
-*Active work — Short trading*).
+`--date` backfills a **retroactive open** (default: today); the date must be
+ISO `YYYY-MM-DD` and not in the future. Use it to log fills after the fact so
+the live-vs-backtest reconciliation has real positions to score.
+
+`--side short` is accepted so manual short positions can be tracked. The short
+signal/exit pipeline is wired end-to-end and gated behind `main.py
+--allow-shorts`.
 
 ### `backtest/run_backtest.py` — backtester
 
@@ -126,7 +152,7 @@ bit-identically; turn on to A/B a refinement):
 | `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling window, scale that ticker's position size down (sliding scale → 0).                                                                                                                                                                                                                                               | `chronic_loser_penalty` (filters.yaml) |
 | `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected).                                                                                                                                                                                                                                                       | `regime.vix_slope_block`               |
 | `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
-| `--allow-shorts`    | Enable **short-side entries** (Phase 10): the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
+| `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` (default) always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). Without it, holds are unbounded (until stop/target), which inflates the win rate vs. a real swing horizon. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
 | `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum from the 2026-06-04 budget sweep.) | `portfolio.max_open_risk` (`base_port`) |
 
@@ -143,7 +169,7 @@ the YAML instead for `main.py` (live scan).
 The CSV ledger (`data/backtest_out/trades.csv`) includes a `direction`
 column (`long` / `short`) for per-direction analysis.
 
-### `backtest/validate_shorts.py` — short-side validation (Phase 10.6)
+### `backtest/validate_shorts.py` — short-side validation
 
 ```bash
 # Single ledger (runs checks 1, 2, 3, 5, 6):
@@ -171,6 +197,25 @@ python -m backtest.repair_parquet [--dry-run]
 
 Re-saves every `data/prices/*.parquet` cross-platform (fixes endianness /
 architecture mismatches when moving data between machines).
+
+### Reconciliation — is the edge holding live?
+
+Two read-only meters compare live performance to backtest expectancy (the latest
+`backtest_runs`, or `--bt-run-id N`); both flag drift beyond `--drift` R/trade
+(default 0.15):
+
+```bash
+python scripts/reconcile_live.py     # signal fidelity: replay fired signals through cached prices
+python scripts/reconcile_fills.py    # real meter: realized R on actual fills in the positions table
+```
+
+`reconcile_live.py` replays every fired entry signal forward under the 25-bar
+cap — a *delayed backtest*, so it only judges signal fidelity. `reconcile_fills.py`
+scores **closed `positions`** (logged via `position_CLI.py`): realized
+R = `(exit-entry)/(entry-stop)` (long) using the initial recorded stop as the
+risk unit, bucketed by direction and compared to `backtest_trades`. Open
+positions are listed as carried risk but not scored; closed positions without a
+recorded stop can't be scored (no risk unit).
 
 ## Environment variables (`config/secrets.env`)
 
@@ -212,9 +257,9 @@ Loaded by `python-dotenv` at startup.
 | `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
 | `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Boolean toggles (also accept dict for `signals.exits.*` parameter blocks).                |
 | `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + R:R sanity.                                                               |
-| `signals.stop_loss.min_rr_short`                                                 | Phase 10 v2 (optional): R:R gate for shorts only; absent → falls back to `min_rr`.        |
-| `signals.hard_to_borrow_list`                                                    | Phase 10 v2 (optional): symbols that cannot be shorted (longs unaffected). Default `[]`.  |
-| `signals.borrow.{annual_rate_default,per_ticker}`                                | Phase 10 v2 (optional): short stock-borrow cost → per-trade R drag. Default `0.0` (off).  |
+| `signals.stop_loss.min_rr_short`                                                 | Optional: R:R gate for shorts only; absent → falls back to `min_rr`.                      |
+| `signals.hard_to_borrow_list`                                                    | Optional: symbols that cannot be shorted (longs unaffected). Default `[]`.                |
+| `signals.borrow.{annual_rate_default,per_ticker}`                                | Optional: short stock-borrow cost → per-trade R drag. Default `0.0` (off).                |
 | `signals.size_mult_gate.{enabled,min}`                                           | Block entries when composite macro × behavioral size mult < `min`.                        |
 
 ### `config/settings.yaml`
@@ -292,17 +337,16 @@ behavioral multiplier; backtester scales R-distance by it,
 
 ## MySQL tables
 
-Credentials from `config/secrets.env`. The backtest schema ships in
-`data/backtest_schema.sql`; the other tables' CREATE statements are inline
-in the respective modules.
+Credentials from `config/secrets.env`. Each table group ships a DDL file under
+`data/` (run once on a fresh deploy, e.g. `mysql -u <user> -p <db> < data/positions_schema.sql`).
 
-| Table             | Module                         | Populated by             |
-|-------------------|--------------------------------|--------------------------|
-| `scan_runs`       | `src/persistence/db.py`        | `main.py`                |
-| `scan_results`    | `src/persistence/db.py`        | `main.py`                |
-| `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) |
-| `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) |
-| `positions`       | `src/core/position_manager.py` | `position_CLI.py`        |
+| Table             | Module                         | Populated by             | Schema                      |
+|-------------------|--------------------------------|--------------------------|-----------------------------|
+| `scan_runs`       | `src/persistence/db.py`        | `main.py`                | `data/scan_schema.sql`      |
+| `scan_results`    | `src/persistence/db.py`        | `main.py`                | `data/scan_schema.sql`      |
+| `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
+| `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
+| `positions`       | `src/core/position_manager.py` | `position_CLI.py`        | `data/positions_schema.sql` |
 
 ## Outstanding work
 

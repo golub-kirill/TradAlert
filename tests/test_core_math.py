@@ -1,6 +1,6 @@
 """
 Exact-value unit tests for the core math the headline numbers depend on
-(Phase 7 gap: indicators, stats_utils, OHLCV validator had no coverage).
+(indicators, stats_utils, OHLCV validator).
 References are recomputed independently or hand-derived — not mirrored from
 the implementation — so a formula change breaks the test.
 """
