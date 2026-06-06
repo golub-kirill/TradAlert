@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Live-vs-backtest reconciliation (Phase E) — is the strategy tracking expectancy NOW?
+Live-vs-backtest reconciliation — is the strategy tracking expectancy NOW?
 
 Pulls fired entry signals from the live journal (`scan_results` + `scan_runs`),
 replays each one forward against the cached price history under the shipped 25-bar

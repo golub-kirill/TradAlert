@@ -23,44 +23,60 @@ def compute_vbp(
         n_bins: int = 24,
 ) -> pd.Series:
     """
-    Volume-by-Price histogram over ``lookback`` bars with ``n_bins`` bins.
+    Canonical Volume-by-Price (volume profile) over ``lookback`` bars, ``n_bins`` bins.
 
-    Each bar contributes ``close × volume`` to the price bin that contains
-    the close. The result is a Series indexed by bin midpoint with the
-    aggregated dollar-volume as values.
+    Each bar's volume is distributed across the price bins its ``[low, high]`` range
+    spans, in proportion to how much of the range falls in each bin — so volume is
+    attributed to where shares actually changed hands, not just to the close. Bins
+    span the window's low-to-high price range; a zero-range bar puts all of its
+    volume in the single bin holding that price.
 
     Parameters
     ----------
-    df : DataFrame with ``close`` and ``volume`` columns.
+    df : DataFrame with ``low``, ``high`` and ``volume`` columns.
     lookback : Number of trailing bars to include (default 120).
     n_bins : Number of price bins (default 24).
 
     Returns
     -------
-    pd.Series indexed by bin midpoint (float), values = dollar-volume.
+    pd.Series indexed by bin midpoint (float), values = share-volume.
     """
     window = df.tail(lookback)
     if len(window) < 2:
         return pd.Series(dtype=float)
 
-    closes = window["close"].values
-    volumes = window["volume"].values
-    dollar_vol = closes * volumes
+    lows = window["low"].to_numpy(dtype=float)
+    highs = window["high"].to_numpy(dtype=float)
+    vols = window["volume"].to_numpy(dtype=float)
 
-    price_min = closes.min()
-    price_max = closes.max()
-    if price_max == price_min:
-        mid = price_min
-        return pd.Series({mid: float(dollar_vol.sum())})
+    price_min = float(lows.min())
+    price_max = float(highs.max())
+    if price_max <= price_min:
+        return pd.Series({price_min: float(vols.sum())})
 
     bin_edges = np.linspace(price_min, price_max, n_bins + 1)
-    bin_indices = np.digitize(closes, bin_edges[1:-1], right=False)
-    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
-
-    bin_mids = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    bin_lo = bin_edges[:-1]
+    bin_hi = bin_edges[1:]
+    bin_mids = (bin_lo + bin_hi) / 2.0
     agg = np.zeros(n_bins)
-    for i in range(len(closes)):
-        agg[bin_indices[i]] += dollar_vol[i]
+
+    def _single_bin(price: float) -> int:
+        return int(np.clip(
+            np.searchsorted(bin_edges, price, side="right") - 1, 0, n_bins - 1))
+
+    for lo, hi, vol in zip(lows, highs, vols):
+        if vol <= 0.0:
+            continue
+        if hi <= lo:
+            agg[_single_bin(lo)] += vol
+            continue
+        # Split the bar's volume across bins by the overlap of [lo, hi] with each.
+        overlap = np.clip(np.minimum(hi, bin_hi) - np.maximum(lo, bin_lo), 0.0, None)
+        total = overlap.sum()
+        if total <= 0.0:
+            agg[_single_bin(lo)] += vol
+            continue
+        agg += vol * (overlap / total)
 
     return pd.Series(agg, index=bin_mids, name="vbp")
 

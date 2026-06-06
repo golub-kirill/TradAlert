@@ -41,6 +41,7 @@ from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
 from core.fetchers.live_price import get_live_price  # noqa: E402
 from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
+from core.exits import max_hold_exit_due  # noqa: E402
 from core.scoring import SignalScorer  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
 from core.fetchers.http import mask_api_keys_filter  # noqa: E402
@@ -53,7 +54,7 @@ try:
     from core.indicators.rp_rank import build_rp_rank_table  # noqa: E402
     from core.indicators.chart_signal_history import collect_signal_history  # noqa: E402
 
-    # Kept intentionally: graceful-import guard for optional Phase 6/8/9
+    # Kept intentionally: graceful-import guard for the optional
     # modules (macro / calendar / rp_rank / signal_history). A partial or
     # stripped install degrades to long-only core instead of crashing at
     # import; the four consult sites below fall back when this is False.
@@ -126,7 +127,7 @@ def main() -> None:
     # so the file is not read and parsed a second time inside FilterEngine.__init__.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
-    # Phase 10.5: --allow-shorts flips the master switch on. We only mutate
+    # --allow-shorts flips the master switch on. We only mutate
     # when the flag is set, so an unflagged run leaves filters.yaml untouched
     # (allow_shorts defaults false there) and the long-only baseline replays
     # bit-identically.
@@ -223,6 +224,7 @@ def main() -> None:
         settings=settings,
         macro_state=macro_state, behavioral_state=behavioral_state,
         rp_ranks=rp_ranks,
+        use_scoring=args.scoring,
     )
 
     elapsed = time.perf_counter() - t0
@@ -247,6 +249,7 @@ def _run_pipeline(
         macro_state: object | None = None,
         behavioral_state: object | None = None,
         rp_ranks: dict[str, float] | None = None,
+        use_scoring: bool = False,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal → score for every fetched ticker.
@@ -427,6 +430,33 @@ def _run_pipeline(
             ))
             continue
 
+        # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
+        # Keep the live feed in step with the backtester's swing-horizon cap
+        # (ADR-001): force an exit on a held long that has reached the cap and —
+        # in if_not_profit mode — is not in profit. Shares core.exits with the
+        # backtester so live and backtest never diverge. Engine exits take
+        # precedence (we only override a non-exit signal).
+        if held_long and held_position is not None and signal.direction != "exit_long":
+            _exec_cfg = engine._cfg.get("execution", {})
+            _mh_days = _exec_cfg.get("max_hold_days")
+            if _mh_days is not None:
+                _mh_mode = str(_exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+                _entry_pos = int(df.index.searchsorted(pd.Timestamp(held_position.entry_date)))
+                if max_hold_exit_due(
+                        bars_held=(len(df) - 1) - _entry_pos,
+                        current_close=float(df["close"].iloc[-1]),
+                        entry_price=held_position.entry_price, side="long",
+                        max_hold_days=int(_mh_days), mode=_mh_mode):
+                    logger.info("[%s] max-hold time-stop exit (%d bars, %s)",
+                                ticker, int(_mh_days), _mh_mode)
+                    signal = SignalResult(
+                        passed=True, direction="exit_long", signal_type="time_stop",
+                        market_regime=signal.market_regime,
+                        ticker_trend=signal.ticker_trend,
+                        reason=f"max-hold {int(_mh_days)} bars reached "
+                               f"({_mh_mode}) — time-stop exit",
+                    )
+
         # ── 8. live price + 9. score ──────────────────────────────────────────
         if signal.passed:
             # Live price fetch is fail-open — None omits current-price line
@@ -436,19 +466,23 @@ def _run_pipeline(
             except Exception as exc:
                 logger.debug("[%s] live price fetch failed — %s", ticker, exc)
 
-            # regime already computed and enriched above
-            scorer.enrich(
-                signal=signal,
-                df=df,
-                regime=regime,
-                earnings_date=earnings_date,
-                position=held_position,
-                market_dfs=market_dfs,
-                vix_df=vix_df,
-                current_price=live_price,
-                rp_ranks=rp_ranks,
-                ticker=ticker,
-            )
+            # regime already computed and enriched above. Scoring is OFF by
+            # default (the score is non-predictive of R): skip enrichment so the
+            # min_score_to_alert gate is bypassed and every engine-triggered fire
+            # is actionable (score stays 0, watch_only False). --scoring restores it.
+            if use_scoring:
+                scorer.enrich(
+                    signal=signal,
+                    df=df,
+                    regime=regime,
+                    earnings_date=earnings_date,
+                    position=held_position,
+                    market_dfs=market_dfs,
+                    vix_df=vix_df,
+                    current_price=live_price,
+                    rp_ranks=rp_ranks,
+                    ticker=ticker,
+                )
             # Chart only for fire signals (score ≥ threshold, not watch-only)
             if not signal.watch_only:
                 # Collect historical signals for chart overlay
@@ -621,9 +655,18 @@ def _parse_args() -> argparse.Namespace:
         "--allow-shorts",
         action="store_true",
         default=False,
-        help="Enable short-side entries (Phase 10). Overrides "
+        help="Enable short-side entries. Overrides "
              "signals.allow_shorts in filters.yaml to true. Default off "
              "keeps the long-only baseline replay-stable.",
+    )
+    parser.add_argument(
+        "--scoring",
+        action="store_true",
+        default=False,
+        help="Enrich + score signals and apply the min_score_to_alert gate "
+             "(matches `run_backtest.py --scoring`). OFF by default — the entry "
+             "score is non-predictive of R, so every engine-triggered fire is "
+             "reported as actionable instead of being score-gated.",
     )
     return parser.parse_args()
 
@@ -697,7 +740,7 @@ def _print_report(
                if r.signal is not None and r.signal.direction == "long"]
     exits = [r for r in signals
              if r.signal is not None and r.signal.direction == "exit_long"]
-    # Phase 10.5: short-side counterparts. Empty unless --allow-shorts fired
+    # Short-side counterparts. Empty unless --allow-shorts fired
     # short entries / exit_short covers, so the baseline summary is unchanged.
     short_entries = [r for r in signals
                      if r.signal is not None and r.signal.direction == "short"]
@@ -769,7 +812,7 @@ def _print_report(
             for line in s.description.splitlines():
                 logger.info("    %s", line)
 
-    # ── short entries (Phase 10.5) ──────────────────────────────────────────
+    # ── short entries ──────────────────────────────────────────
     # Only rendered when short signals exist, so a long-only (baseline) run
     # produces byte-identical summary output.
     if fire_short_entries:

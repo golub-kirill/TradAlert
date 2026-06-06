@@ -27,7 +27,7 @@ class Trade:
     ticker         : Symbol.
     signal_type    : 'momentum' | 'mean_reversion'. Recorded from
                      SignalResult.signal_type at entry time.
-    direction      : 'long' or 'short'. Both supported as of phase 10.
+    direction      : 'long' or 'short'.
     entry_date     : T+1 — the bar the order actually filled.
     entry_price    : T+1 open.
     initial_stop   : Stop level set at T close. Frozen for the trade's life.
@@ -68,7 +68,7 @@ class Trade:
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.
     size_mult: float = 1.0
-    # Phase 10 v2: annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
+    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
     # 0.0 (default) = no borrow drag, so longs and pre-v2 runs are unchanged.
     # Set at entry from signals.borrow.*; folded into effective_r as a
     # per-trade R drag proportional to bars_held (see borrow_drag_r).
@@ -144,6 +144,15 @@ class Trade:
         T+1 open already gapped past the stop). The closure path in the
         backtester always populates exit_price first, so this is safe to
         call as the last step of close_trade().
+
+        Gap-through entries (risk ≤ 0) are scored 0R *by design* — this is NOT a
+        hidden left-tail loss. When the T+1 open gaps past the stop, the same-bar
+        stop logic fills the exit at that same open, so exit ≈ entry and the only
+        realized cost is entry/exit slippage. Measured 2026-06-04: 7 of ~1098
+        trades gap through, ≈ −0.25R total — roughly 1% of the headline's bootstrap
+        SE (±~26R), i.e. immaterial. Booking the true slippage loss would require
+        threading the *intended* (signal-based) risk through the close path; not
+        worth the added surface area for 0.25R (see TODO).
 
         Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
         the stop and the target, the backtester records the STOP fill (the

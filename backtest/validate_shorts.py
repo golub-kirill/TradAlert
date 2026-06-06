@@ -1,5 +1,5 @@
 """
-Phase 10.6 — short-trading validation harness.
+Short-trading validation harness.
 
 Postmortem-style acceptance checks for the short side, computed from a
 backtest trade ledger (``data/backtest_out/trades.csv``). Run this AFTER
@@ -111,7 +111,7 @@ def _require_direction(df: pd.DataFrame) -> None:
     if "direction" not in df.columns:
         sys.exit(
             "trades ledger has no 'direction' column — re-run the backtest "
-            "after the Phase 10.6 CSV-schema update (backtest/sweep.py "
+            "after the short-side CSV-schema update (backtest/sweep.py "
             "trades_dataframe now emits 'direction')."
         )
 
@@ -202,7 +202,7 @@ def run_checks(df: pd.DataFrame, baseline: pd.DataFrame | None) -> list[Check]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Phase 10.6 short-trading validation.")
+    ap = argparse.ArgumentParser(description="Short-trading validation.")
     ap.add_argument("trades", nargs="?", default="data/backtest_out/trades.csv",
                     help="trade ledger CSV (from a --allow-shorts run).")
     ap.add_argument("--baseline", default=None,

@@ -52,19 +52,25 @@ must exist (an empty `sector_map: { }` ships by default).
 ### `main.py` — live scanner
 
 ```bash
-python main.py [--force] [--allow-shorts]
+python main.py [--force] [--allow-shorts] [--scoring]
 ```
 
 | Flag             | Default | Description                                                                                                                                          |
 |------------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--force`        | False   | Bypass cache staleness check; re-fetch every ticker.                                                                                                 |
-| `--allow-shorts` | False   | Enable short-side entries (Phase 10). Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
+| `--allow-shorts` | False   | Enable short-side entries. Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
+| `--scoring`      | False   | Enrich + score signals and apply the `min_score_to_alert` gate. **OFF by default** — the entry score is non-predictive of R (corr −0.03), so every engine-triggered fire is reported as actionable instead of being score-gated (ADR-003). |
 
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
 `data/tradealert.log`, MySQL `scan_runs` + `scan_results` (when DB env set).
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
+
+Held long positions (from the `positions` table) are also force-exited live when
+they reach the max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`)
+— a `time_stop` EXIT — using the same `core.exits.max_hold_exit_due` rule as the
+backtester, so live and backtest stay in step.
 
 ### `position_CLI.py` — manual positions
 
@@ -74,15 +80,18 @@ python position_CLI.py {list | open | close | stop} ...
 
 | Sub-command | Required args    | Options                                          | Effect                        |
 |-------------|------------------|--------------------------------------------------|-------------------------------|
-| `list`      | —                | —                                                | List all positions.           |
-| `open`      | `ticker` `price` | `--side long` (default), `--stop F`, `--notes S` | Insert new position.          |
-| `close`     | `id` `price`     | —                                                | Close by id.                  |
-| `stop`      | `id` `price`     | —                                                | Update stop on open position. |
+| `list`      | —                | —                                                                   | List all positions.           |
+| `open`      | `ticker` `price` | `--side long` (default), `--stop F`, `--date YYYY-MM-DD`, `--notes S` | Insert new position.          |
+| `close`     | `id` `price`     | —                                                                   | Close by id.                  |
+| `stop`      | `id` `price`     | —                                                                   | Update stop on open position. |
 
-`--side short` is accepted (Phase 10 plumbing). The short signal/exit
-pipeline is wired and gated behind `main.py --allow-shorts`; the
-end-to-end short backtest validation is still in progress (see TODO.md
-*Active work — Short trading*).
+`--date` backfills a **retroactive open** (default: today); the date must be
+ISO `YYYY-MM-DD` and not in the future. Use it to log fills after the fact so
+the live-vs-backtest reconciliation has real positions to score.
+
+`--side short` is accepted so manual short positions can be tracked. The short
+signal/exit pipeline is wired end-to-end and gated behind `main.py
+--allow-shorts`.
 
 ### `backtest/run_backtest.py` — backtester
 
@@ -126,8 +135,10 @@ bit-identically; turn on to A/B a refinement):
 | `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling window, scale that ticker's position size down (sliding scale → 0).                                                                                                                                                                                                                                               | `chronic_loser_penalty` (filters.yaml) |
 | `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected).                                                                                                                                                                                                                                                       | `regime.vix_slope_block`               |
 | `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
-| `--allow-shorts`    | Enable **short-side entries** (Phase 10): the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
-| `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` (default) always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). Without it, holds are unbounded (until stop/target), which inflates the win rate vs. a real swing horizon. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
+| `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
+| `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
+| `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
+| `--scoring`         | Enable the `SignalScorer` (`min_score_to_alert` gate + score-ranked budget fill). **OFF by default** — the entry score is non-predictive of R (corr −0.03) and ranking by it selected weaker trades; turning it off lifted the headline Sharpe 0.42 → 0.66 (ADR-003). `--scoring-sweep` forces it on. | `SweepEngine(use_scoring=)` |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
 > loads it at startup, and the `backtest_runs`/`backtest_trades` tables
@@ -142,7 +153,7 @@ the YAML instead for `main.py` (live scan).
 The CSV ledger (`data/backtest_out/trades.csv`) includes a `direction`
 column (`long` / `short`) for per-direction analysis.
 
-### `backtest/validate_shorts.py` — short-side validation (Phase 10.6)
+### `backtest/validate_shorts.py` — short-side validation
 
 ```bash
 # Single ledger (runs checks 1, 2, 3, 5, 6):
@@ -170,6 +181,25 @@ python -m backtest.repair_parquet [--dry-run]
 
 Re-saves every `data/prices/*.parquet` cross-platform (fixes endianness /
 architecture mismatches when moving data between machines).
+
+### Reconciliation — is the edge holding live?
+
+Two read-only meters compare live performance to backtest expectancy (the latest
+`backtest_runs`, or `--bt-run-id N`); both flag drift beyond `--drift` R/trade
+(default 0.15):
+
+```bash
+python scripts/reconcile_live.py     # signal fidelity: replay fired signals through cached prices
+python scripts/reconcile_fills.py    # real meter: realized R on actual fills in the positions table
+```
+
+`reconcile_live.py` replays every fired entry signal forward under the 25-bar
+cap — a *delayed backtest*, so it only judges signal fidelity. `reconcile_fills.py`
+scores **closed `positions`** (logged via `position_CLI.py`): realized
+R = `(exit-entry)/(entry-stop)` (long) using the initial recorded stop as the
+risk unit, bucketed by direction and compared to `backtest_trades`. Open
+positions are listed as carried risk but not scored; closed positions without a
+recorded stop can't be scored (no risk unit).
 
 ## Environment variables (`config/secrets.env`)
 
@@ -202,7 +232,7 @@ Loaded by `python-dotenv` at startup.
 | `regime.{index_symbols,require_all_indices,ma_short,require_ma_short_alignment}` | Trend voting + secondary MA-short gate.                                                   |
 | `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout + manual stop-date calendar.                                            |
 | `execution.{entry_slippage_pct,commission_r}`                                    | Backtest fill model.                                                                      |
-| `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit (OFF by default). `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit`. CLI `--max-hold-days` overrides. |
+| `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit. **Default `25` bars, `if_not_profit`.** `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit` (lets winners run). CLI `--max-hold-days` / `--max-hold-mode` override. |
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
 | `signals.momentum.short`                                                         | Held-long *momentum-fade exit* (legacy name; canonical at `signals.exits.momentum_fade`). |
 | `signals.mean_reversion.long`                                                    | Mean-rev entry: rsi_max, min_hist_delta_atr.                                              |
@@ -211,9 +241,9 @@ Loaded by `python-dotenv` at startup.
 | `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
 | `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Boolean toggles (also accept dict for `signals.exits.*` parameter blocks).                |
 | `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + R:R sanity.                                                               |
-| `signals.stop_loss.min_rr_short`                                                 | Phase 10 v2 (optional): R:R gate for shorts only; absent → falls back to `min_rr`.        |
-| `signals.hard_to_borrow_list`                                                    | Phase 10 v2 (optional): symbols that cannot be shorted (longs unaffected). Default `[]`.  |
-| `signals.borrow.{annual_rate_default,per_ticker}`                                | Phase 10 v2 (optional): short stock-borrow cost → per-trade R drag. Default `0.0` (off).  |
+| `signals.stop_loss.min_rr_short`                                                 | Optional: R:R gate for shorts only; absent → falls back to `min_rr`.                      |
+| `signals.hard_to_borrow_list`                                                    | Optional: symbols that cannot be shorted (longs unaffected). Default `[]`.                |
+| `signals.borrow.{annual_rate_default,per_ticker}`                                | Optional: short stock-borrow cost → per-trade R drag. Default `0.0` (off).                |
 | `signals.size_mult_gate.{enabled,min}`                                           | Block entries when composite macro × behavioral size mult < `min`.                        |
 
 ### `config/settings.yaml`
@@ -291,17 +321,16 @@ behavioral multiplier; backtester scales R-distance by it,
 
 ## MySQL tables
 
-Credentials from `config/secrets.env`. The backtest schema ships in
-`data/backtest_schema.sql`; the other tables' CREATE statements are inline
-in the respective modules.
+Credentials from `config/secrets.env`. Each table group ships a DDL file under
+`data/` (run once on a fresh deploy, e.g. `mysql -u <user> -p <db> < data/positions_schema.sql`).
 
-| Table             | Module                         | Populated by             |
-|-------------------|--------------------------------|--------------------------|
-| `scan_runs`       | `src/persistence/db.py`        | `main.py`                |
-| `scan_results`    | `src/persistence/db.py`        | `main.py`                |
-| `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) |
-| `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) |
-| `positions`       | `src/core/position_manager.py` | `position_CLI.py`        |
+| Table             | Module                         | Populated by             | Schema                      |
+|-------------------|--------------------------------|--------------------------|-----------------------------|
+| `scan_runs`       | `src/persistence/db.py`        | `main.py`                | `data/scan_schema.sql`      |
+| `scan_results`    | `src/persistence/db.py`        | `main.py`                | `data/scan_schema.sql`      |
+| `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
+| `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
+| `positions`       | `src/core/position_manager.py` | `position_CLI.py`        | `data/positions_schema.sql` |
 
 ## Outstanding work
 

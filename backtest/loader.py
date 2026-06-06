@@ -44,6 +44,16 @@ MACRO_DIR = Path("data/macro")
 BEHAVIORAL_DIR = Path("data/behavioral")
 INDICATOR_COLS = ["atr", "rsi", "macd", "macd_signal", "macd_hist"]
 
+# Behavioral parquet files are named by source (sp500_breadth, sector_ratios),
+# but classify_behavioral_state reads canonical axis keys (breadth,
+# sector_rotation) — the same keys the live fetch_all_behavioral emits. Map stems
+# to those keys so backtests feed the classifier the same contract as live;
+# without it breadth/sector silently go missing and default to NEUTRAL.
+_BEHAVIORAL_KEY_ALIASES = {
+    "sp500_breadth": "breadth",
+    "sector_ratios": "sector_rotation",
+}
+
 # Symbols treated as market context only — not traded
 CONTEXT_SYMBOLS = frozenset({"SPY", "QQQ", "^VIX"})
 SECTOR_ETFS = frozenset({
@@ -106,6 +116,33 @@ class UniverseData:
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+
+def _load_behavioral_data(behavioral_dir: Path) -> dict | None:
+    """Load ``data/behavioral/`` into the dict ``classify_behavioral_state`` expects.
+
+    Parquet stems are remapped to canonical axis keys via ``_BEHAVIORAL_KEY_ALIASES``
+    (e.g. ``sp500_breadth`` → ``breadth``) so the backtest feeds the classifier the
+    same key contract as the live ``fetch_all_behavioral``. Subdirectories
+    (``form4``, ``short_interest``) are passed through by name. Returns None when the
+    directory is absent or empty.
+    """
+    if not behavioral_dir.exists():
+        return None
+    data: dict = {}
+    for pf in behavioral_dir.glob("*.parquet"):
+        key = _BEHAVIORAL_KEY_ALIASES.get(pf.stem, pf.stem)
+        try:
+            data[key] = pd.read_parquet(pf)
+        except Exception as exc:
+            logger.warning("[behavioral] failed to load %s: %s", pf.stem, exc)
+    for sub in behavioral_dir.iterdir():
+        if sub.is_dir():
+            data[sub.name] = sub
+    if not data:
+        return None
+    logger.info("[behavioral] loaded %d datasets from cache", len(data))
+    return data
+
 
 def load_universe(
         tickers: list[str],
@@ -239,24 +276,7 @@ def load_universe(
             logger.info("[macro] loaded %d series from cache", len(macro_series))
 
     # ── load behavioral data from parquet cache ─────────────────────────
-    behavioral_data: dict | None = None
-    if behavioral_dir.exists():
-        behavioral_data = {}
-        for pf in behavioral_dir.glob("*.parquet"):
-            key = pf.stem
-            try:
-                df_b = pd.read_parquet(pf)
-                behavioral_data[key] = df_b
-            except Exception as exc:
-                logger.warning("[behavioral] failed to load %s: %s", key, exc)
-        # Load subdirectories (form4, short_interest)
-        for sub in behavioral_dir.iterdir():
-            if sub.is_dir():
-                behavioral_data[sub.name] = sub
-        if not behavioral_data:
-            behavioral_data = None
-        else:
-            logger.info("[behavioral] loaded %d datasets from cache", len(behavioral_data))
+    behavioral_data = _load_behavioral_data(behavioral_dir)
 
     # ── segregate SPY for breadth divergence detection ──────────────────
     spy_df = market_dfs.get("SPY", None)

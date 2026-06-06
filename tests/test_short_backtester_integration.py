@@ -1,5 +1,5 @@
 """
-Phase 10.3 integration tests — prove the backtester end-to-end produces
+Integration tests — prove the backtester end-to-end produces
 short Trade records when the engine emits short signals.
 
 We don't have a real BEAR-regime period in the cached data, so we

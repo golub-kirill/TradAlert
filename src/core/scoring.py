@@ -56,6 +56,14 @@ _DEFAULT_HOLD_LOW = 10
 _DEFAULT_HOLD_HIGH = 15
 _DEFAULT_MIN_SCORE = 60
 
+# Sub-score shape constants (algorithm internals, not config-backed).
+# RS-exit: a 20-day relative-strength shortfall of -1/scale (i.e. ~-10%) vs SPY
+# saturates the exit score at 1.0.
+_RS_EXIT_SCALE = 10.0
+# BB z-score: |Z| reaching this half-width drives the momentum score to 0; the
+# mean-reversion score saturates at Z = -(0.5 + half-width).
+_BB_Z_HALFWIDTH = 2.0
+
 
 # ── entry-side scoring thresholds (settings.yaml → scanner.entry_thresholds) ──
 
@@ -216,7 +224,7 @@ class SignalScorer:
         market_dfs    : Symbol → OHLCV for regime indices.
         vix_df        : VIX OHLCV.
         current_price : Latest live price, if available.
-        rp_ranks      : Ticker → RP percentile rank [0, 99] (Phase 2).
+        rp_ranks      : Ticker → RP percentile rank [0, 99].
         """
         if signal.direction in ("long", "short"):
             score, components = _score_entry(
@@ -271,7 +279,7 @@ _FLIP_FOR_SHORT_ENTRY: tuple[str, ...] = (
     "insider_buying",
 )
 
-# Phase 10 v2: mean-reversion shorts fade an overbought RALLY — they short
+# Mean-reversion shorts fade an overbought RALLY — they short
 # strength *near the highs*. So the "position vs 52w range" axes should keep
 # their long-style sense (near the high = good setup), unlike momentum shorts
 # which want weakness. We flip everything else but leave those two unflipped.
@@ -304,7 +312,7 @@ def _flip_if_short(
 
     Notes
     -----
-    For Phase 10.4 v1 we accept the asymmetry that this simple inversion
+    We accept the asymmetry that this simple inversion
     isn't perfect for mean-reversion shorts (which want different
     geometry than momentum shorts on some axes — e.g. near_52w_high is
     actually GOOD for an MR-short into a rally). Polish in v2.
@@ -472,22 +480,22 @@ def _score_entry(
     if "bb_zscore" in weights:
         components["bb_zscore"] = _score_bb_zscore(df, signal_type)
 
-    # 11. rp_percentile — cross-sectional relative strength rank (Phase 2)
+    # 11. rp_percentile — cross-sectional relative strength rank
     if "rp_percentile" in weights:
         components["rp_percentile"] = _score_rp_percentile(ticker, rp_ranks)
 
-    # 12. insider_buying — SEC Form 4 cluster buying (Phase 8)
+    # 12. insider_buying — SEC Form 4 cluster buying
     if "insider_buying" in weights:
         components["insider_buying"] = _score_insider_buying(ticker)
 
-    # 13. short_interest — yfinance short percent of float (Phase 8)
+    # 13. short_interest — yfinance short percent of float
     if "short_interest" in weights:
         components["short_interest"] = _score_short_interest(
             ticker, regime.trend)
 
-    # Phase 10.4: invert direction-biased components for short entries.
+    # Invert direction-biased components for short entries.
     # Has no effect when direction == "long" (the default).
-    # Phase 10 v2: mean-reversion shorts keep the 52w-range axes long-style
+    # Mean-reversion shorts keep the 52w-range axes long-style
     # (they fade strength near the highs), so they use a narrower flip list.
     flip_keys = (
         _FLIP_FOR_SHORT_ENTRY_MR if signal_type == "mean_reversion"
@@ -563,7 +571,7 @@ def _score_exit(
     if "vbp_resistance" in weights:
         components["vbp_resistance"] = _score_vbp_resistance(df, thr)
 
-    # Phase 10.4: invert direction-biased components for exit_short.
+    # Invert direction-biased components for exit_short.
     _flip_if_short(
         components,
         "short" if direction == "exit_short" else "long",
@@ -724,7 +732,7 @@ def _score_rs_exit(
             return 0.5
         rs20 = (t0 / t20) / (s0 / s20) - 1.0
         # rs20 < 0 means underperforming → exit signal
-        return max(0.0, min(1.0, -rs20 * 10.0))
+        return max(0.0, min(1.0, -rs20 * _RS_EXIT_SCALE))
     except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, AttributeError) as exc:
         logger.debug("rs_exit score failed (neutral fallback): %s", exc)
         return 0.5
@@ -803,10 +811,10 @@ def _score_bb_zscore(df: pd.DataFrame, signal_type: str) -> float:
 
     if signal_type == "mean_reversion":
         # Deeply oversold is desirable
-        return max(0.0, min(1.0, (-bb_z - 0.5) / 2.0))
+        return max(0.0, min(1.0, (-bb_z - 0.5) / _BB_Z_HALFWIDTH))
     else:
         # Momentum: near mean is ideal, extremes in either direction are bad
-        return max(0.0, 1.0 - abs(bb_z) / 2.0)
+        return max(0.0, 1.0 - abs(bb_z) / _BB_Z_HALFWIDTH)
 
 
 def _score_vbp_resistance(
@@ -861,7 +869,7 @@ def _score_rp_percentile(
         rp_ranks: dict[str, float] | None,
 ) -> float:
     """
-    Cross-sectional percentile-rank relative strength sub-score (Phase 2).
+    Cross-sectional percentile-rank relative strength sub-score.
 
     Sub-score mapping:
         rank >= 80 → 1.0
@@ -887,7 +895,7 @@ def _score_rp_percentile(
 
 def _score_insider_buying(ticker: str | None) -> float:
     """
-    SEC Form 4 insider buying sub-score (Phase 8).
+    SEC Form 4 insider buying sub-score.
 
     Scoring:
         1.0 — cluster buy in last 30d (≥3 distinct insiders, ≥$250k)
@@ -927,7 +935,7 @@ def _score_short_interest(
         trend: str = "BULL",
 ) -> float:
     """
-    Short interest sub-score (Phase 8).
+    Short interest sub-score.
 
     BULL regime:
         SI < 3%     → 0.7 (low short interest, healthy)

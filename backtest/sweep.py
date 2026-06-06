@@ -29,7 +29,7 @@ Public API
     SweepEngine.baseline()          -> SweepPoint
     SweepEngine.run_ofat(grid)      -> SweepReport
 
-    PARAM_GRID                      : default OFAT spec (18 parameters)
+    PARAM_GRID                      : default OFAT spec (23 parameters)
     PORTFOLIO_GRID                  : portfolio-level sweep spec
 """
 
@@ -151,7 +151,7 @@ PARAM_GRID: list[ParamSpec] = [
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
 
-    # Phase 1 — 52-week proximity
+    # 52-week proximity
     ParamSpec("scanner.weights.near_52w_high",
               (0, 1, 2, 3, 4),
               "Near 52w high weight", "phase1"),
@@ -159,17 +159,17 @@ PARAM_GRID: list[ParamSpec] = [
               (0, 1, 2, 3, 4),
               "Far from 52w low weight", "phase1"),
 
-    # Phase 2 — RP percentile
+    # RP percentile
     ParamSpec("scanner.weights.rp_percentile",
               (0, 1, 2, 3, 4, 5),
               "RP percentile weight", "phase2"),
 
-    # Phase 3 — MA200 slope
+    # MA200 slope
     ParamSpec("scanner.weights.ma200_slope",
               (0, 1, 2),
               "MA200 slope weight", "phase3"),
 
-    # Phase 4 — VBP exit
+    # VBP exit
     ParamSpec("scanner.exit_weights.vbp_resistance",
               (0, 1, 2, 3),
               "VBP resistance weight", "phase4"),
@@ -180,17 +180,7 @@ PARAM_GRID: list[ParamSpec] = [
               "Min score to alert", "global",
               fmt="{:.0f}"),
 
-    # Phase 8 — Behavioral breadth-divergence penalty. Wired end-to-end in the
-    # sweep: data/behavioral/* is loaded, run_prepped receives behavioral_data +
-    # settings, and _SETTINGS_ALIASES routes this key to the name the classifier
-    # reads. It only subtracts from behavioral_score WHEN a breadth divergence is
-    # flagged, so it reads as "no effect" if divergence rarely fires over the
-    # window — dormant, not unwired. Instrument divergence frequency to confirm.
-    ParamSpec("behavioral.breadth_divergence_penalty",
-              (0.0, 0.1, 0.2, 0.3),
-              "Breadth divergence pen.", "phase8"),
-
-    # Phase 8 — Behavioral size-multiplier floor. The consumer key is
+    # Behavioral size-multiplier floor. The consumer key is
     # `size_mult_floor` (settings.yaml + behavioral classifier). The old
     # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
     # name nobody reads, so this row had no effect. Fixed to `size_mult_floor`.
@@ -200,10 +190,10 @@ PARAM_GRID: list[ParamSpec] = [
 ]
 
 PORTFOLIO_GRID: list[ParamSpec] = [
-    ParamSpec("portfolio.max_concurrent",
-              (2, 3, 5, 8, 10),
-              "Max concurrent positions", "portfolio",
-              fmt="{:.0f}"),
+    ParamSpec("portfolio.max_open_risk",
+              (2.0, 3.0, 5.0, 8.0, 10.0),
+              "Max open risk (size_mult units)", "portfolio",
+              fmt="{:.1f}"),
     ParamSpec("portfolio.entry_slippage_pct",
               (0.0, 0.0005, 0.001, 0.002),
               "Entry slippage %", "portfolio",
@@ -499,6 +489,11 @@ class SweepEngine:
     base_port_cfg  : Baseline PortfolioConfig keyword arguments.
     n_workers      : Parallel worker processes. 0 = sequential.
                      Defaults to min(cpu_count, 6) for safety.
+    use_scoring    : When True, inject a SignalScorer (min_score_to_alert gate +
+                     score-ranked budget fill). When False (default), no scorer —
+                     entries are taken un-gated and the budget fills alphabetically.
+                     The score is non-predictive of R (corr -0.03), so OFF is the
+                     default; turn ON to study/tune the scoring layer.
     """
 
     def __init__(
@@ -507,11 +502,13 @@ class SweepEngine:
             base_cfg: dict,
             base_port_cfg: dict | None = None,
             n_workers: int | None = None,
+            use_scoring: bool = False,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
+        self._use_scoring = use_scoring
         self._base_port = base_port_cfg or {
-            "max_concurrent": 5,
+            "max_open_risk": 5.0,
             "earnings_aware": False,
             "entry_slippage_pct": 0.001,
             "commission_r": 0.005,
@@ -747,7 +744,7 @@ class SweepEngine:
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
         _PORT_FIELDS = {
-            "max_concurrent", "start_date", "end_date", "earnings_aware",
+            "max_open_risk", "start_date", "end_date", "earnings_aware",
             "close_open_at_eod", "entry_slippage_pct", "commission_r",
             "max_hold_days", "max_hold_mode",
         }
@@ -771,7 +768,10 @@ class SweepEngine:
             logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        # Wire scorer so min_score_to_alert gate is applied in backtesting
+        # Settings are always loaded (behavioral classification needs them). The
+        # scorer (min_score_to_alert gate + score-ranked budget fill) is only wired
+        # when use_scoring is on — the score is non-predictive of R, so by default
+        # entries are un-gated and the budget fills alphabetically.
         scorer = None
         _settings = None
         try:
@@ -785,21 +785,11 @@ class SweepEngine:
             if not is_baseline:
                 _apply_settings_mutation(_settings, param_name, param_value)
 
-            scorer = SignalScorer(_settings, cfg)
+            if self._use_scoring:
+                scorer = SignalScorer(_settings, cfg)
         except Exception as exc:
-            logger.debug("SignalScorer init failed — running without score gate: %s", exc)
-            # Still load settings for behavioral classification even if scorer fails
-            if _settings is None:
-                try:
-                    import yaml as _yaml
-                    _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-                    with open(_settings_path, encoding="utf-8") as _f:
-                        _settings = _yaml.safe_load(_f)
-                    if not is_baseline:
-                        _apply_settings_mutation(_settings, param_name, param_value)
-                except Exception as exc:
-                    logger.warning("[sweep] settings load/mutation failed for %s=%s: %s",
-                                   param_name, param_value, exc)
+            logger.debug("settings load / scorer init failed — running without "
+                         "score gate: %s", exc)
 
         bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
         result = bt.run_prepped(
@@ -965,7 +955,6 @@ _SETTINGS_ALIASES: dict[str, str] = {
     "scanner.weights.ma200_slope": "scanner.weights.ma200_slope",
     "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
     "scanner.min_score_to_alert": "scanner.min_score_to_alert",
-    "behavioral.breadth_divergence_penalty": "behavioral.breadth_divergence_penalty",
     "behavioral.size_mult_floor": "behavioral.size_mult_floor",
     # SCORING_GRID — entry thresholds
     "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",

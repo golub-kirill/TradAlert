@@ -60,16 +60,18 @@ events: # block: calendar gates
 # ── EXECUTION MODEL ───────────────────────────────────────────────────────────
 
 execution: # block: backtest fill model
-  entry_slippage_pct: 0.0010            # 0.10% added to bar_open on long fills
+  entry_slippage_pct: 0.0020            # 0.20% added to bar_open on long fills; a
+                                        # conservative realistic-friction default
+                                        # (results are sensitive to slippage)
   commission_r: 0.0050            # round-trip cost in R; subtracted from r_multiple
-  # Time-based max-hold exit (swing-horizon enforcement). OFF by default
-  # (max_hold_days absent/null) so the baseline replays bit-identically.
-  # Enable here or via `--max-hold-days N`. Closes a still-open trade at the
+  # Time-based max-hold (swing-horizon) exit. Closes a still-open trade at the
   # bar CLOSE once held N trading bars; stop/target on the same bar win first.
-  # max_hold_days: 15                   # ~swing horizon (≈ expected_hold_days.high)
-  max_hold_mode: hard                   # 'hard' = always exit at the cap;
-                                        # 'if_not_profit' = exit only when not in
-                                        #   profit at the cap (lets winners run).
+  # Override with --max-hold-days N / --max-hold-mode.
+  max_hold_days: 25                     # swing horizon; best risk-adjusted <=30 bars
+  max_hold_mode: if_not_profit          # exit at the cap only when NOT in profit
+                                        # (lets winners run; 'hard' = always exit).
+                                        # if_not_profit dominates hard on every
+                                        # metric (ADR-001) — the trading default.
 
 
 # ── SIGNAL FILTERS ────────────────────────────────────────────────────────────
@@ -82,18 +84,19 @@ signals: # block: trigger configuration
   # behave consistently across $7 and $400 names instead of triggering
   # on noise for low-priced stocks and never firing for high-priced ones.
 
-  allow_shorts: false                # Phase 10 master switch. When false
+  allow_shorts: false                # Short-side master switch. When false
     # (default), no short entries are
   # emitted and the baseline backtest
   # replays bit-identical. Enable via
   # --allow-shorts on run_backtest.py.
 
-  hard_to_borrow_list: [ ]            # Phase 10 v2: symbols that cannot be shorted
+  hard_to_borrow_list: [ ]            # Symbols that cannot be shorted
   # (hard-to-borrow / unavailable). Short entries on
   # these are blocked; longs unaffected. e.g. [GME, AMC].
 
-  borrow: # Phase 10 v2: stock-borrow cost for shorts.
-    annual_rate_default: 0.0         #   0.0 = off (baseline-safe). e.g. 0.03 = 3%/yr.
+  borrow: # Stock-borrow cost for shorts.
+    annual_rate_default: 0.03        #   3%/yr realistic default; 0.0 = off. Charged only
+                                     #   on shorts (--allow-shorts); longs never pay.
     per_ticker: { }                   #   per-symbol overrides, e.g. {GME: 0.30}.
     # Folded into Trade.effective_r as an R drag ∝ bars_held; longs never charged.
     # v1 is a flat configured rate — a live per-symbol borrow source is a follow-on.
@@ -112,7 +115,7 @@ signals: # block: trigger configuration
       rsi_min: 30                       # inclusive floor for fade trigger
       rsi_max: 65                       # was 45 — widened; MACD zero-cross after a run lands at RSI 45-65, so 45 silently blocked all fades
       min_hist_delta_atr: 0.18          # ATR-multiple; (row - prev) <= -this * atr
-    short_entry: # Phase 10 — fresh short on downside momentum
+    short_entry: # Fresh short on downside momentum
       rsi_min: 30                       # inclusive floor (very oversold blocks new shorts)
       rsi_max: 50                       # inclusive ceiling — short into weakness, not extremes
       min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) <= -this * atr (negative delta)
@@ -133,7 +136,7 @@ signals: # block: trigger configuration
     short: # held-long exit: overbought trigger
       rsi_min: 65                       # exclusive floor; higher = more overbought
       min_hist_delta_atr: 0.05          # ATR-multiple; (row - prev) <= -this * atr
-    short_entry: # Phase 10 — counter-trend short into rally (mirror of long)
+    short_entry: # Counter-trend short into rally (mirror of long)
       rsi_min: 70                       # exclusive floor; symmetric mirror of long.rsi_max
       min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) <= -this * atr
 
@@ -141,7 +144,7 @@ signals: # block: trigger configuration
     regime_flip: true                 # exit held LONG when broad-market trend != BULL
     momentum_fade: true               # exit held LONG on momentum-fade trigger
     mean_rev: true                    # exit held LONG on overbought mean-reversion trigger
-    # Phase 10 — held-SHORT exit toggles (default true; cheap insurance)
+    # Held-SHORT exit toggles (default true; cheap insurance)
     regime_flip_short: true           # cover held SHORT when broad-market trend != BEAR
     short_cover_pop: true             # cover held SHORT on momentum-pop trigger
     short_cover_oversold: true        # cover held SHORT on oversold + upturn
@@ -149,7 +152,7 @@ signals: # block: trigger configuration
   stop_loss: # block: position-sizing & R:R structure
     atr_multiplier: 2.5                 # stop = close - atr*atr_multiplier (sweep: 2.5 â†’ +0.112 R, wider stops survive noise)
     min_rr: 2.5                         # target = close + risk*min_rr; ratio gate (balanced: better than 2.0, not as sparse as 3.0)
-      # min_rr_short: 2.5                 # Phase 10 v2 (optional): R:R gate for SHORTS only.
+      # min_rr_short: 2.5                 # optional R:R gate for SHORTS only.
       #   Shorts have bounded upside (price floor $0), so a
     #   tighter reward ceiling can be justified. Absent →
     #   falls back to min_rr above. Only affects shorts.

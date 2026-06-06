@@ -1,5 +1,5 @@
 """
-Phase 10.5 smoke test — short path end-to-end through the public
+Smoke test — short path end-to-end through the public
 ``FilterEngine.signal()`` API on synthetic BEAR data.
 
 Distinct from ``test_short_signals.py``: those tests call the private

@@ -5,24 +5,24 @@ Portfolio-aware bar-replay backtester with concurrent-position cap.
             stops. Entry slippage applied as PortfolioConfig.entry_slippage_pct.
 
     Scoring When a SignalScorer is injected, it enriches each entry signal
-            before the signal is queued (Phase 4). Phase 2 then sorts
+            before the signal is queued. The entry-fill step then sorts
             contested signals by score descending — highest-confidence
             trade wins the slot when the portfolio is at cap.
             No scorer → score defaults to 0.0 for all → alphabetical
             tiebreak preserved.
 
     Regime  Computed once per bar from market_t / vix_t and reused
-            across all Phase 4 engine calls. Saves N engine._market_regime
+            across all per-bar engine calls. Saves N engine._market_regime
             calls per bar.
 
     Commission commission_r subtracted from r_multiple in _close_trade.
 
-Per-bar phase order
+Per-bar pipeline (in order)
 ────────────────────────────────
-    Phase 1  Pending exits fill at open (frees slots before entries compete).
-    Phase 2  Pending entries fill at open, highest-score first, cap respected.
-    Phase 3  Stop/target check on held trades against bar H/L.
-    Phase 4  Engine.signal at close — queues exits and entries for next bar.
+    1  Pending exits fill at open (frees slots before entries compete).
+    2  Pending entries fill at open, highest-score first, cap respected.
+    3  Stop/target check on held trades against bar H/L.
+    4  Engine.signal at close — queues exits and entries for next bar.
              Entry signals enriched with scorer before queuing.
 """
 
@@ -50,6 +50,7 @@ from backtest.earnings_history import (
     next_earnings_from,
 )
 from backtest.trade import Trade
+from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
@@ -69,7 +70,14 @@ class PortfolioConfig:
 
     Attributes
     ----------
-    max_concurrent       : Hard cap on open positions. Must be ≥ 1.
+    max_open_risk        : Aggregate open-risk budget, in size_mult units. Each
+                           open position consumes its own ``size_mult`` (a full-size
+                           position = 1.0; a regime/chronic-reduced 0.25× position =
+                           0.25). A new entry is dropped when it would push total open
+                           risk past this budget. This is a risk control, so it is
+                           intentionally universe-agnostic (independent of watchlist
+                           size). Must be > 0. Replaces the old raw-count cap
+                           ``max_concurrent`` (budget B ≈ B full-size positions).
     start_date           : Earliest entry date. None → warmup end.
     end_date             : Latest entry date. None → end of data.
     earnings_aware       : Reconstruct historical earnings for buffer gate.
@@ -81,7 +89,7 @@ class PortfolioConfig:
                            new entries until recovery to 50% of drawdown.
                            None → disabled.
     """
-    max_concurrent: int
+    max_open_risk: float
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     earnings_aware: bool = True
@@ -91,7 +99,7 @@ class PortfolioConfig:
     max_drawdown_r: Optional[float] = None
     # Chronic-loser tracker (see core.ticker_health.TickerHealth). When None,
     # the policy is off and the backtester replays baseline behavior exactly.
-    # The tracker's penalty multiplies into signal.size_mult at Phase 2 entry.
+    # The tracker's penalty multiplies into signal.size_mult at entry.
     ticker_health: Optional["TickerHealth"] = None
     # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
     # baseline replays bit-identically. When set, a still-open trade is closed
@@ -107,7 +115,7 @@ class PortfolioConfig:
 
 @dataclass
 class CappedSignal:
-    """An entry signal dropped because the portfolio was at max_concurrent."""
+    """An entry signal dropped because the portfolio was at its max_open_risk budget."""
     date: date
     ticker: str
     signal: SignalResult
@@ -229,10 +237,10 @@ class PortfolioBacktester:
     Parameters
     ----------
     engine  : FilterEngine. Its _today is mutated per call via try/finally.
-    cfg     : PortfolioConfig with max_concurrent ≥ 1.
+    cfg     : PortfolioConfig with max_open_risk > 0.
     scorer  : Optional SignalScorer from scoring.py. When provided, every
               queued entry signal is enriched in-place (score, components,
-              description) and Phase 2 selects by highest score first.
+              description) and the entry-fill step selects by highest score first.
               When None, score defaults to 0.0 and order is alphabetical.
     """
 
@@ -242,8 +250,8 @@ class PortfolioBacktester:
             cfg: PortfolioConfig,
             scorer: SignalScorer | None = None,
     ):
-        if cfg.max_concurrent < 1:
-            raise ValueError(f"max_concurrent must be ≥ 1, got {cfg.max_concurrent}")
+        if cfg.max_open_risk <= 0:
+            raise ValueError(f"max_open_risk must be > 0, got {cfg.max_open_risk}")
         self._engine = engine
         self._cfg = cfg
         self._scorer = scorer
@@ -366,7 +374,7 @@ class PortfolioBacktester:
 
             closed_this_bar: set[str] = set()
 
-            # ── Phase 1: pending exits fill at open (frees slots) ─────────
+            # ── Pending exits fill at open (frees slots) ─────────
             for ticker in sorted(active):
                 if ticker not in pending_exits or ticker not in open_trades:
                     continue
@@ -399,7 +407,7 @@ class PortfolioBacktester:
                         signal=pending_entries.pop(ticker),
                     ))
 
-            # ── Phase 2: pending entries fill at open — score-ranked ──────
+            # ── Pending entries fill at open — score-ranked ──────
             # Highest-scoring signal wins the slot when cap is contested.
             # Falls back to score=0.0 (alphabetical) when scorer not used.
             sorted_entries = sorted(
@@ -412,13 +420,6 @@ class PortfolioBacktester:
                     # Pathological — shouldn't happen (pending_entries only
                     # set when flat) but guard for safety.
                     pending_entries.pop(ticker, None)
-                    continue
-                if len(open_trades) >= self._cfg.max_concurrent:
-                    result.capped_signals.append(CappedSignal(
-                        date=D_date,
-                        ticker=ticker,
-                        signal=pending_entries.pop(ticker),
-                    ))
                     continue
 
                 signal = pending_entries.pop(ticker)
@@ -439,9 +440,21 @@ class PortfolioBacktester:
                     ))
                     continue
 
+                # Risk-budget cap (size_mult units): each open position consumes
+                # its own size_mult, so a half-size position uses half a slot. Drop
+                # the entry when it would push aggregate open risk past the budget.
+                # Replaces the old raw-count cap (len(open_trades) >= N), which
+                # ignored per-position sizing and was tuned to a fixed universe.
+                open_risk = sum(t.size_mult for t in open_trades.values())
+                if open_risk + final_mult > self._cfg.max_open_risk:
+                    result.capped_signals.append(CappedSignal(
+                        date=D_date, ticker=ticker, signal=signal,
+                    ))
+                    continue
+
                 bar = prepped[ticker].df.loc[D]
                 raw_entry = float(bar["open"])
-                # Phase 10.3: slippage sign-aware.
+                # Slippage sign-aware.
                 # Long  : buy at a *worse* (higher) price → 1 + slip
                 # Short : sell at a *worse* (lower) price → 1 - slip
                 _is_short = (signal.direction == "short")
@@ -469,9 +482,11 @@ class PortfolioBacktester:
                     ticker_trend=signal.ticker_trend,
                     size_mult=final_mult,  # regime × chronic-loser
                     borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
+                    entry_score=signal.score,
+                    entry_score_components=dict(signal.score_components),
                 )
 
-            # ── Phase 3: stop/target check on held trades ─────────────────
+            # ── Stop/target check on held trades ─────────────────
             for ticker in list(open_trades.keys()):
                 if ticker in closed_this_bar or D not in date_sets[ticker]:
                     continue
@@ -483,7 +498,7 @@ class PortfolioBacktester:
                 b_high = float(bar["high"])
 
                 # Pessimistic same-bar: stop wins when both H/L touch.
-                # Phase 10.3 — direction-aware hit conditions and fills.
+                # Direction-aware hit conditions and fills.
                 is_short = (trade.direction == "short")
                 stop_hit = (b_high >= trade.initial_stop) if is_short else (b_low <= trade.initial_stop)
                 if stop_hit:
@@ -522,21 +537,23 @@ class PortfolioBacktester:
                 if self._cfg.max_hold_days is not None:
                     entry_pos = int(prepped[ticker].df.index.searchsorted(
                         pd.Timestamp(trade.entry_date)))
-                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
-                        b_close = float(bar["close"])
-                        in_profit = ((b_close < trade.entry_price) if is_short
-                                     else (b_close > trade.entry_price))
-                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
-                            _close_trade(trade, D_date, b_close, "time_stop",
-                                         prepped[ticker].df.index, t_idx,
-                                         self._cfg.commission_r)
-                            closed = open_trades.pop(ticker)
-                            result.trades.append(closed)
-                            self._record_close(closed)
-                            dd_gate.record(closed.effective_r)
-                            closed_this_bar.add(ticker)
+                    b_close = float(bar["close"])
+                    if max_hold_exit_due(
+                            bars_held=t_idx - entry_pos, current_close=b_close,
+                            entry_price=trade.entry_price,
+                            side=("short" if is_short else "long"),
+                            max_hold_days=self._cfg.max_hold_days,
+                            mode=self._cfg.max_hold_mode):
+                        _close_trade(trade, D_date, b_close, "time_stop",
+                                     prepped[ticker].df.index, t_idx,
+                                     self._cfg.commission_r)
+                        closed = open_trades.pop(ticker)
+                        result.trades.append(closed)
+                        self._record_close(closed)
+                        dd_gate.record(closed.effective_r)
+                        closed_this_bar.add(ticker)
 
-            # ── Phase 4: engine signal evaluation at this bar's close ─────
+            # ── Engine signal evaluation at this bar's close ─────
             for ticker in active:
                 if ticker in closed_this_bar:
                     continue
@@ -545,7 +562,7 @@ class PortfolioBacktester:
                 df_t = prepped[ticker].df.iloc[: t_idx + 1]
                 held = ticker in open_trades
 
-                # Phase 10.3 — held_short dispatch when the open trade is short.
+                # Held-short dispatch when the open trade is short.
                 held_short_flag = held and open_trades[ticker].direction == "short"
                 held_long_flag = held and not held_short_flag
                 signal = call_engine_slice(
@@ -564,7 +581,7 @@ class PortfolioBacktester:
 
                 elif not held and signal.direction in ("long", "short"):
                     # Enrich with scorer BEFORE queuing so the score is
-                    # available for Phase 2 ranking on the next bar.
+                    # available for entry ranking on the next bar.
                     if self._scorer is not None:
                         next_earn = (
                             next_earnings_from(
@@ -686,7 +703,7 @@ class PortfolioBacktester:
 
             closed_this_bar = set()
 
-            # Phase 1: pending exits at open
+            # Pending exits at open
             for ticker in sorted(active):
                 if ticker not in pending_exits or ticker not in open_trades:
                     continue
@@ -702,7 +719,7 @@ class PortfolioBacktester:
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
 
-            # Phase 2: pending entries at open, score-ranked
+            # Pending entries at open, score-ranked
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
             if dd_gate.blocked:
@@ -724,11 +741,6 @@ class PortfolioBacktester:
                     if ticker in closed_this_bar:
                         pending_entries.pop(ticker, None)
                         continue
-                    if len(open_trades) >= self._cfg.max_concurrent:
-                        result.capped_signals.append(
-                            CappedSignal(D_date, ticker, pending_entries.pop(ticker))
-                        )
-                        continue
                     signal = pending_entries.pop(ticker)
                     base_mult = float(getattr(signal, "size_mult", 1.0))
                     chronic_mult = (
@@ -738,6 +750,13 @@ class PortfolioBacktester:
                     )
                     final_mult = base_mult * chronic_mult
                     if final_mult <= 0:  # regime + chronic-loser
+                        result.capped_signals.append(
+                            CappedSignal(D_date, ticker, signal)
+                        )
+                        continue
+                    # Risk-budget cap (size_mult units) — see the long path above.
+                    open_risk = sum(t.size_mult for t in open_trades.values())
+                    if open_risk + final_mult > self._cfg.max_open_risk:
                         result.capped_signals.append(
                             CappedSignal(D_date, ticker, signal)
                         )
@@ -763,9 +782,11 @@ class PortfolioBacktester:
                         market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
                         size_mult=final_mult,  # regime × chronic-loser
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
+                        entry_score=signal.score,
+                        entry_score_components=dict(signal.score_components),
                     )
 
-            # Phase 3: stop / target on held trades
+            # Stop / target on held trades
             for ticker in list(open_trades):
                 if ticker in closed_this_bar or D not in date_sets[ticker]:
                     continue
@@ -806,21 +827,23 @@ class PortfolioBacktester:
                 if self._cfg.max_hold_days is not None:
                     entry_pos = int(prepped[ticker].df.index.searchsorted(
                         pd.Timestamp(trade.entry_date)))
-                    if (t_idx - entry_pos) >= self._cfg.max_hold_days:
-                        b_close = float(bar["close"])
-                        in_profit = ((b_close < trade.entry_price) if is_short
-                                     else (b_close > trade.entry_price))
-                        if self._cfg.max_hold_mode != "if_not_profit" or not in_profit:
-                            _close_trade(trade, D_date, b_close, "time_stop",
-                                         prepped[ticker].df.index, t_idx,
-                                         self._cfg.commission_r)
-                            closed = open_trades.pop(ticker)
-                            result.trades.append(closed)
-                            self._record_close(closed)
-                            dd_gate.record(closed.effective_r)
-                            closed_this_bar.add(ticker)
+                    b_close = float(bar["close"])
+                    if max_hold_exit_due(
+                            bars_held=t_idx - entry_pos, current_close=b_close,
+                            entry_price=trade.entry_price,
+                            side=("short" if is_short else "long"),
+                            max_hold_days=self._cfg.max_hold_days,
+                            mode=self._cfg.max_hold_mode):
+                        _close_trade(trade, D_date, b_close, "time_stop",
+                                     prepped[ticker].df.index, t_idx,
+                                     self._cfg.commission_r)
+                        closed = open_trades.pop(ticker)
+                        result.trades.append(closed)
+                        self._record_close(closed)
+                        dd_gate.record(closed.effective_r)
+                        closed_this_bar.add(ticker)
 
-            # Phase 4: engine signal at close
+            # Engine signal at close
             for ticker in active:
                 if ticker in closed_this_bar:
                     continue

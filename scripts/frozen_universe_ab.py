@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase A1 — frozen-universe A/B (survivorship / selection-bias audit).
+Frozen-universe A/B (survivorship / selection-bias audit).
 
 Quantifies how much of the backtest edge is hindsight. For each as-of date D it
 runs the SAME windowed backtest (D → present, shipped 25-bar hard cap) on:
@@ -98,7 +98,7 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_concurrent": 6,
+        "max_open_risk": 5.0,
         "earnings_aware": True,
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
         "commission_r": exec_cfg.get("commission_r", 0.005),

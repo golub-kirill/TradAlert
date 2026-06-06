@@ -1,5 +1,5 @@
 """
-Phase 10.2 tests — short signal triggers, evaluator gating, and the
+Tests for short signal triggers, evaluator gating, and the
 short-side _signal_entry construction.
 
 Tests are isolated from disk where possible (FilterEngine.from_dict

@@ -140,10 +140,11 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_concurrent": 6,  # 6 × 5% = 30% aggregate open risk cap
+        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size positions);
+        # risk-adjusted optimum from the 2026-06-04 budget sweep (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
-        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
+        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
         "commission_r": exec_cfg.get("commission_r", 0.005),
         "close_open_at_eod": True,
     }
@@ -205,11 +206,25 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
+    # Portfolio open-risk budget (--max-open-risk). Default 6.0 (set in base_port
+    # above); the flag overrides it for tuning this one-number risk lever.
+    if args.max_open_risk is not None:
+        base_port["max_open_risk"] = float(args.max_open_risk)
+        print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
+              f"(size_mult units; default 5.0)")
+
+    # Scoring is OFF by default (the entry score is non-predictive of R and its
+    # score-ranked budget fill selects weaker trades). --scoring turns it back on;
+    # --scoring-sweep needs it on to tune the scorer.
+    use_scoring = bool(args.scoring or args.scoring_sweep)
+    if use_scoring:
+        print("  ▸ Scoring: ON (min_score_to_alert gate + score-ranked budget fill)")
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
         base_port_cfg=base_port,
         n_workers=max(args.workers, 0),
+        use_scoring=use_scoring,
     )
 
     def _progress(msg: str) -> None:
@@ -276,6 +291,7 @@ def main() -> None:
                 step_months=6,
                 re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
                 n_workers=_wf_workers,      # --workers now reaches the per-window sweep
+                use_scoring=use_scoring,    # default OFF — matches the scoring default
             )
             wf_report = wfe.run(progress=_progress)
 
@@ -449,8 +465,14 @@ def _parse_args() -> argparse.Namespace:
                         "parameter) for a fast pass.")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
+    p.add_argument("--scoring", action="store_true",
+                   help="Enable the SignalScorer (min_score_to_alert gate + "
+                        "score-ranked budget fill). OFF by default — the entry "
+                        "score is non-predictive of R (corr -0.03) and its ranking "
+                        "selects weaker trades under the open-risk budget.")
     p.add_argument("--scoring-sweep", action="store_true",
-                   help="SignalScorer thresholds + weights sweep (settings.yaml)")
+                   help="SignalScorer thresholds + weights sweep (settings.yaml). "
+                        "Forces --scoring on.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
     p.add_argument("--wf-no-retune", action="store_true",
@@ -502,7 +524,7 @@ def _parse_args() -> argparse.Namespace:
                         "T+1 entry (see config/filters.yaml "
                         "`signals.require_trigger_bar_up`). Off by default.")
     p.add_argument("--allow-shorts", action="store_true",
-                   help="Enable short-side entries (Phase 10): sets "
+                   help="Enable short-side entries: sets "
                         "signals.allow_shorts=true so the engine fires shorts "
                         "in BEAR regimes. Off by default so the long-only "
                         "baseline replays identically.")
@@ -518,6 +540,11 @@ def _parse_args() -> argparse.Namespace:
                         "at the cap; 'if-not-profit' exits at the cap only when "
                         "the position is not in profit (lets winners run to "
                         "target).")
+    p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
+                   help="Aggregate open-risk budget in size_mult units (default "
+                        "5.0). Each open position consumes its own size_mult, so a "
+                        "new entry is dropped once total open risk would exceed "
+                        "this budget. Lower → fewer concurrent positions.")
     p.add_argument("--log", default="WARNING",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                    help="Console log verbosity. Default: WARNING.")

@@ -1,166 +1,184 @@
 # TODO
----
 
-> ## ★ NORTH STAR #1 (2026-06-04): WIN NOW — the backtest is secondary.
+> ## ★ NORTH STAR #1: WIN NOW — the backtest is secondary.
 > The strategy must be **profitable in the current market**. A config that maxes the
 > 2001+ backtest but is **losing today is wrong**. Evaluate/tune on **recent & current
 > reality** (regime/behavioral/size-mult adaptivity, recent windows, live signals +
 > open positions) — not 25-year aggregates. Deep validation (survivorship, walk-forward
 > rigor) is **secondary** until live performance is healthy.
 >
-> ## ★ NORTH STAR #2 (2026-06-04): UNIVERSE-AGNOSTIC — don't tune to the watchlist.
-> The watchlist is an input that **changes** (could be a handful or hundreds). Logic and
-> parameters must hold across **any size/composition** — never overfit to the current
-> ~91 names or their count. Prefer **relative/percentile/adaptive** knobs over absolute
-> counts (watch `portfolio.max_concurrent`, breadth-by-fixed-count, etc.).
-
----
-
-## ▶ DO / VERIFY FIRST — cleanup & patches (small, low-risk, high-leverage)
-
-Order: things that distort the *metrics we decide on* → universe-agnostic fixes
-(NORTH STAR #2) → hygiene. Run/clear these before the bigger bets.
-
-**Metric-correctness (we quote these numbers — fix first):**
-- ◻ **Sharpe/Sortino methodology** (`stats_utils.sharpe_ratio`) — TOP actionable patch.
-  Hardcodes "1R ≈ 10%" while sizing is 1% fixed-risk; Sortino divides by downside-*count*
-  (inflates). Every Sharpe in the ADR/validation (0.44–0.59) rides on this — correct or
-  document the convention.
-- ⏸ **`Trade.compute_r` 0R on gap-through-stop entry — INVESTIGATED 2026-06-04, ~non-issue.**
-  Only **7 of 1098** trades gap through; the stop fills at the same open so
-  `exit ≈ entry − slippage` *always* → realized loss is just the entry slippage (~−0.03R
-  each, ~**−0.25R** total on a +132R ledger). The TODO's "understates the left tail"
-  premise was overstated — these are cost-only scratches, not hidden losers.
-  **Recommended: document** it in `compute_r` (gap-through = scored ≈0 by design) and
-  close; the `intended_risk` plumbing (4 files) isn't worth 0.25R. *Decision pending*
-  (user picked "record true loss", but the measured impact is immaterial — re-confirm).
-
-**Universe-agnostic (NORTH STAR #2):**
-- ◻ **`compute_sp500_breadth` truncates `constituents[:100]`** (`breadth.py:59`) →
-  A-C alphabetical bias + assumes a fixed count. Thread the full universe (or make it
-  a true sample). Direct NORTH STAR #2 violation.
-- ◻ **`portfolio.max_concurrent: 6`** is a fixed cap tuned to ~91 names — wrong for a
-  tiny list, a bottleneck for a huge one. Make it relative (e.g. % of universe / risk
-  budget) or document the assumption.
-
-**Hygiene / reproducibility:**
-- ✅ **`data/backtest_schema.sql` — CREATED 2026-06-04** (was missing; elevated now
-  that journaling is default-on so fresh deploys can journal).
-- ◻ **Inline magic-number fallbacks → `defaults.py`**: `gap_risk` 3.0
-  (`filter_engine.py:535`), `max_bars_since_cross` 3 (`:933/982`), dv20 window 20,
-  `_score_rs_exit` ×10, `_score_bb_zscore` /2.0 (`scoring`). They read config but the
-  fallback default is inline — centralise.
-- ◻ **`json_cache.save_section` RMW not lock-safe** — safe today (single writer); add a
-  file lock or document the single-writer assumption.
-- ◻ **Dual earnings cache** — `earnings_history.py` (`data/fundamentals/`) vs
-  `earnings_history_store.py` (`data/earnings_history/`); two staleness clocks can
-  drift. Consolidate.
-- ◻ **VBP not canonical** — `compute_vbp` bins `close × volume` in the close bin, not
-  the H-L spread (`scanner.vbp.*` is wired, the algorithm isn't). Rewrite or rename.
-
-**Verified DONE this session (do NOT re-do):** ✅ `DEFAULT_SCALE` + `run_backtest`
-print-fallback synced to `{2:0.5,3:0.25}` (`ticker_health.py:59`); ✅ sweep dead-key
-`size_mult_floor`; ✅ report-coloring convention; ✅ max-hold `time_stop` exit.
+> ## ★ NORTH STAR #2: UNIVERSE-AGNOSTIC — don't tune to the watchlist.
+> The watchlist is an input that **changes** (a handful or hundreds). Logic and parameters
+> must hold across **any size/composition** — never overfit to the current ~213 names or
+> their count. Prefer **relative/percentile/adaptive** knobs over absolute counts. (Known
+> offenders fixed: `max_concurrent`→`max_open_risk` budget, breadth now full-universe —
+> keep the principle in mind for any new knob.)
 
 ---
 
 ## ★ ACTIVE — win now (NORTH STAR #1)
 
-- ◻ **Run `main.py` DAILY (schedule it).** The live-reconciliation feed is the only
-  way to judge "winning now", and it's just ~1 week / 62 signals old. Windows Task
-  Scheduler → `main.py` after the US close; signals mature in ~25 trading days.
-- ◻ **Live-vs-backtest reconciliation — BUILT, but limited.** `scripts/reconcile_live.py`
-  + `scan_results` enrichment (`stop_price`/`target_price`/`signal_type` via
-  `data/scan_results_recon_migration.sql` + `db.py`). **Honest caveat (2026-06-04):**
-  replaying live-fired signals through cached prices ≈ a *delayed backtest* — it only
-  checks signal-generation fidelity. The version that isn't a backtest reconciles
-  **actual fills** (`positions`, currently empty) vs the model. **Next:** when real /
-  paper trades are logged via `position_CLI`, repoint reconcile at closed `positions`
-  (realized fills vs expectancy) — that's the true win-now meter.
-- ✅ **Max-hold exit — headline = 25-bar hard** (`ADR-001`). Real but thin edge
-  (deflated Sharpe ~0.44; survivorship discount ~11–22%, honest universe still
-  positive). Optional/secondary: V5 walk-forward+robustness OOS gate; set
-  `execution.max_hold_days: 25` as default after live performance is confirmed.
+The metric / universe-agnostic / hygiene cleanup tier is cleared (see *Recently shipped*).
+These are the live-performance items that actually move NORTH STAR #1.
+
+**Current headline:** `run_id=11` — 213-name universe, 25d `if_not_profit`, budget 5.0,
+slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR-003).
+
+- ◻ **OOS-validate the scoring-OFF headline (in progress).** Fixed-config walk-forward running
+  `--wf-no-retune --workers 14` (`logs/wf_scoring_off.txt`). Early windows promising (OOS often ≥
+  IS; only 1999–2002 negative). **Next chat:** read the final IS→OOS degradation; then run the
+  FULL re-tune gate over the whole range (`--walk-forward --workers 14`, no `--wf-no-retune`) —
+  the parameter-selection / data-snooping test. NB walk-forward results are not journaled
+  (logs/ only), so capture the verdict into `verification_results` when it lands.
+- ◻ **Real-life "textbook" check.** Sanity-check the engine against first principles: hand-work a
+  known trade (entry/stop/target → realized R) and confirm the backtester reproduces it, and/or
+  benchmark the strategy vs buy-and-hold SPY over the same window — does the edge beat the
+  textbook passive baseline on a risk-adjusted basis?
+- ◻ **Let the live feed mature.** Scheduling is done — `scripts/register_daily_scan.ps1`
+  registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
+  catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
+  days, so the meaningful read on "winning now" is ~5 weeks of daily runs out.
+- ◻ **Log real/paper fills so the real meter has data.** The reconciler is built
+  (`scripts/reconcile_fills.py` — realized R on closed `positions` vs `backtest_trades` by
+  direction) and `position_CLI.py open --date` backfills retroactive opens. `positions` is
+  still **empty**, so the remaining work is operational: log actual/paper trades (with a
+  `--stop`, the risk unit), then `python scripts/reconcile_fills.py` reads the live edge.
+  Signals mature in ~25 trading days, so meaningful drift numbers are ~5 weeks out.
 
 ---
 
-## Raw-notes triage (2026-06-03) — mostly resolved
+## Validation & de-biasing (paused per NORTH STAR #1 until live is healthy)
 
-Detail + file:line evidence: `docs/triage_raw_notes_2026-06.md`.
-- ✅ Note 1 — max-hold exit / artificial WR → fixed (see ACTIVE above, `ADR-001`).
-- ✅ Note 2 — sweep dead-key fixed; breadth-divergence penalty is *wired-but-dormant*.
-- ✅ Note 3 — report coloring convention applied.
-- ✅ Note 4 — consecutive-loss guard already exists (`TickerHealth`); scale de-fanged
-  to `{2:0.5,3:0.25}`; A/B shows a tiny net-positive variance effect.
-- ◻ (secondary) Instrument how often the momentum-fade RSI floor / breadth-divergence
-  flag actually *bind* — to decide prune/keep. Cheap, not urgent.
+Edge after de-biasing is real-but-thin. Evidence: `docs/verification_results_2026-06.md`,
+`docs/adr/ADR-001-max-hold-exit.md`. Phase A (survivorship) is closed; Phase E = the live
+reconciliation in ACTIVE above.
 
----
-
-## Secondary / paused — validation & de-biasing (per NORTH STAR #1)
-
-Design: `docs/validation_program_design.md` (note: file currently deleted in tree —
-restore or drop the reference). Edge after de-biasing is real-but-thin; deep rigor
-is paused until live performance is healthy.
-- ✅ **Phase A — survivorship** (A0 symbology; A1 frozen-universe A/B run 2026-06-04 →
-  selection discount ~11–22%, honest universe stays positive). Gate closed.
-- ◻ **Phase B — realistic frictions**: costs/slippage/borrow ON by default + sweep
-  (slippage bites hard: 0→+117.5R, 0.002→+65.7R).
-- ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016-2026 once.
+- ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016–2026 once.
 - ◻ **Phase D — multiple-testing correction**: deflated Sharpe / White reality check.
-- ◻ **Phase E — live reconciliation**: the ACTIVE item above (paper-trade + reconcile).
-- ◻ V5 walk-forward + robustness on 25d-hard (OOS gate for the headline).
+- ◻ **V5 — full re-tune walk-forward over the whole range** (headline OOS gate, `--walk-forward
+  --workers 14`). The headline is now the **scoring-OFF 213-universe if_not_profit** config
+  (`run_id=11`), not 25d-hard. The fixed-config (`--wf-no-retune`) WF on it is running (ACTIVE
+  above); V5 is the slower re-tune gate that tests parameter-selection generalisation.
+- ◻ Refresh the **deflated** Sharpe under rf=0 — still pending Phase D (White's reality check).
+  (OFF baseline, `if_not_profit`, the 10–30d horizon sweep were refreshed 2026-06-05 at the new
+  slippage=0.002 default — see the `ADR-001` rf=0-refresh block.)
+- ◻ Behavioral sweep rows now use **real** breadth/sector (key-mismatch fixed 2026-06-05) — the
+  pre-fix sweeps ran with breadth NEUTRAL-pinned, so re-run any behavioral-param tuning.
 
 ---
 
 ## Deferred — bigger work, not now
 
-**Scoring** (`scoring.py`, `defaults.py`, `settings.yaml`)
+**Scoring**
 - ◻ Sub-score audit: `_score_rs_entry/_exit` sanity under `direction == "short"`.
-- ◻ Keep `ConfigError` guard: `scanner.weights.insider_buying`/`short_interest` stay 0
-  until Form 4 XML + live short-interest validated.
+- ◻ Keep `ConfigError` guard: `scanner.weights.insider_buying`/`short_interest` stay 0 until
+  Form 4 XML + live short-interest validated.
 
 **Backtester fills** (verify in PyCharm)
-- ◻ Open-EOD count regression; slippage stress test across `entry_slippage_pct ∈
-  {0,0.002,0.003}`.
+- ◻ Open-EOD count regression; slippage stress across `entry_slippage_pct ∈ {0,0.002,0.003}`.
 
 **Behavioral / macro fetchers**
 - ◻ Form 4 XML parser (direct SEC EDGAR, P vs S; needs `SEC_USER_AGENT`).
-- ◻ Survivorship in `sp500_constituents`/`tsx60` (date-stamped membership = Phase A
-  for tier_b).
-- ◻ FOMC/CPI live scrape (calendar.py ships a hard-coded 2026 list).
+- ◻ Survivorship in `sp500_constituents`/`tsx60` (date-stamped membership).
+- ◻ FOMC/CPI live scrape (`calendar.py` ships a hard-coded 2026 list).
 - ◻ Verify AAII/NAAIM/COT parses still match live pages (layout-drift risk).
 
 **Reporting / observability**
-- ✅ **Signal screenshots date-stamped 2026-06-04** — `data/screenshots/{TICKER}_{Dmonyy}.webp`
-  using the signal bar's date (e.g. `URA_4jun26.webp`); daily shots no longer overwrite
-  (`chart.py`).
-- ◻ Stand-down log (silent-regime months block); per-direction breakdown in report.
+- ◻ **Re-calibrate or retire the SignalScorer** (now OFF by default — ADR-003). corr(entry_score,
+  R)=−0.03 (noise); turning scoring off lifted Sharpe 0.42→0.66. The scorer is retained behind
+  `--scoring` for study — either make it predictive (corr>0) or delete it. Until then it's dead
+  weight. Also: should the live `min_score_to_alert` gate be replaced by a smarter entry tiebreak
+  (e.g. `min_rr`/ATR) rather than no ranking at all?
+- ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
 - ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
 
-**Watchlist expansion** (mind NORTH STAR #2 — don't tune to it)
-- ◻ ~15 more `.TO` ETFs into tier_a; ≤20% individual stocks; >5y history.
+**Watchlist expansion** (mind NORTH STAR #2)
+- ◻ **Re-run the headline on the v3 universe** (213 names) to confirm universe-agnosticism —
+  if per-trade E[R]/Sharpe hold (~+0.07 / ~0.50) the edge isn't watchlist-specific; if they
+  collapse, the old 91-name edge was survivorship. (v3 grew tier_a 91→213, deep Canadian bench
+  + US large-caps, all >5y history; individual-stock share now ~50% — a deliberate departure
+  from the old ETF-heavy ≤20% rule, accepted for more momentum vehicles.)
 
-**Architecture / performance** (defer)
+**Architecture / performance**
 - ◻ Split FilterEngine god-class / main.py / sweep.py; `ApplicationContext` DI;
   `max_concurrent_per_sector` via `sector_map.yaml`.
 - ◻ `_pack_universe` → `shared_memory`; walk-forward sweep cache key incl. grid hash.
-
-**Operational**
-- ◻ `position_CLI.py open --date YYYY-MM-DD` (retroactive opens — needed to backfill
-  `positions` for the real reconciliation). Pin `requirements.txt` for release.
+- ◻ Pin `requirements.txt` for release.
 
 ---
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (192 + max-hold/ticker = **197**).
-- README sync after any landed change (CLI flags, config blocks, test counts, entry
-  points). Fresh clone + `pip install -r requirements.txt` + README should run.
-- **JOURNALING POLICY (2026-06-04): every run leaves data.** `run_backtest.py` journals
-  by default (`--no-journal` for throwaway); `main.py` auto-journals + warns loudly if
-  the DB is down. `reconcile_live.py` uses the latest backtest run as reference and
-  prints which one (`--bt-run-id N` to override). Exploratory harnesses
-  (compare/ab/frozen) do NOT journal.
+- `pytest tests/` green at the end of every step (currently **244**).
+- README sync after any landed change (CLI flags, config blocks, test counts, entry points).
+  Fresh clone + `pip install -r requirements.txt` + README should run.
+- **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
+  for throwaway); `main.py` auto-journals + warns if the DB is down; `reconcile_live.py` uses
+  the latest backtest run (`--bt-run-id N` to override). Exploratory harnesses
+  (compare / ab / frozen / walk-forward A/Bs) do NOT journal.
+- **Comments document what / usage — no dev-narrative markers** ("Phase N", "Stage N", tickets).
 
 ---
+
+## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
+
+- **Scoring made opt-in, default OFF** (2026-06-05, ADR-003) — the entry score is non-predictive
+  of R (corr −0.03) and its highest-score-first budget fill selected weaker trades. `--scoring`
+  flag (run_backtest + main.py; `SweepEngine(use_scoring=)`), default OFF. **New headline run_id=11
+  (213 universe, scoring OFF): +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075** — vs scoring-ON
+  run_id=10 (+68.9R, 0.42). Chart badge no longer shows "LONG 0". `tests/test_scoring_toggle.py`
+  + `tests/test_chart_no_scoring.py` (+6).
+- **Watchlist v3 → 213 names** (2026-06-05) — deep Canadian bench + US large-caps, no survivorship
+  pruning; the composition test (ETF 0.39 / stocks 0.56 / combined 0.42 Sharpe) surfaced the
+  scoring leak above. `data/prices` all fetched/valid.
+- **Live = backtest on the max-hold exit** (2026-06-05) — extracted the time-stop decision into
+  `core.exits.max_hold_exit_due` (one rule, shared); refactored the 3 backtester sites to use it
+  and **wired it into `main.py`** so the live scanner force-exits a held long at the cap (25d
+  if_not_profit) just like the backtest. `tests/test_exits.py` (+5). Also fixed the lone pandas
+  `Timestamp.utcnow` deprecation (`form4.py`).
+- **Trading default → 25d `if_not_profit`** (2026-06-05) — switched the default exit from `hard`
+  (validation-conservatism) to the economically-correct "let winners run" mode, which dominates
+  every metric at realistic frictions: **headline +74.5R, Sharpe 0.50, PF 1.26** (vs hard
+  +43.8R/0.29). Budget re-validated (`scripts/budget_sweep.py`): 5.0 still Sharpe-optimal.
+  Caveat in `ADR-001` *Decision update*: extra edge leans on the unvalidated long-hold tail →
+  forward-test before sizing. **This is the new headline number.**
+- **rf=0 figure refresh** (2026-06-05) — re-ran OFF baseline / `if_not_profit` / 10–30d horizon
+  sweep under rf=0 at the new slippage=0.002 default; `ADR-001` gains an rf=0-refresh table,
+  `verification_results` updated. Headline 25d-hard now **+43.8R, Sharpe 0.29** (was +87.5R/0.58
+  at slippage 0.001 — friction bump drives the drop). Deflated Sharpe still pending Phase D.
+- **Phase B — realistic frictions** (2026-06-05) — `entry_slippage_pct` raised 0.001→**0.002**
+  and `borrow.annual_rate_default` 0.0→**0.03** (shorts only) as conservative defaults;
+  `scripts/friction_sweep.py` measures the sensitivity. Slippage bites hard: 0→+117.3R/0.72,
+  0.001→+75.6R/0.48, **0.002→+43.8R/0.29**, 0.003→+14.7R/0.10 (commission mild). Edge is thin
+  and slippage-sensitive — flagged in `verification_results` as the top win-now risk.
+- **Behavioral key-mismatch fix + bind diagnostic** — backtest loader keyed behavioral parquet
+  by stem (`sp500_breadth`/`sector_ratios`) but the classifier reads `breadth`/`sector_rotation`,
+  so breadth (weight-4 axis) was NEUTRAL-pinned in every backtest/sweep; fixed via
+  `loader._BEHAVIORAL_KEY_ALIASES`. `scripts/instrument_binds.py` measures bind frequency
+  (fade RSI floor 8.4% — active, kept; breadth divergence 0.09% — inert, sweep row pruned).
+  `tests/test_instrument_binds.py` + `tests/test_loader_behavioral_keys.py` (+12); triage 2a/2b.
+- **Real-fill reconciliation** — `scripts/reconcile_fills.py` scores realized R on closed
+  `positions` (initial-stop risk unit) vs `backtest_trades` by direction, flags drift; lists
+  open positions as carried risk. `data/positions_schema.sql` added (fresh-clone DDL);
+  `tests/test_reconcile_fills.py` (+7). README "Reconciliation" section.
+- **Daily scheduling** — `scripts/register_daily_scan.ps1` + `scripts/run_daily.bat` register
+  a Windows Task Scheduler job running `main.py` Mon–Fri at a local time, only-when-logged-on,
+  catching up missed runs; wrapper appends to `logs/scheduler.log`. README "Schedule it daily".
+- **`position_CLI.py open --date YYYY-MM-DD`** — retroactive opens (default today, ISO,
+  rejects future dates) to backfill `positions`; `tests/test_position_cli.py` (+7).
+- **Sharpe/Sortino** → rf=0 scale-invariant + textbook `/N` (`stats_utils`); headline `run_id=8`
+  (25d-hard @ budget 5.0) = +87.2R, Sharpe 0.58, Sortino 1.03. (Superseded 2026-06-05 — that run
+  predates the friction/behavioral/exit fixes; current headline is the `if_not_profit` entry above.)
+- **`max_concurrent` → `max_open_risk`** aggregate-risk budget (default 5.0 = Sharpe-optimal,
+  OOS-validated); `--max-open-risk` flag; `test_portfolio_risk_budget.py`.
+- **breadth** full S&P 500 universe (was `[:100]`, A–C bias).
+- **VBP** made canonical (H-L share-volume distribution, volume-conserving); `test_vbp.py`.
+- **Magic-number fallbacks** → `DEFAULTS`; scoring shape-constants named.
+- **compute_r** gap-through documented (immaterial ~0.25R); **json_cache** RMW + **dual earnings
+  cache** documented (invariants hold by construction / content already unified).
+- **Score-based exit** built → measured → **rejected** (`ADR-002`); exit score stays live-advisory
+  (`_score_rs_exit` confirmed real, just not useful as a mechanical exit).
+- **max-hold exit** (`ADR-001`, 25d-hard), Phase A survivorship, chronic-loser de-fang, report
+  coloring, date-stamped screenshots, `data/backtest_schema.sql`.
+- Repo hygiene: dev-narrative comment markers stripped repo-wide; `.gitignore` tightened
+  (nested `__pycache__`, `logs/`).

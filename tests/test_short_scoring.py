@@ -1,5 +1,5 @@
 """
-Phase 10.4 tests — scoring-layer direction flip.
+Tests for the scoring-layer direction flip.
 
 Covers the ``direction="short"`` path through the scoring layer:
 

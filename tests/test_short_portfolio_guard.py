@@ -1,5 +1,5 @@
 """
-Phase 10.6 validation — check #6: the portfolio must never hold a long
+Validation check #6: the portfolio must never hold a long
 and a short on the same ticker at once.
 
 ``PortfolioBacktester`` keys ``open_trades`` by ticker and only queues a
@@ -78,7 +78,7 @@ def _flat_prepped(n: int = 30) -> dict:
 
 def test_no_concurrent_long_and_short_on_same_ticker():
     eng = _StubEngine()
-    cfg = PortfolioConfig(max_concurrent=5, close_open_at_eod=True)
+    cfg = PortfolioConfig(max_open_risk=5.0, close_open_at_eod=True)
     bt = PortfolioBacktester(engine=eng, cfg=cfg, scorer=None)
 
     result = bt.run_prepped(_flat_prepped(), skipped={})

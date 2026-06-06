@@ -166,12 +166,24 @@ def save_section(
 
     Notes
     -----
-    Write failures are logged at WARNING and swallowed.
+    Write failures are logged at WARNING and swallowed. The atomic tmp+replace
+    keeps a kill mid-write from corrupting the file.
+
+    Concurrency contract: one writer per ticker file at a time. Guaranteed by the
+    fetch model — the watchlist fetch submits one task per ticker
+    (``ThreadPoolExecutor`` keyed by ticker), so a given ``{TICKER}.json`` is only
+    ever written by its own task; different tickers are different files. This is
+    NOT safe against two writers updating the same file at once (see below).
     """
     path = _cache_path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read-modify-write so concurrent sections don't clobber each other.
+    # Read-modify-write: read the current file so writing this section preserves
+    # the others. This holds across SEQUENTIAL section writes only (e.g. "info"
+    # then "earnings_history" for the same ticker). It is NOT safe against two
+    # overlapping writers to the same file — their RMW cycles can lose each other's
+    # update. The single-writer-per-ticker-file model (see docstring) makes that
+    # not occur, so no lock is taken.
     if path.exists():
         try:
             payload = json.loads(path.read_text())

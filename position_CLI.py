@@ -2,14 +2,15 @@
 Position-management CLI.
 
 Subcommands
-    list                              show all positions
-    open    TICKER PRICE [--stop ...] open a new long
-    close   ID PRICE                  close an open position
-    stop    ID PRICE                  update stop on an open position
+    list                                      show all positions
+    open    TICKER PRICE [--stop ...] [--date ...] open a new long
+    close   ID PRICE                          close an open position
+    stop    ID PRICE                          update stop on an open position
 
 Examples
     python position_CLI.py list
-python position_CLI.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
+    python position_CLI.py open NVDA 142.55 --stop 134.00 --notes "TFSA"
+    python position_CLI.py open NVDA 138.10 --date 2026-05-28   # retroactive
     python position_CLI.py close 7 8.20
     python position_CLI.py stop  3 35.00
 """
@@ -28,6 +29,23 @@ load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from core import position_manager as pm  # noqa: E402
+
+
+def _iso_date(s: str) -> date:
+    """Parse an ISO ``YYYY-MM-DD`` string, rejecting future dates.
+
+    Backs ``open --date`` for retroactive opens: an entry fill is a past
+    (or same-day) event, so a future date is almost always a typo.
+    """
+    try:
+        d = date.fromisoformat(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid date {s!r} - expected ISO YYYY-MM-DD (e.g. 2026-05-28)")
+    if d > date.today():
+        raise argparse.ArgumentTypeError(
+            f"date {s} is in the future - entry fills can't be post-dated")
+    return d
 
 
 def _cmd_list(_args: argparse.Namespace) -> int:
@@ -50,10 +68,11 @@ def _cmd_list(_args: argparse.Namespace) -> int:
 
 
 def _cmd_open(args: argparse.Namespace) -> int:
+    entry_date = args.date or date.today()
     new_id = pm.open_position(
         ticker=args.ticker,
         entry_price=args.price,
-        entry_date=date.today(),
+        entry_date=entry_date,
         side=args.side,
         stop_price=args.stop,
         notes=args.notes,
@@ -62,7 +81,7 @@ def _cmd_open(args: argparse.Namespace) -> int:
         print("✗ failed to open position (see log)")
         return 1
     print(f"✓ opened id={new_id}  {args.side.upper()} {args.ticker.upper()} "
-          f"@ {args.price:.4f}")
+          f"@ {args.price:.4f} on {entry_date.isoformat()}")
     return 0
 
 
@@ -93,9 +112,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_open = sub.add_parser("open", help="open a new position")
     p_open.add_argument("ticker", type=str, help="Ticker symbol, e.g. AAPL.")
     p_open.add_argument("price", type=float, help="Entry fill price.")
-    # Phase 10: short side is now wired end-to-end in the signal/exit engine
-    # and backtester; the CLI accepts it so manual short positions can be
-    # tracked. Short orders still require the broker to permit short selling.
+    # The CLI accepts a short side so manual short positions can be tracked; the
+    # signal/exit engine and backtester handle shorts end-to-end. Short orders
+    # still require the broker to permit short selling.
     p_open.add_argument("--side", choices=("long", "short"), default="long",
                         help="long (buy-then-sell, default) or short "
                              "(sell-then-cover). Short orders require the broker "
@@ -103,6 +122,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_open.add_argument("--stop", type=float, default=None,
                         help="Initial stop-loss price. Optional; omit to open "
                              "without a recorded stop.")
+    p_open.add_argument("--date", type=_iso_date, default=None, metavar="YYYY-MM-DD",
+                        help="Entry/fill date in ISO format (default: today). Use "
+                             "to backfill a retroactive open; must not be in the "
+                             "future.")
     p_open.add_argument("--notes", type=str, default="",
                         help="Free-text note stored with the position.")
     p_open.set_defaults(func=_cmd_open)

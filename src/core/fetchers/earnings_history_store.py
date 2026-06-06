@@ -1,24 +1,32 @@
 """
-Historical earnings-date fetcher (standalone-file cache).
+Historical earnings-date fetcher (standalone-file cache, backtest pipeline).
 
-Unlike ``core.fetchers.earnings_history`` (which writes to the sectioned
-``data/fundamentals/{TICKER}.json`` cache and is used by the LIVE pipeline),
-this module persists to its own ``data/earnings_history/{TICKER}.json`` file
-layout. It is the cache layout backtests have been using since .
+Persists to ``data/earnings_history/{TICKER}.json``. The live pipeline instead
+stores earnings in the sectioned ``data/fundamentals/{TICKER}.json`` cache
+(``core.fetchers.earnings_history``).
 
-(Both formats exist and may drift; consolidating to a single canonical cache
-is tracked separately as in the audit.)
+Both pipelines fetch through the SAME source —
+``earnings_history.fetch_earnings_dates_from_yfinance`` — so the two caches cannot
+see different date lists for a ticker on the same fetch. Only the on-disk *layout*
+differs, kept separate so the backtest can populate its own cache without touching
+the live one. The two carry independent ``fetched_at`` stamps and so can differ in
+*freshness*, but that is benign: historical earnings dates are stable, and only the
+next (future) date moves — which the live pipeline reads from its own fresh cache.
+
+Merging the two layouts into one file is a possible future migration; it is deferred
+because it would change the backtest's cache source (a reproducibility shift) for
+little benefit now that the content source is already unified.
 
 Cache layout
- data/earnings_history/{TICKER}.json
- {
- "ticker": "AAPL",
- "dates": ["2019-02-01", "2019-04-30", ..., "2026-08-01"],
- "fetched_at": "2026-05-15T08:00:00"
- }
+    data/earnings_history/{TICKER}.json
+    {
+        "ticker": "AAPL",
+        "dates": ["2019-02-01", "2019-04-30", ..., "2026-08-01"],
+        "fetched_at": "2026-05-15T08:00:00"
+    }
 
 ETFs / indices return [] (no earnings exist). Network failures return []
-(fail-open — earnings buffer simply does not gate that ticker).
+(fail-open — the earnings buffer simply does not gate that ticker).
 """
 
 from __future__ import annotations

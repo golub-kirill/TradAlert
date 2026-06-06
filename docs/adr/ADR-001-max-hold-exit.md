@@ -1,6 +1,7 @@
 # ADR-001: Time-based max-hold exit (swing-horizon enforcement)
 
-**Status:** Accepted (implemented, OFF by default) — 2026-06-03
+**Status:** Accepted — 2026-06-03. **Trading default since 2026-06-05: `25d if_not_profit`
+ON** (was OFF/`hard`-for-validation; see *Decision update* below).
 **Deciders:** repo owner
 **Related:** TODO.md "Raw notes — Note 1"; `docs/triage_raw_notes_2026-06.md`;
 Validation & de-biasing program (Phase B/C)
@@ -196,6 +197,61 @@ on it.
 > Note: raw `r_multiple` ledger sums (e.g. OFF = +132.9R) differ from the
 > effective-R figures above (size-scaled by macro×behavioral×size-gate). Decisions
 > use effective-R (report / compare / A/B); the raw ledger is for correctness checks.
+
+> Note (2026-06-04): the Sharpe/Sortino figures in this ADR were computed under the
+> *old* `stats_utils` convention (5% risk-free converted at "1R ≈ 10% of equity";
+> Sortino downside averaged over down-months only). That has been corrected to
+> **rf=0, scale-invariant Sharpe** and **textbook /N Sortino** — see the metrics
+> methodology note in `docs/verification_results_2026-06.md`. The Sharpe numbers
+> above tick up ~0.05 under rf=0; relative comparisons (hard vs if_not_profit, the
+> horizon sweep) are unaffected. Refreshed below.
+
+## rf=0 refresh (2026-06-05)
+
+Re-measured under the corrected `stats_utils` (rf=0 Sharpe, `/N` Sortino) **and** the new
+realistic-friction default (`entry_slippage_pct` 0.001 → **0.002**), on the current 91-ticker
+universe (2000–2026; the 2026-06-03 tables above used 75 tickers @ slippage 0.001). Two things
+moved at once, so absolute levels differ materially — and the **slippage bump dominates** (per
+`scripts/friction_sweep.py`, 25d-hard runs +75.6R/0.48 → +43.8R/0.29 going 0.001 → 0.002).
+**Relative conclusions are unchanged:** `if_not_profit` dominates `hard` on every metric, the
+hard edge peaks near 25 bars, and PF > 1 at every horizon.
+
+| Config | Trades | WR | E[R] | Total R | PF | Sharpe | Avg held |
+|--------|-------:|----|------|--------:|----|-------:|---------:|
+| OFF baseline (no cap)   | 1019 | 45.3% | +0.062 | +63.3 | 1.22 | 0.43 | 13.0 |
+| 25d **hard** (headline) | 1124 | 46.9% | +0.039 | +43.8 | 1.14 | 0.29 | 11.1 |
+| 25d if_not_profit       | 1056 | 44.2% | +0.071 | +74.5 | 1.26 | 0.50 | 12.3 |
+| 30d hard                | 1093 | 46.5% | +0.039 | +42.3 | 1.14 | 0.27 | 11.6 |
+| 30d if_not_profit       | 1042 | 44.7% | +0.068 | +70.4 | 1.25 | 0.48 | 12.6 |
+
+Hard-mode horizon sweep — Total R / Sharpe: 10d +14.7/0.10 · 15d +32.8/0.22 · 20d +42.7/0.30 ·
+**25d +43.8/0.29** · 30d +42.3/0.27. Generated with `scripts/compare_max_hold.py --days 10 15
+20 25 30 --modes hard if_not_profit` (exploratory; not journaled). The `time_stop` cohort still
+behaves exactly as designed — `hard` cuts winners (25d: 169 cut @ 76.9% WR), `if_not_profit`
+cuts only losers (25d: 66 cut @ 0% WR).
+
+## Decision update (2026-06-05): `if_not_profit` is the trading default
+
+The original decision shipped the exit OFF by default and named **`hard`** the *canonical
+validation* number — deliberately conservative, to expose how much of the edge lived in the
+>15-bar winner tail. For **live trading** (profit, not validation) that conservatism leaves
+money on the table: `hard` mechanically closes winners still in profit at the cap (25d: 169
+such trades @ 77% WR).
+
+The default is now **`max_hold_days: 25`, `max_hold_mode: if_not_profit`** in `filters.yaml`.
+At realistic frictions (slippage 0.002), `if_not_profit` beats both `hard` and no-cap on every
+metric — **+74.5R, Sharpe 0.50, PF 1.26** vs `hard` +43.8R/0.29 and no-cap +63.3R/0.43 — and is
+mechanically clean (the in-profit test reads only the current bar's close; no look-ahead). The
+open-risk budget was re-validated at this config (`scripts/budget_sweep.py`): Sharpe peaks at
+**5.0** (0.50; 4.0 ties on Sharpe with less R, 6.0 adds R at 0.49), so the shipped **5.0**
+budget stands.
+
+**Caveat — this raises, not lowers, the validation stakes.** `if_not_profit`'s extra edge comes
+from *preserving* the long-hold winner tail — exactly the cohort the de-biasing program (Phase A
+survivorship, Phase C locked-OOS) has not yet confirmed is real vs hindsight-selected. The
+walk-forward OOS check (+0.004 degradation) was run on `hard`, not `if_not_profit`. So: trade it,
+but **forward-test via `reconcile_fills.py`** and treat the live R — not this backtest — as the
+verdict before sizing up.
 
 **Pending gate — V5:** walk-forward (OOS) + robustness on 25d hard, to confirm the
 shrunken edge isn't itself overfit, before it becomes the validation headline.
