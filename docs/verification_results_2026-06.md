@@ -124,10 +124,16 @@ uncapped headline (0.59).
 > **rf=0 refresh + friction bump (2026-06-05).** The "other configs" above are now refreshed
 > (OFF baseline, `if_not_profit`, the 10–30d sweep) — see the **rf=0 refresh** table in
 > `ADR-001`. They were re-run at the **new** `entry_slippage_pct=0.002` default, so the
-> slippage bump (not the metric) drives most of the change. The canonical **25d-hard headline
-> is now +43.8R, Sharpe 0.29** (down from `run_id=6`'s +87.5R/0.58 at slippage 0.001) — the
-> edge is materially thinner under the conservative friction default. Deflated Sharpe still
-> awaits Phase D. Relative rankings (if_not_profit > hard; 25d near-peak; PF > 1 everywhere) hold.
+> slippage bump (not the metric) drives most of the change. At slippage 0.002 the 25d-**hard**
+> config is +43.8R/0.29 (down from `run_id=6`'s +87.5R/0.58 at slippage 0.001). Deflated Sharpe
+> still awaits Phase D. Relative rankings (if_not_profit > hard; 25d near-peak; PF > 1) hold.
+>
+> **New trading default (2026-06-05): 25d `if_not_profit` @ budget 5.0.** Switched from `hard`
+> (a validation-conservatism choice) to the economically-correct "let winners run" exit, which
+> dominates on every metric: **headline now +74.5R, Sharpe 0.50, PF 1.26** (vs hard +43.8R/0.29).
+> Budget re-validated at the new config (`scripts/budget_sweep.py`): Sharpe peaks at 5.0. See
+> `ADR-001` *Decision update* for the caveat — the extra edge leans on the unvalidated long-hold
+> tail, so forward-test via `reconcile_fills.py` before sizing up.
 >
 > **Cap change → risk budget (2026-06-04, `run_id=7`).** The portfolio cap was then
 > re-expressed from a raw count (`max_concurrent=6`) to an aggregate-risk budget

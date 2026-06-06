@@ -1,6 +1,7 @@
 # ADR-001: Time-based max-hold exit (swing-horizon enforcement)
 
-**Status:** Accepted (implemented, OFF by default) — 2026-06-03
+**Status:** Accepted — 2026-06-03. **Trading default since 2026-06-05: `25d if_not_profit`
+ON** (was OFF/`hard`-for-validation; see *Decision update* below).
 **Deciders:** repo owner
 **Related:** TODO.md "Raw notes — Note 1"; `docs/triage_raw_notes_2026-06.md`;
 Validation & de-biasing program (Phase B/C)
@@ -228,6 +229,29 @@ Hard-mode horizon sweep — Total R / Sharpe: 10d +14.7/0.10 · 15d +32.8/0.22 �
 20 25 30 --modes hard if_not_profit` (exploratory; not journaled). The `time_stop` cohort still
 behaves exactly as designed — `hard` cuts winners (25d: 169 cut @ 76.9% WR), `if_not_profit`
 cuts only losers (25d: 66 cut @ 0% WR).
+
+## Decision update (2026-06-05): `if_not_profit` is the trading default
+
+The original decision shipped the exit OFF by default and named **`hard`** the *canonical
+validation* number — deliberately conservative, to expose how much of the edge lived in the
+>15-bar winner tail. For **live trading** (profit, not validation) that conservatism leaves
+money on the table: `hard` mechanically closes winners still in profit at the cap (25d: 169
+such trades @ 77% WR).
+
+The default is now **`max_hold_days: 25`, `max_hold_mode: if_not_profit`** in `filters.yaml`.
+At realistic frictions (slippage 0.002), `if_not_profit` beats both `hard` and no-cap on every
+metric — **+74.5R, Sharpe 0.50, PF 1.26** vs `hard` +43.8R/0.29 and no-cap +63.3R/0.43 — and is
+mechanically clean (the in-profit test reads only the current bar's close; no look-ahead). The
+open-risk budget was re-validated at this config (`scripts/budget_sweep.py`): Sharpe peaks at
+**5.0** (0.50; 4.0 ties on Sharpe with less R, 6.0 adds R at 0.49), so the shipped **5.0**
+budget stands.
+
+**Caveat — this raises, not lowers, the validation stakes.** `if_not_profit`'s extra edge comes
+from *preserving* the long-hold winner tail — exactly the cohort the de-biasing program (Phase A
+survivorship, Phase C locked-OOS) has not yet confirmed is real vs hindsight-selected. The
+walk-forward OOS check (+0.004 degradation) was run on `hard`, not `if_not_profit`. So: trade it,
+but **forward-test via `reconcile_fills.py`** and treat the live R — not this backtest — as the
+verdict before sizing up.
 
 **Pending gate — V5:** walk-forward (OOS) + robustness on 25d hard, to confirm the
 shrunken edge isn't itself overfit, before it becomes the validation headline.

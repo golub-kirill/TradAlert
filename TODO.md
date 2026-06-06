@@ -25,6 +25,11 @@ These are the live-performance items that actually move NORTH STAR #1.
   registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
   catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
   days, so the meaningful read on "winning now" is ~5 weeks of daily runs out.
+- ◻ **Wire the max-hold exit into the live scanner.** The backtest default is now `25d
+  if_not_profit`, but `main.py` doesn't emit a time-based exit — held positions only exit on
+  engine/stop/target. So live ≠ backtest: the trader must manually close a held long at ~25 bars
+  when it's not in profit, or the rule needs wiring into the live exit path (read `positions`
+  entry_date, flag age ≥ 25 bars && not in profit). Required for live to match the headline config.
 - ◻ **Log real/paper fills so the real meter has data.** The reconciler is built
   (`scripts/reconcile_fills.py` — realized R on closed `positions` vs `backtest_trades` by
   direction) and `position_CLI.py open --date` backfills retroactive opens. `positions` is
@@ -99,6 +104,12 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
 
+- **Trading default → 25d `if_not_profit`** (2026-06-05) — switched the default exit from `hard`
+  (validation-conservatism) to the economically-correct "let winners run" mode, which dominates
+  every metric at realistic frictions: **headline +74.5R, Sharpe 0.50, PF 1.26** (vs hard
+  +43.8R/0.29). Budget re-validated (`scripts/budget_sweep.py`): 5.0 still Sharpe-optimal.
+  Caveat in `ADR-001` *Decision update*: extra edge leans on the unvalidated long-hold tail →
+  forward-test before sizing. **This is the new headline number.**
 - **rf=0 figure refresh** (2026-06-05) — re-ran OFF baseline / `if_not_profit` / 10–30d horizon
   sweep under rf=0 at the new slippage=0.002 default; `ADR-001` gains an rf=0-refresh table,
   `verification_results` updated. Headline 25d-hard now **+43.8R, Sharpe 0.29** (was +87.5R/0.58
@@ -124,7 +135,8 @@ reconciliation in ACTIVE above.
 - **`position_CLI.py open --date YYYY-MM-DD`** — retroactive opens (default today, ISO,
   rejects future dates) to backfill `positions`; `tests/test_position_cli.py` (+7).
 - **Sharpe/Sortino** → rf=0 scale-invariant + textbook `/N` (`stats_utils`); headline `run_id=8`
-  (25d-hard @ budget 5.0) = +87.2R, Sharpe 0.58, Sortino 1.03.
+  (25d-hard @ budget 5.0) = +87.2R, Sharpe 0.58, Sortino 1.03. (Superseded 2026-06-05 — that run
+  predates the friction/behavioral/exit fixes; current headline is the `if_not_profit` entry above.)
 - **`max_concurrent` → `max_open_risk`** aggregate-risk budget (default 5.0 = Sharpe-optimal,
   OOS-validated); `--max-open-risk` flag; `test_portfolio_risk_budget.py`.
 - **breadth** full S&P 500 universe (was `[:100]`, A–C bias).
