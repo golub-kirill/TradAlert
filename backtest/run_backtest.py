@@ -213,11 +213,18 @@ def main() -> None:
         print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
               f"(size_mult units; default 5.0)")
 
+    # Scoring is OFF by default (the entry score is non-predictive of R and its
+    # score-ranked budget fill selects weaker trades). --scoring turns it back on;
+    # --scoring-sweep needs it on to tune the scorer.
+    use_scoring = bool(args.scoring or args.scoring_sweep)
+    if use_scoring:
+        print("  ▸ Scoring: ON (min_score_to_alert gate + score-ranked budget fill)")
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
         base_port_cfg=base_port,
         n_workers=max(args.workers, 0),
+        use_scoring=use_scoring,
     )
 
     def _progress(msg: str) -> None:
@@ -457,8 +464,14 @@ def _parse_args() -> argparse.Namespace:
                         "parameter) for a fast pass.")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
+    p.add_argument("--scoring", action="store_true",
+                   help="Enable the SignalScorer (min_score_to_alert gate + "
+                        "score-ranked budget fill). OFF by default — the entry "
+                        "score is non-predictive of R (corr -0.03) and its ranking "
+                        "selects weaker trades under the open-risk budget.")
     p.add_argument("--scoring-sweep", action="store_true",
-                   help="SignalScorer thresholds + weights sweep (settings.yaml)")
+                   help="SignalScorer thresholds + weights sweep (settings.yaml). "
+                        "Forces --scoring on.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
     p.add_argument("--wf-no-retune", action="store_true",

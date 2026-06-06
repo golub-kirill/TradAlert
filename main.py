@@ -224,6 +224,7 @@ def main() -> None:
         settings=settings,
         macro_state=macro_state, behavioral_state=behavioral_state,
         rp_ranks=rp_ranks,
+        use_scoring=args.scoring,
     )
 
     elapsed = time.perf_counter() - t0
@@ -248,6 +249,7 @@ def _run_pipeline(
         macro_state: object | None = None,
         behavioral_state: object | None = None,
         rp_ranks: dict[str, float] | None = None,
+        use_scoring: bool = False,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal → score for every fetched ticker.
@@ -464,19 +466,23 @@ def _run_pipeline(
             except Exception as exc:
                 logger.debug("[%s] live price fetch failed — %s", ticker, exc)
 
-            # regime already computed and enriched above
-            scorer.enrich(
-                signal=signal,
-                df=df,
-                regime=regime,
-                earnings_date=earnings_date,
-                position=held_position,
-                market_dfs=market_dfs,
-                vix_df=vix_df,
-                current_price=live_price,
-                rp_ranks=rp_ranks,
-                ticker=ticker,
-            )
+            # regime already computed and enriched above. Scoring is OFF by
+            # default (the score is non-predictive of R): skip enrichment so the
+            # min_score_to_alert gate is bypassed and every engine-triggered fire
+            # is actionable (score stays 0, watch_only False). --scoring restores it.
+            if use_scoring:
+                scorer.enrich(
+                    signal=signal,
+                    df=df,
+                    regime=regime,
+                    earnings_date=earnings_date,
+                    position=held_position,
+                    market_dfs=market_dfs,
+                    vix_df=vix_df,
+                    current_price=live_price,
+                    rp_ranks=rp_ranks,
+                    ticker=ticker,
+                )
             # Chart only for fire signals (score ≥ threshold, not watch-only)
             if not signal.watch_only:
                 # Collect historical signals for chart overlay
@@ -652,6 +658,15 @@ def _parse_args() -> argparse.Namespace:
         help="Enable short-side entries. Overrides "
              "signals.allow_shorts in filters.yaml to true. Default off "
              "keeps the long-only baseline replay-stable.",
+    )
+    parser.add_argument(
+        "--scoring",
+        action="store_true",
+        default=False,
+        help="Enrich + score signals and apply the min_score_to_alert gate "
+             "(matches `run_backtest.py --scoring`). OFF by default — the entry "
+             "score is non-predictive of R, so every engine-triggered fire is "
+             "reported as actionable instead of being score-gated.",
     )
     return parser.parse_args()
 

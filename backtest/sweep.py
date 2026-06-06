@@ -489,6 +489,11 @@ class SweepEngine:
     base_port_cfg  : Baseline PortfolioConfig keyword arguments.
     n_workers      : Parallel worker processes. 0 = sequential.
                      Defaults to min(cpu_count, 6) for safety.
+    use_scoring    : When True, inject a SignalScorer (min_score_to_alert gate +
+                     score-ranked budget fill). When False (default), no scorer —
+                     entries are taken un-gated and the budget fills alphabetically.
+                     The score is non-predictive of R (corr -0.03), so OFF is the
+                     default; turn ON to study/tune the scoring layer.
     """
 
     def __init__(
@@ -497,9 +502,11 @@ class SweepEngine:
             base_cfg: dict,
             base_port_cfg: dict | None = None,
             n_workers: int | None = None,
+            use_scoring: bool = False,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
+        self._use_scoring = use_scoring
         self._base_port = base_port_cfg or {
             "max_open_risk": 5.0,
             "earnings_aware": False,
@@ -761,7 +768,10 @@ class SweepEngine:
             logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        # Wire scorer so min_score_to_alert gate is applied in backtesting
+        # Settings are always loaded (behavioral classification needs them). The
+        # scorer (min_score_to_alert gate + score-ranked budget fill) is only wired
+        # when use_scoring is on — the score is non-predictive of R, so by default
+        # entries are un-gated and the budget fills alphabetically.
         scorer = None
         _settings = None
         try:
@@ -775,21 +785,11 @@ class SweepEngine:
             if not is_baseline:
                 _apply_settings_mutation(_settings, param_name, param_value)
 
-            scorer = SignalScorer(_settings, cfg)
+            if self._use_scoring:
+                scorer = SignalScorer(_settings, cfg)
         except Exception as exc:
-            logger.debug("SignalScorer init failed — running without score gate: %s", exc)
-            # Still load settings for behavioral classification even if scorer fails
-            if _settings is None:
-                try:
-                    import yaml as _yaml
-                    _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-                    with open(_settings_path, encoding="utf-8") as _f:
-                        _settings = _yaml.safe_load(_f)
-                    if not is_baseline:
-                        _apply_settings_mutation(_settings, param_name, param_value)
-                except Exception as exc:
-                    logger.warning("[sweep] settings load/mutation failed for %s=%s: %s",
-                                   param_name, param_value, exc)
+            logger.debug("settings load / scorer init failed — running without "
+                         "score gate: %s", exc)
 
         bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
         result = bt.run_prepped(
