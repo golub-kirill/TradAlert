@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase A1 — frozen-universe A/B (survivorship / selection-bias audit).
+Frozen-universe A/B (survivorship / selection-bias audit).
 
 Quantifies how much of the backtest edge is hindsight. For each as-of date D it
 runs the SAME windowed backtest (D → present, shipped 25-bar hard cap) on:

@@ -135,6 +135,13 @@ is paused until live performance is healthy.
 ## Deferred — bigger work, not now
 
 **Scoring** (`scoring.py`, `defaults.py`, `settings.yaml`)
+- ✅ **Score-based exit — INVESTIGATED & REJECTED 2026-06-05** (`ADR-002`). Wired the
+  exit blend (`_score_exit`, incl. `_score_rs_exit`) as an opt-in backtest exit and
+  measured it: net-negative across all three weight theses — weakness cuts mean-reverting
+  positions (cohort E[R] −0.14 to −0.33), regime_flip is redundant with `engine_exit`,
+  take-profit caps winners the target/time-stop ride further. The existing exits already
+  capture the edge. Reverted; the exit score stays a **live advisory** only. `_score_rs_exit`
+  confirmed real (not fake) — just not useful as a mechanical exit.
 - ◻ Sub-score audit: `_score_rs_entry/_exit` sanity under `direction == "short"`.
 - ◻ Keep `ConfigError` guard: `scanner.weights.insider_buying`/`short_interest` stay 0
   until Form 4 XML + live short-interest validated.

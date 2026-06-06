@@ -12,7 +12,7 @@
 # Two-tier structure
 #   tier_a  — scanned + tradeable (current watchlist)
 #   tier_b  — fetched for RP ranking only; promoted when RP rank ≥ threshold
-#             AND signal fires (Phase 2 universe expansion)
+#             AND signal fires (two-tier universe expansion)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Tier A: scanned + tradeable ──────────────────────────────────────────────
@@ -153,9 +153,9 @@ tier_b:
 # F5-D / F5-10: previously defined `rp_promotion:` here, but no code consumes
 # it — the tier_b → tier_a promotion flow described in the audit was never
 # implemented. Block removed to avoid the false impression that promotions
-# are gated. When Phase 2 universe expansion is wired up, restore the keys.
+# are gated. When two-tier universe expansion is wired up, restore the keys.
 
-# ── Survivorship / selection audit (Phase A1) ─────────────────────────────────
+# ── Survivorship / selection audit ─────────────────────────────────
 # Inputs for scripts/frozen_universe_ab.py. Quantifies how much of the backtest
 # edge is hindsight: newer ETFs that didn't exist early were included, and losers
 # were deleted after they lost (see the "pruned …" comments above). Free, no

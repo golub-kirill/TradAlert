@@ -75,7 +75,7 @@ scanner: # block: scoring + alerting
     macd_cross_down: 3                  # macd_hist crosses below zero
     vol_expansion: 2                  # atr today / atr 5d avg
     rs_divergence: 2                  # ticker underperforming SPY over 20d
-    vbp_resistance: 2                  # overhead high-volume node resistance (Phase 4)
+    vbp_resistance: 2                  # overhead high-volume node resistance
 
   # ── ENTRY THRESHOLDS ──────────────────────────────────────────────────────
   # Tunables loaded into scoring.EntryThresholds; passed to _score_entry().

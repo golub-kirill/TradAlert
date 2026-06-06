@@ -27,7 +27,7 @@ class Trade:
     ticker         : Symbol.
     signal_type    : 'momentum' | 'mean_reversion'. Recorded from
                      SignalResult.signal_type at entry time.
-    direction      : 'long' or 'short'. Both supported as of phase 10.
+    direction      : 'long' or 'short'.
     entry_date     : T+1 — the bar the order actually filled.
     entry_price    : T+1 open.
     initial_stop   : Stop level set at T close. Frozen for the trade's life.
