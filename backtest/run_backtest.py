@@ -291,6 +291,7 @@ def main() -> None:
                 step_months=6,
                 re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
                 n_workers=_wf_workers,      # --workers now reaches the per-window sweep
+                use_scoring=use_scoring,    # default OFF — matches the scoring default
             )
             wf_report = wfe.run(progress=_progress)
 

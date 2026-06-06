@@ -248,6 +248,7 @@ class WalkForwardEngine:
             re_tune: bool = False,
             grid: list[ParamSpec] | None = None,
             n_workers: int = 0,
+            use_scoring: bool = False,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
@@ -256,6 +257,7 @@ class WalkForwardEngine:
         self._oos_years = oos_years
         self._step_months = step_months
         self._re_tune = re_tune
+        self._use_scoring = use_scoring
         self._grid = grid if grid is not None else PARAM_GRID
         # Parallel workers for the per-window re-tune sweep (re_tune=True).
         # 0/1 = sequential. The baseline (re_tune=False) path runs single
@@ -271,6 +273,7 @@ class WalkForwardEngine:
             base_cfg=base_cfg,
             base_port_cfg=base_port_cfg,
             n_workers=0,
+            use_scoring=use_scoring,
         )
 
     # ── public ────────────────────────────────────────────────────────────────
@@ -415,6 +418,7 @@ class WalkForwardEngine:
                 base_cfg=copy.deepcopy(self._base_cfg),
                 base_port_cfg=dict(self._base_port_cfg),
                 n_workers=self._n_workers,
+                use_scoring=self._use_scoring,
             )
 
             # Override port params to restrict to IS window
