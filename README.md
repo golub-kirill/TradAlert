@@ -66,29 +66,6 @@ fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwri
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
-#### Schedule it daily (Windows)
-
-The live feed only judges "winning now" if it runs every trading day. Register a
-Task Scheduler job that runs `main.py` after the US/TSX close (Mon–Fri):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1          # 18:00 local
-powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1 -At 17:30 # custom time
-```
-
-The task fires on **local** time, so pick a time after the 4:00 PM ET close in
-your timezone with a buffer for EOD data to settle. It runs only when you are
-logged on (no stored password) and catches up a run missed because the PC was
-off. `scripts\run_daily.bat` is the wrapper it invokes — it runs `main.py` with
-the project venv and appends a run/exit record to `logs\scheduler.log` (the
-detailed app log stays in `data\tradealert.log`). Manage it with:
-
-```powershell
-Get-ScheduledTask -TaskName 'TradAlert Daily Scan' | Get-ScheduledTaskInfo  # status / next run
-Start-ScheduledTask -TaskName 'TradAlert Daily Scan'                        # run once now
-Unregister-ScheduledTask -TaskName 'TradAlert Daily Scan' -Confirm:$false   # remove
-```
-
 ### `position_CLI.py` — manual positions
 
 ```bash
