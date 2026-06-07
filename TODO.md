@@ -23,14 +23,14 @@ slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR
 
 ## ▶ NEXT CHAT — recommended next move (start here)
 
-**State (2026-06-08):** The **Phase-2 interactive Telegram daemon (`telegram_bot.py`) is built + tested**
-on `v3-release` (working tree — **commit pending**) — owner-only PTB long-poll, single-instance lockfile
-(`data/telegram_bot.lock`), the alert/position buttons + commands (`/positions /pos /recalc /open
-/close /stop /status /chart /scan /help`), every mutation through the broker-adapter seam, `/close`
-behind a Yes/No confirm. `pytest tests/` green at **346** (+8 `tests/test_telegram_bot.py`). Earlier
-this cycle (HEAD `cd2646a`): trigger panel + ALL P1 audit fixes + data-driven expected-hold. **Telegram
-Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down: true`; token + `TG_CHAT_ID` in
-`config/secrets.env`). No sweep/WF running → engine edits are safe.
+**State (2026-06-08):** The **Phase-2 interactive Telegram daemon (`telegram_bot.py`) is SHIPPED** —
+owner-only PTB long-poll, single-instance lockfile (`data/telegram_bot.lock`), the alert/position
+buttons + commands (`/positions /pos /recalc /open /close /stop /status /chart /scan /help`), every
+mutation through the broker-adapter seam, `/close` behind a Yes/No confirm — **plus the richer card
+templates** (▰▱ bars, PnL gauges, expandable detail). Committed + pushed to `origin/v3-release`
+(**PR #3**); `pytest tests/` green at **351**. It's **running live** as the `TradAlert Telegram Bot`
+scheduled task (at-logon, auto-restart), polling for owner `282614062`. **Telegram Phase-1 push is LIVE
+and ON.** No sweep/WF running → engine edits are safe.
 
 **▶ NEXT MOVE — run the daemon live + start the paper-fill on-ramp.** The buttons are now wired:
 1. **Start MySQL first.** The `MySQL97` service is **Stopped** → all position journaling fails
@@ -47,6 +47,21 @@ Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down: true`; t
    Telegram as a live showcase** (2026-06-08): daily-header, entry long, entry short (borrow/HTB),
    watch-only, exit win, exit cover (loss), position card, stand-down — entry & position carried their
    live inline buttons.
+3. ☑ **Short-entry "Log opened" direction bug — FIXED + verified** (2026-06-08). `entry_actions` now
+   encodes the side in the callback (`open:TICKER:ref:stop:side`); `_cb_open` journals that side (was
+   hard-coded `long` → a short card logged a long with stop above entry = inverted risk). `push._markup`
+   passes the signal direction. **Backward-compatible:** `parse_callback` still accepts legacy 3-arg
+   `open:` (no side → long) so alert cards pushed before the fix keep working. `tests/test_telegram_bot.py`
+   (+3: short open, legacy 3-arg→long, keyboard→handler round-trip) → suite **354 green**. Daemon restarted.
+   - ◻ **Deployment wart:** `Stop-ScheduledTask` doesn't reliably kill the daemon python — the venv
+     `python.exe` launcher reparents its child out of the task tree, so it survives Stop and keeps the
+     lock, making the next Start exit immediately. Workaround: kill `telegram_bot.py` procs by image
+     before Start. Fix idea: point the task action at `pythonw.exe telegram_bot.py` directly (no `.bat`
+     wrapper) so Task Scheduler tracks/kills the real process.
+   - ◻ **Clean up 2 showcase test rows** in `positions` (id 1 JNJ, id 2 XYZ — my sample-card taps, not
+     real signals; XYZ has inverted long-risk). **Needs the user's OK to delete** (they were described as
+     logged signals). Then re-log real fills (e.g. re-tap the ATD.TO entry card — now journals long).
+
    **Remaining template work (the "rest"):**
    - ◻ **MarkdownV2 variant** of the formatters (the only un-built idea from the original brief).
    - ◻ **Verify the production photo form live** — the showcase sent captions as text messages; real

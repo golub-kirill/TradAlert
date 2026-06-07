@@ -12,10 +12,15 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton as _Btn, InlineKeyboardMarkup as _Kb
 
 
-def entry_actions(ticker: str, ref_price: float, stop: float) -> _Kb:
-    """Buttons under an entry alert: log the fill as a position, or pull a chart."""
+def entry_actions(ticker: str, ref_price: float, stop: float, side: str = "long") -> _Kb:
+    """Buttons under an entry alert: log the fill as a position, or pull a chart.
+
+    `side` ("long"/"short") rides in the callback so the daemon journals the
+    correct direction — a short entry card must not log as a long (which would
+    invert the risk unit: stop sits above entry for a short).
+    """
     return _Kb([[
-        _Btn("📈 Log opened", callback_data=f"open:{ticker}:{ref_price:.4f}:{stop:.4f}"),
+        _Btn("📈 Log opened", callback_data=f"open:{ticker}:{ref_price:.4f}:{stop:.4f}:{side}"),
         _Btn("📊 Chart", callback_data=f"chart:{ticker}"),
     ]])
 

@@ -163,7 +163,8 @@ def _markup(tr, kind, cfg: TelegramConfig):
     try:
         from core.telegram.keyboards import entry_actions
         s, sc = tr.signal, tr.scan
-        return entry_actions(tr.ticker, float(sc.close), float(s.stop_price))
+        side = "short" if s.direction == "short" else "long"
+        return entry_actions(tr.ticker, float(sc.close), float(s.stop_price), side=side)
     except Exception:
         return None
 

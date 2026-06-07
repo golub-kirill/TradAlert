@@ -328,11 +328,14 @@ def _owner_only(handler):
     return wrapper
 
 
-# callback_data 'verb:args…' → expected arg count (None = variadic not allowed).
+# callback_data 'verb:args…' → exact expected arg count.
 _CB_ARITY = {
-    "open": 3, "chart": 1, "chartpos": 1, "stop": 1,
+    "chart": 1, "chartpos": 1, "stop": 1,
     "close": 1, "recalc": 1, "confirm": 2, "cancel": 0,
 }
+# `open` accepts 3 (legacy, no side → long) or 4 (with explicit side) — so alert
+# cards pushed before the side was encoded keep working.
+_OPEN_ARITIES = (3, 4)
 
 
 def parse_callback(data: str | None):
@@ -345,6 +348,8 @@ def parse_callback(data: str | None):
         return None
     parts = data.split(":")
     verb, args = parts[0], tuple(parts[1:])
+    if verb == "open":
+        return ("open", args) if len(args) in _OPEN_ARITIES else None
     if verb not in _CB_ARITY or len(args) != _CB_ARITY[verb]:
         return None
     return verb, args
@@ -353,18 +358,24 @@ def parse_callback(data: str | None):
 # ── callback handlers (each answers its own query exactly once) ──────────────
 
 async def _cb_open(update, context, args):
-    """``open:TICKER:ref:stop`` — journal the fill via the adapter, disarm the buttons."""
+    """``open:TICKER:ref:stop[:side]`` — journal the fill (correct direction), disarm the buttons.
+
+    `side` is optional for backward compatibility with cards pushed before it was
+    encoded; absent → long (the strategy's default direction).
+    """
     query = update.callback_query
-    ticker, ref_s, stop_s = args
+    ticker, ref_s, stop_s = args[0], args[1], args[2]
+    side = args[3] if len(args) == 4 else "long"
     try:
         ref = float(ref_s)
         stop_val = float(stop_s)
     except ValueError:
         await query.answer("bad price")
         return
+    side = side if side in ("long", "short") else "long"
     stop = stop_val if stop_val > 0 else None
     new_id = await asyncio.to_thread(
-        get_adapter().open, ticker.upper(), ref, date.today(), "long", stop)
+        get_adapter().open, ticker.upper(), ref, date.today(), side, stop)
     if new_id:
         try:
             await query.edit_message_reply_markup(reply_markup=None)
