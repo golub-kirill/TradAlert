@@ -29,16 +29,6 @@ fetcher: # block: concurrency
   max_workers: 14
 
 
-# ── MARKET HOURS ──────────────────────────────────────────────────────────────
-# Expected hold horizon for swing entries; surfaced in signal descriptions.
-
-market_hours: # block: trade horizon
-  expected_hold_days_low: 20           # low end of "~N–Md hold" shown in signal description
-  # aligned to the 25-bar max-hold horizon (ADR-001); code default (scoring.py): 10
-  expected_hold_days_high: 30          # high end of the range (range centers on ~25 bars)
-  # code default (scoring.py): 15  |
-
-
 # ── RISK BUDGET ───────────────────────────────────────────────────────────────
 # Aggregate open-risk cap the live scanner is budget-aware of. Mirrors the
 # portfolio backtest's max_open_risk (validated default 5.0 R). The scanner is an
@@ -200,7 +190,6 @@ behavioral: # block: behavioral data configuration
   enabled: true                         # master toggle; false → no behavioral regime
   data_dir: "data/behavioral"           # cache directory
   stale_window_days: 14                 # days before data is treated as missing
-
   size_mult_floor: 0.25                 # minimum position size when behavioral risk is fully off
   size_mult_ceiling: 1.0                # maximum position size when fully on
 
@@ -224,10 +213,10 @@ behavioral: # block: behavioral data configuration
 # config/secrets.env (TG_BOT_TOKEN / TG_CHAT_ID), never here. All keys optional;
 # master switch OFF → the scan is byte-identical to no-telegram.
 telegram:
-  enabled: false              # master switch for the daily push (main.py hook)
-  daemon_enabled: false       # attach inline action buttons (the phase-2 daemon answers them)
+  enabled: true              # master switch for the daily push (main.py hook)
+  daemon_enabled: true       # attach inline action buttons (the phase-2 daemon answers them)
   parse_mode: HTML            # HTML | MarkdownV2
-  send_stand_down: false      # send a "no signals today" message when the alert set is empty
+  send_stand_down: true      # send a "no signals today" message when the alert set is empty
   compact: false              # media-group (no buttons) instead of per-signal photos
   alert_types:                # which fired signals to push
     - long_entry
