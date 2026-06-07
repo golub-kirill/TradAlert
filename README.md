@@ -64,6 +64,12 @@ python main.py [--force] [--allow-shorts] [--scoring]
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
 `data/tradealert.log`, MySQL `scan_runs` + `scan_results` (when DB env set).
+Each fire chart carries an **entry-gate "trigger panel"** sidebar — the engine's
+direction-aware, factor-grouped read of *why this signal fired* (TREND / MOMENTUM /
+LOCATION & STRENGTH / VOLATILITY / RISK / CONTEXT), with graded `●●●○` marks for
+continuous factors and `✓`/`✗` for binaries. It is sourced from the live signal's
+`SignalResult.checks` (built only on the live path, `signal(with_checks=True)`), so it
+can never drift from the real decision and the backtest replays bit-identically.
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
@@ -118,7 +124,6 @@ Window / IO flags:
 | `--start YYYY-MM-DD`  | None (all data)     | First in-window date.                                |
 | `--end YYYY-MM-DD`    | None (all data)     | Last in-window date.                                 |
 | `--tickers T [T ...]` | watchlist.yaml      | Restrict universe.                                   |
-| `--earnings-aware`    | False               | Reconstruct historical earnings dates; apply buffer. |
 | `--workers N`         | 1                   | ProcessPool size for sweep / walk-forward.           |
 | `--out DIR`           | `data/backtest_out` | Output directory.                                    |
 | `--no-html`           | False               | Skip HTML report.                                    |
@@ -201,6 +206,27 @@ risk unit, bucketed by direction and compared to `backtest_trades`. Open
 positions are listed as carried risk but not scored; closed positions without a
 recorded stop can't be scored (no risk unit).
 
+### Telegram alerts (push)
+
+The daily scan can push fired signals (entries/exits) to Telegram as a chart photo
++ a compact card caption (direction, entry/stop/target, R:R, regime). Entry cards
+also carry a `🔎 TREND ✅ · MOM ✅ · LOC ▫️ · …` factor line — a per-group summary of
+the same trigger-panel checks rendered on the chart (one source of truth). Set
+`TG_BOT_TOKEN` + **numeric** `TG_CHAT_ID` in `config/secrets.env`, then enable in
+`config/settings.yaml`:
+
+```yaml
+telegram:
+  enabled: true          # default false → scan is byte-identical
+  alert_types: [long_entry, exit_long, short_entry, exit_short]
+  mute: []               # ticker blocklist
+```
+
+The push is **fail-open** — a missing token or Telegram outage degrades to a log
+line and never affects the scan. Interactive commands / position management
+(`/positions`, `/recalc`, `/open`, `/close`, …) are the phase-2 daemon
+(`telegram_bot.py`), not yet shipped. Requires `python-telegram-bot`.
+
 ## Environment variables (`config/secrets.env`)
 
 Loaded by `python-dotenv` at startup.
@@ -214,8 +240,8 @@ Loaded by `python-dotenv` at startup.
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
 | `SEC_USER_AGENT` | reserved                             | Not wired — `form4` uses yfinance, not direct EDGAR yet. For the planned Form 4 XML parser (see TODO). |
-| `TG_CHAT_ID`     | reserved                             | Telegram sender not wired.                                                                             |
-| `TG_BOT_TOKEN`   | reserved                             | Same.                                                                                                  |
+| `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
+| `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
 
 ## Configuration files
 

@@ -20,7 +20,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.filter_engine import ScanResult, SignalResult
+from core.filter_engine import GateCheck, ScanResult, SignalResult
+
+__all__ = [
+    "GateCheck",
+    "ScanResult",
+    "SignalResult",
+    "TickerResult",
+    "SIGNAL_TYPE",
+    "DIRECTION",
+    "sign_of",
+    "TICKER_TREND",
+    "TREND_STATE",
+    "VOL_STATE",
+]
 
 
 # Typo-protected constants for signal types and directions.

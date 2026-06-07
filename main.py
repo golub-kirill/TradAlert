@@ -33,7 +33,7 @@ load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 from persistence.cache import load as cache_load  # noqa: E402
 from core.indicators.chart import chart  # noqa: E402
 from persistence.db import save_scan_run, save_scan_results  # noqa: E402
-from core.filter_engine import FilterEngine, ScanResult, SignalResult  # noqa: E402
+from core.filter_engine import FilterEngine, GateCheck, ScanResult, SignalResult  # noqa: E402
 from core.types import TickerResult  # noqa: E402
 from core.fetchers.fetcher import FetchSummary, fetch_watchlist, fetch_tier_b  # noqa: E402
 from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
@@ -233,13 +233,55 @@ def main() -> None:
     _save_scan(fetch_summary, results, forced=args.force)
 
     # ── 8. report ─────────────────────────────────────────────────────────────
-    _print_report(fetch_summary, results, total_seconds=elapsed)
+    _print_report(fetch_summary, results, total_seconds=elapsed, settings=settings)
+
+    # ── 8b. telegram push (fail-open; bit-neutral to the scan) ─────────────────
+    # Off unless settings.telegram.enabled. Import inside the try so a missing
+    # python-telegram-bot dep or any send error degrades to a log line and never
+    # breaks the scan (mirrors the optional-import pattern above).
+    try:
+        from core.telegram.push import send_alerts
+        send_alerts(results, settings, macro_state=macro_state)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 
     # ── 9. alpha-decay watch ────────────────────────────────────────────
     _print_alpha_decay_watch()
 
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
+
+def _append_live_context_checks(signal, ticker_rp, n_open, max_open_risk=None) -> None:
+    """Fold live-only context into a fired entry's trigger-panel ``checks``.
+
+    The engine builds the gate factors it can derive from market data; the live
+    scanner knows more — the ticker's RP rank (LOCATION) and the open-risk budget
+    consumed vs ``max_open_risk`` (CONTEXT). No-op for exits or when the engine
+    did not emit checks, so the chart never disagrees with the real decision.
+    """
+    checks = getattr(signal, "checks", None)
+    if not checks or signal.direction not in ("long", "short"):
+        return
+    is_long = signal.direction == "long"
+    if ticker_rp is not None:
+        try:
+            rp = float(ticker_rp)
+        except (TypeError, ValueError):
+            rp = None
+        if rp is not None:
+            strength = max(0.0, min(1.0, rp / 100.0 if is_long else 1 - rp / 100.0))
+            checks.append(GateCheck(
+                group="LOCATION", name="RP", passed=strength >= 0.5,
+                detail=f"{rp:.0f}", strength=strength))
+    if n_open is not None:
+        if max_open_risk:
+            checks.append(GateCheck(
+                group="CONTEXT", name="Budget", passed=n_open < max_open_risk,
+                detail=f"{int(n_open)}/{max_open_risk:g}R"))
+        else:
+            checks.append(GateCheck(
+                group="CONTEXT", name="Open", passed=True, detail=f"{int(n_open)} pos"))
+
 
 def _run_pipeline(
         tickers: list[str],
@@ -291,6 +333,10 @@ def _run_pipeline(
     # ── load market context and open positions once per run ──────────────────
     market_dfs, vix_df = _load_market_context(tickers)
     positions = load_open_positions()  # {ticker: Position}
+    # Live open-risk budget (NORTH STAR): the validated portfolio caps aggregate
+    # risk at max_open_risk and sizes each entry by size_mult. The scanner is an
+    # alerter, so it surfaces budget consumed + size_mult rather than executing.
+    max_open_risk = float((settings.get("risk") or {}).get("max_open_risk", 5.0))
 
     for ticker in tickers:
         # ^VIX is context-only — not tradeable, not scanned or signalled.
@@ -409,6 +455,7 @@ def _run_pipeline(
                 earnings_date=earnings_date,
                 held_long=held_long,
                 regime=regime,
+                with_checks=True,
             )
         except InsufficientDataError as exc:
             logger.info("[%s] signal skipped — %s", ticker, exc)
@@ -500,6 +547,11 @@ def _run_pipeline(
 
                 # Extract RP rank for scorecard
                 ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
+
+                # Trigger panel: fold live-only context (RP rank, open-risk budget)
+                # into the engine's gate checks so the chart renders one unified,
+                # direction-aware factor read.
+                _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
 
                 chart(
                     ticker, df, signal=signal,
@@ -724,6 +776,8 @@ def _print_report(
         fetch_summary: FetchSummary,
         results: list[TickerResult],
         total_seconds: float = 0.0,
+        *,
+        settings: dict | None = None,
 ) -> None:
     """Log a structured pipeline summary: FETCH, SCAN, ENTRIES, EXITS, ERRORS."""
     logger = logging.getLogger(__name__)
@@ -779,19 +833,34 @@ def _print_report(
     for r in scan_blocked:
         logger.debug("  filtered  %-12s %s", r.ticker, r.scan.reason)
 
+    # ── open-risk budget (NORTH STAR: live exposure must track the validated
+    # portfolio, which caps aggregate risk and sizes by size_mult) ──────────────
+    max_open_risk = float((settings or {}).get("risk", {}).get("max_open_risk", 5.0))
+    n_open = None
+    try:
+        n_open = len(load_open_positions())
+    except Exception:
+        n_open = None
+    budget_full = n_open is not None and n_open >= max_open_risk
+
     # ── entries ───────────────────────────────────────────────────────────────
     logger.info(divider)
     if fire_entries:
         logger.info("ENTRIES  %d alert(s)", len(fire_entries))
+        if n_open is not None:
+            status = ("BUDGET FULL — new entries exceed the validated risk cap"
+                      if budget_full else f"room for ~{max_open_risk - n_open:.0f} more")
+            logger.info("  RISK BUDGET  %d open / %.1f R  (%s)", n_open, max_open_risk, status)
         for r in fire_entries:
             s = r.signal
             assert s is not None  # filtered by fire_entries comprehension
             logger.info(
-                "  ▲ %-10s  %-15s  score=%s  stop=%-10.4f  target=%-10.4f"
-                "  R:R≥%.1f  %s / %s",
+                "  ▲ %-10s  %-15s  score=%s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
+                "  R:R≥%.1f  %s / %s%s",
                 r.ticker, s.signal_type,
-                _score_label(s), s.stop_price, s.target_price,
+                _score_label(s), float(s.size_mult), s.stop_price, s.target_price,
                 s.min_rr, s.market_regime, s.ticker_trend,
+                "  ⚠over-budget" if budget_full else "",
             )
             for line in s.description.splitlines():
                 logger.info("    %s", line)
@@ -822,11 +891,12 @@ def _print_report(
             s = r.signal
             assert s is not None  # filtered by fire_short_entries comprehension
             logger.info(
-                "  ▼ %-10s  %-15s  score=%s  stop=%-10.4f  target=%-10.4f"
-                "  R:R≥%.1f  %s / %s",
+                "  ▼ %-10s  %-15s  score=%s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
+                "  R:R≥%.1f  %s / %s%s",
                 r.ticker, s.signal_type,
-                _score_label(s), s.stop_price, s.target_price,
+                _score_label(s), float(s.size_mult), s.stop_price, s.target_price,
                 s.min_rr, s.market_regime, s.ticker_trend,
+                "  ⚠over-budget" if budget_full else "",
             )
             for line in s.description.splitlines():
                 logger.info("    %s", line)

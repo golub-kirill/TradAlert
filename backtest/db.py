@@ -47,6 +47,22 @@ _INSERT_TRADE_SQL = """
                     INSERT INTO backtest_trades (run_id, ticker, signal_type, direction,
                                                  entry_date, entry_price, initial_stop, initial_target,
                                                  exit_date, exit_price, exit_reason, bars_held, r_multiple,
+                                                 effective_r, size_mult, borrow_annual_rate,
+                                                 market_regime, ticker_trend, entry_score)
+                    VALUES (%(run_id)s, %(ticker)s, %(signal_type)s, %(direction)s,
+                            %(entry_date)s, %(entry_price)s, %(initial_stop)s, %(initial_target)s,
+                            %(exit_date)s, %(exit_price)s, %(exit_reason)s, %(bars_held)s,
+                            %(r_multiple)s, %(effective_r)s, %(size_mult)s, %(borrow_annual_rate)s,
+                            %(market_regime)s, %(ticker_trend)s, %(entry_score)s) \
+                    """
+
+# Legacy insert for tables created before the effective_r/size_mult/
+# borrow_annual_rate columns existed. Used automatically when the columns are
+# absent so journaling never breaks pre-migration (see data/backtest_schema.sql).
+_INSERT_TRADE_SQL_LEGACY = """
+                    INSERT INTO backtest_trades (run_id, ticker, signal_type, direction,
+                                                 entry_date, entry_price, initial_stop, initial_target,
+                                                 exit_date, exit_price, exit_reason, bars_held, r_multiple,
                                                  market_regime, ticker_trend, entry_score)
                     VALUES (%(run_id)s, %(ticker)s, %(signal_type)s, %(direction)s,
                             %(entry_date)s, %(entry_price)s, %(initial_stop)s, %(initial_target)s,
@@ -128,7 +144,17 @@ def save_backtest_trades(run_id: int, trades: Iterable[Trade]) -> int:
     try:
         conn = _connect()
         cursor = conn.cursor()
-        cursor.executemany(_INSERT_TRADE_SQL, rows)
+        if _has_effective_r_columns(cursor):
+            cursor.executemany(_INSERT_TRADE_SQL, rows)
+        else:
+            # Pre-migration table: drop the new keys and use the legacy column set
+            # so journaling still succeeds (run the ALTER in backtest_schema.sql).
+            logger.warning("backtest_trades: effective_r columns absent — using legacy "
+                           "insert; run the ALTER in data/backtest_schema.sql")
+            legacy = [{k: v for k, v in r.items()
+                       if k not in ("effective_r", "size_mult", "borrow_annual_rate")}
+                      for r in rows]
+            cursor.executemany(_INSERT_TRADE_SQL_LEGACY, legacy)
         conn.commit()
         inserted = cursor.rowcount
         logger.info("backtest_trades ← inserted %d row(s) for run_id=%d",
@@ -159,10 +185,87 @@ def _trade_to_row(run_id: int, t: Trade) -> dict:
         "exit_reason": t.exit_reason,
         "bars_held": t.bars_held,
         "r_multiple": round(t.r_multiple, 4),
+        # effective_r = r_multiple × size_mult − borrow_drag; this is what sums to
+        # backtest_runs.total_r once sizing/shorts are active. r_multiple alone
+        # (per-unit-risk) can't reconstruct the headline.
+        "effective_r": round(t.effective_r, 4),
+        "size_mult": round(t.size_mult, 4),
+        "borrow_annual_rate": round(t.borrow_annual_rate, 5),
         "market_regime": t.market_regime,
         "ticker_trend": t.ticker_trend,
         "entry_score": round(t.entry_score, 1),
     }
+
+
+def _has_effective_r_columns(cursor) -> bool:
+    """True when backtest_trades has the effective_r column (post-migration).
+
+    One cheap information_schema lookup per write lets the writer fall back to the
+    legacy column set on older tables instead of failing the whole insert.
+    """
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'backtest_trades' "
+            "AND column_name = 'effective_r'"
+        )
+        row = cursor.fetchone()
+        return bool(row and row[0])
+    except MySQLError:
+        return False
+
+
+def trade_r_column(cursor) -> str:
+    """Return the column reconcilers should aggregate: ``effective_r`` when it
+    exists (post-migration; this is what sums to backtest_runs.total_r), else
+    ``r_multiple`` for older tables. The return value is a fixed literal, so it is
+    safe to interpolate into a query."""
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'backtest_trades' "
+            "AND column_name = 'effective_r'"
+        )
+        row = cursor.fetchone()
+        n = list(row.values())[0] if isinstance(row, dict) else row[0]
+        return "effective_r" if n else "r_multiple"
+    except MySQLError:
+        return "r_multiple"
+
+
+def _run_use_scoring(config_json) -> bool | None:
+    """Parse ``_meta.use_scoring`` from a run's config snapshot; None if unknown."""
+    if not config_json:
+        return None
+    try:
+        return json.loads(config_json).get("_meta", {}).get("use_scoring")
+    except (ValueError, TypeError):
+        return None
+
+
+def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
+    """Resolve the expectancy-reference backtest_runs row (dictionary cursor).
+
+    Explicit ``run_id`` → that row. Otherwise prefer the latest run tagged
+    scoring-OFF (``config_json._meta.use_scoring is False``, matching the live
+    default) so the reconciler never silently references a scoring-ON run; fall
+    back to the newest run overall. Returns the row dict (without config_json) or
+    None.
+    """
+    cols = "id, start_date, end_date, trades_count, expectancy_r, win_rate, notes"
+    if run_id is not None:
+        cursor.execute(f"SELECT {cols} FROM backtest_runs WHERE id = %s", (run_id,))
+        return cursor.fetchone()
+    cursor.execute(f"SELECT {cols}, config_json FROM backtest_runs ORDER BY id DESC LIMIT 50")
+    rows = cursor.fetchall()
+    if not rows:
+        return None
+    chosen = None
+    if prefer_scoring_off:
+        chosen = next((r for r in rows if _run_use_scoring(r.get("config_json")) is False), None)
+    chosen = chosen or rows[0]
+    chosen.pop("config_json", None)
+    return chosen
 
 
 def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:

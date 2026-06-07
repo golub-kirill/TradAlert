@@ -3,9 +3,10 @@
 Live-vs-backtest reconciliation — is the strategy tracking expectancy NOW?
 
 Pulls fired entry signals from the live journal (`scan_results` + `scan_runs`),
-replays each one forward against the cached price history under the shipped 25-bar
-hard cap, and compares the realized R distribution to `backtest_trades` expectancy
-(by regime). Flags drift > ±0.15 R/trade.
+replays each one forward against the cached price history under the configured
+max-hold exit (`execution.max_hold_days`/`max_hold_mode`, via the shared
+`core.exits.max_hold_exit_due`), and compares the realized R distribution to
+`backtest_trades` expectancy (by regime). Flags drift > ±0.15 R/trade.
 
 Scoring (the "Both" plan):
   • New rows (post-migration) carry stop_price/target_price/signal_type → scored exactly.
@@ -53,22 +54,17 @@ def _cfg():
         "atr_mult": float(sl.get("atr_multiplier", 2.5)),
         "min_rr": float(sl.get("min_rr", 2.5)),
         "commission_r": float(ex.get("commission_r", 0.005)),
+        "max_hold_days": int(ex.get("max_hold_days", 25)),
+        "max_hold_mode": str(ex.get("max_hold_mode", "if_not_profit")).replace("-", "_"),
     }
 
 
 def _ref_run(cur, bt_run_id):
-    """Expectancy reference = the given backtest_runs id, else the latest.
-    Always printed by the caller so the choice is visible."""
-    rid = bt_run_id
-    if rid is None:
-        cur.execute("SELECT MAX(id) m FROM backtest_runs")
-        row = cur.fetchone()
-        rid = row["m"] if row else None
-    if rid is None:
-        return None
-    cur.execute("SELECT id, start_date, end_date, trades_count, expectancy_r, "
-                "win_rate, notes FROM backtest_runs WHERE id = %s", (rid,))
-    return cur.fetchone()
+    """Expectancy reference = the given backtest_runs id, else the latest
+    scoring-OFF run (matching the live default), else the newest overall. The
+    chosen run is always printed by the caller so the provenance is visible."""
+    from backtest.db import reference_run
+    return reference_run(cur, bt_run_id)
 
 
 def _fetch(conn, bt_run_id=None):
@@ -87,23 +83,38 @@ def _fetch(conn, bt_run_id=None):
         "ORDER BY r.created_at, sr.ticker"
     )
     sigs = cur.fetchall()
+    # Aggregate effective_r (matches backtest_runs.total_r) and COALESCE the
+    # signal_type bucket so the backtest side groups identically to the live side
+    # (which maps NULL → 'momentum'); otherwise NULL-typed trades land in a bucket
+    # live signals can never match.
+    from backtest.db import trade_r_column
+    rcol = trade_r_column(cur)
     cur.execute(
-        "SELECT market_regime, signal_type, COUNT(*) n, AVG(r_multiple) exp_r "
-        "FROM backtest_trades WHERE run_id = %s GROUP BY market_regime, signal_type",
+        f"SELECT market_regime, COALESCE(signal_type,'momentum') signal_type, "
+        f"COUNT(*) n, AVG({rcol}) exp_r "
+        "FROM backtest_trades WHERE run_id = %s "
+        "GROUP BY market_regime, COALESCE(signal_type,'momentum')",
         (rid,),
     )
     exp = {(row["market_regime"], row["signal_type"]): (float(row["exp_r"]), int(row["n"]))
            for row in cur.fetchall()}
-    cur.execute("SELECT AVG(r_multiple) e FROM backtest_trades WHERE run_id = %s", (rid,))
+    cur.execute(f"SELECT AVG({rcol}) e FROM backtest_trades WHERE run_id = %s", (rid,))
     overall = cur.fetchone()
     exp["__ALL__"] = (float(overall["e"]) if overall and overall["e"] is not None else 0.0, 0)
     cur.close()
     return sigs, exp, ref
 
 
-def _replay(df, entry_idx, stop, target, is_short, max_hold, apply_stop, apply_target,
-            apply_stop_s, apply_target_s):
-    """Walk forward from entry_idx. Returns (exit_price, reason) or (None, 'pending')."""
+def _replay(df, entry_idx, entry_price, stop, target, is_short, max_hold, mode,
+            apply_stop, apply_target, apply_stop_s, apply_target_s):
+    """Walk forward from entry_idx. Returns (exit_price, reason) or (None, 'pending').
+
+    The time-stop uses the shared ``core.exits.max_hold_exit_due`` so the live
+    meter force-closes held trades on the SAME rule (mode included) as the
+    backtester — otherwise an ``if_not_profit`` config would show false drift.
+    """
+    from core.exits import max_hold_exit_due
+    side = "short" if is_short else "long"
     n = len(df)
     for k in range(entry_idx, n):
         bar = df.iloc[k]
@@ -119,7 +130,8 @@ def _replay(df, entry_idx, stop, target, is_short, max_hold, apply_stop, apply_t
                 return apply_stop(stop, op), "stop"
             if hi >= target:
                 return apply_target(target, op), "target"
-        if held >= max_hold:
+        if max_hold_exit_due(bars_held=held, current_close=cl, entry_price=entry_price,
+                             side=side, max_hold_days=max_hold, mode=mode):
             return cl, "time_stop"
     return None, "pending"
 
@@ -132,7 +144,10 @@ def main() -> None:
             pass
 
     ap = argparse.ArgumentParser(description="Live-vs-backtest reconciliation")
-    ap.add_argument("--max-hold-days", type=int, default=25)
+    ap.add_argument("--max-hold-days", type=int, default=None,
+                    help="Time-stop cap in trading bars (default: execution.max_hold_days).")
+    ap.add_argument("--max-hold-mode", default=None, choices=["hard", "if-not-profit"],
+                    help="Time-stop mode (default: execution.max_hold_mode).")
     ap.add_argument("--drift", type=float, default=0.15, help="alert threshold, R/trade")
     ap.add_argument("--bt-run-id", type=int, default=None,
                     help="backtest_runs.id to use as the expectancy reference "
@@ -146,6 +161,8 @@ def main() -> None:
                                       apply_stop_fill_short, apply_target_fill_short)
 
     cfg = _cfg()
+    max_hold = args.max_hold_days if args.max_hold_days is not None else cfg["max_hold_days"]
+    max_hold_mode = (args.max_hold_mode or cfg["max_hold_mode"]).replace("-", "_")
     try:
         conn = connect()
     except Exception as exc:
@@ -165,7 +182,7 @@ def main() -> None:
     dates = [s["created_at"] for s in sigs]
     bt_all = exp.get("__ALL__", (0.0, 0))[0]
     print(f"\n  Live reconciliation  ·  {len(sigs)} fired entry signals  ·  "
-          f"{min(dates):%Y-%m-%d} → {max(dates):%Y-%m-%d}  ·  cap {args.max_hold_days}d hard")
+          f"{min(dates):%Y-%m-%d} → {max(dates):%Y-%m-%d}  ·  cap {max_hold}d {max_hold_mode}")
     print(f"  Expectancy reference: backtest_runs id={ref['id']} "
           f"({ref['start_date']}→{ref['end_date'] or 'latest'}, {ref['trades_count']} trades, "
           f"E[R] {bt_all:+.3f}, notes={ref['notes'] or '—'})\n")
@@ -207,7 +224,8 @@ def main() -> None:
             errors += 1
             continue
 
-        exit_price, reason = _replay(df, entry_idx, stop, target, is_short, args.max_hold_days,
+        exit_price, reason = _replay(df, entry_idx, entry, stop, target, is_short,
+                                     max_hold, max_hold_mode,
                                      apply_stop_fill, apply_target_fill,
                                      apply_stop_fill_short, apply_target_fill_short)
         if exit_price is None:

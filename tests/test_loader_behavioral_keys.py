@@ -47,8 +47,9 @@ def test_classifier_consumes_breadth_only_under_canonical_key():
     under_key = classify_behavioral_state(
         {"breadth": breadth}, settings={}, spy_df=spy, as_of=None)
 
-    # Wrong key → breadth missing → axis absent / forced default.
-    assert "breadth" in under_stem.missing_axes
+    # Wrong key → breadth missing → axis absent / forced default. missing_axes uses
+    # the CANONICAL axis name so the behavioral weight loop actually excludes it.
+    assert "breadth_state" in under_stem.missing_axes
     # Correct key → real breadth consumed.
-    assert "breadth" not in under_key.missing_axes
+    assert "breadth_state" not in under_key.missing_axes
     assert under_key.breadth_state == "STRONG"

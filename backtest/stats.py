@@ -34,7 +34,7 @@ class Stats:
     ----------
     trades_count   : Total closed trades counted.
     wins           : Trades where r_multiple > 0.
-    losses         : Trades where r_multiple <= 0.
+    losses         : Trades where r_multiple < 0 (r == 0 is a scratch — neither).
     win_rate       : wins / trades_count.
     avg_winner_r   : Mean r_multiple of winners only.
     avg_loser_r    : Mean r_multiple of losers only (always non-positive).
@@ -75,8 +75,12 @@ def compute_stats(trades: Iterable[Trade]) -> Stats:
         return Stats()
 
     rs = [t.effective_r for t in closed]
+    # r == 0 is a scratch — neither win nor loss. Counting it as a loss (the old
+    # ``<= 0``) disagreed with stats_utils._profit_factor (which is r==0-neutral),
+    # so the same run reported two different PF / loss counts; an all-winners+scratch
+    # run also divided by a zero loss sum. Unify on the neutral convention.
     winners = [r for r in rs if r > 0]
-    losers = [r for r in rs if r <= 0]
+    losers = [r for r in rs if r < 0]
     sum_wins = sum(winners)
     sum_loss = sum(losers)
 

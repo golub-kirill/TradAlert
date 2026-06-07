@@ -159,6 +159,37 @@ class ScanResult:
 
 
 @dataclass
+class GateCheck:
+    """
+    One factor row in the entry-gate "trigger panel".
+
+    A direction-aware, *post-decision* description of a single entry factor —
+    the engine's "proof of opinion". Rendered factor-grouped on the chart
+    sidebar and folded into the Telegram factor line from the same source, so
+    the two surfaces can never disagree with the real decision.
+
+    Building these never affects a decision (they are derived only after a
+    signal has fired, behind ``signal(with_checks=True)``), so the backtest and
+    sweep paths leave ``checks`` empty and replay bit-identically.
+
+    Attributes
+    ----------
+    group    : Factor group for layout — "TREND" | "MOMENTUM" | "LOCATION" |
+               "VOLATILITY" | "RISK" | "CONTEXT".
+    name     : Short row label, e.g. "RSI", "MACD Δ", "R:R".
+    passed   : Binary pass/fail; drives ✓/✗ and the per-group summary mark.
+    detail   : Value text shown beside the mark, e.g. "62.3", "2.50×".
+    strength : Optional grade in [0, 1] for continuous factors → rendered as a
+               ●●●○ bar. None marks a hard binary (rendered ✓/✗).
+    """
+    group: str
+    name: str
+    passed: bool
+    detail: str = ""
+    strength: float | None = None
+
+
+@dataclass
 class SignalResult:
     """
     Output of FilterEngine.signal().
@@ -201,6 +232,8 @@ class SignalResult:
     expected_hold_days: tuple[int, int] = field(default=(10, 15), repr=False)
     watch_only: bool = field(default=False, repr=False)
     description: str = field(default="", repr=False)
+    # ── entry-gate trigger panel (populated only when signal(with_checks=True)) ──
+    checks: list[GateCheck] = field(default_factory=list, repr=False)
 
 
 # ── engine ────────────────────────────────────────────────────────────────────
@@ -252,7 +285,6 @@ class FilterEngine:
         self._today = today or date.today()
         self._stop_dates = self._build_stop_dates_index()
         self._sector_map = self._load_sector_map()
-        self._quarantine: set[str] = set()  # pre-computed quarantine list
 
     # ── private — config validation ──────────────────────────────────────────
 
@@ -314,7 +346,7 @@ class FilterEngine:
         if not sg.get("enabled", False):
             return {}
         map_path = sg.get("sector_map_path", "config/sector_map.yaml")
-        path = Path(map_path) if not Path(map_path).is_absolute() else Path(map_path)
+        path = Path(map_path)
         if not path.exists():
             logger.warning("sector map not found at %s — sector gate disabled", path)
             return {}
@@ -435,6 +467,7 @@ class FilterEngine:
             held_long: bool = False,
             held_short: bool = False,
             regime: MarketRegime | None = None,
+            with_checks: bool = False,
     ) -> SignalResult:
         """
         Signal detection. Branches on ``held_long``.
@@ -484,7 +517,10 @@ class FilterEngine:
             if held_short
             else self._signal_exit(ticker, df, regime)
             if held_long
-            else self._signal_entry(ticker, df, regime, earnings_date, market_dfs)
+            else self._signal_entry(
+                ticker, df, regime, earnings_date, market_dfs,
+                with_checks=with_checks,
+            )
         )
 
         if result.passed:
@@ -505,8 +541,14 @@ class FilterEngine:
             regime: MarketRegime,
             earnings_date: date | None,
             market_dfs: dict[str, pd.DataFrame] | None = None,
+            with_checks: bool = False,
     ) -> SignalResult:
-        """Long-entry signal detection with full gate chain."""
+        """Long-entry signal detection with full gate chain.
+
+        ``with_checks`` only adds the post-decision trigger-panel ``checks`` to a
+        fired result; it never changes a decision, so the backtest/sweep path
+        (``with_checks=False``) replays bit-identically and pays no extra compute.
+        """
         # 1. stop_date blackout
         blocked, reason = self._signal_blocked()
         if blocked:
@@ -547,13 +589,6 @@ class FilterEngine:
             ok, reason = self._sector_strength_ok(ticker, market_dfs)
             if not ok:
                 return self._fail_result(reason, regime, ticker_trend)
-
-        # 4d. per-ticker quarantine gate
-        if ticker in self._quarantine:
-            return self._fail_result(
-                "ticker quarantined (negative rolling expectancy)",
-                regime, ticker_trend,
-            )
 
         # 5. evaluate long-entry conditions
         direction, signal_type, why = self._evaluate_entry(
@@ -629,6 +664,15 @@ class FilterEngine:
                     regime, ticker_trend,
                 )
 
+        checks = (
+            self._build_gate_checks(
+                row, prev, df, regime, ticker_trend, direction, signal_type,
+                stop_price, target_price, min_rr, atr_mult, earnings_date,
+                market_dfs,
+            )
+            if with_checks else []
+        )
+
         return SignalResult(
             passed=True,
             direction=direction,
@@ -640,7 +684,228 @@ class FilterEngine:
             market_regime=regime.label,
             ticker_trend=ticker_trend,
             reason="entry signal fired",
+            checks=checks,
         )
+
+    # ── entry-gate trigger panel (post-decision; never alters a decision) ─────
+
+    def _build_gate_checks(
+            self,
+            row: Series,
+            prev: Series,
+            df: pd.DataFrame,
+            regime: MarketRegime,
+            ticker_trend: TickerTrend,
+            direction: Direction,
+            signal_type: SignalType,
+            stop_price: float,
+            target_price: float,
+            min_rr: float,
+            atr_mult: float,
+            earnings_date: date | None,
+            market_dfs: dict[str, pd.DataFrame] | None,
+    ) -> list[GateCheck]:
+        """
+        Re-derive a direction-aware, factor-grouped read of *why this signal
+        fired*, for the chart sidebar and the Telegram factor line.
+
+        Called only after a signal has fired (``with_checks=True``). It reads
+        the same config thresholds and already-computed indicators the decision
+        used, so the panel reflects the real gates; it changes nothing. Every
+        factor is computed defensively — a missing column or short history skips
+        that row rather than raising on the live path.
+
+        Semantics flip by ``direction``: strength, "clear path", and regime
+        tailwind/headwind all invert long ↔ short.
+        """
+        checks: list[GateCheck] = []
+        is_long = direction == "long"
+        sgn = 1.0 if is_long else -1.0
+
+        def add(group: str, name: str, passed: bool,
+                detail: str = "", strength: float | None = None) -> None:
+            checks.append(GateCheck(
+                group=group, name=name, passed=bool(passed),
+                detail=detail, strength=strength,
+            ))
+
+        def clamp01(x: float) -> float:
+            return max(0.0, min(1.0, float(x)))
+
+        def f(key: str) -> float | None:
+            try:
+                v = row[key]
+            except (KeyError, IndexError):
+                return None
+            return float(v) if pd.notna(v) else None
+
+        close = f("close")
+        atr = f("atr")
+        rsi = f("rsi")
+        hist = f("macd_hist")
+        prev_hist = float(prev["macd_hist"]) if pd.notna(prev.get("macd_hist")) else None
+        ma_fast = f("ma_fast")
+        ma_slow = f("ma_slow")
+
+        # ── TREND ────────────────────────────────────────────────────────────
+        ideal_trend = "UPTREND" if is_long else "DOWNTREND"
+        add("TREND", "Trend", ticker_trend == ideal_trend, ticker_trend)
+        if close is not None and ma_fast is not None:
+            add("TREND", "Px vs MA50",
+                (close > ma_fast) if is_long else (close < ma_fast),
+                f"{close:.2f}/{ma_fast:.2f}")
+        if close is not None and ma_slow is not None:
+            add("TREND", "Px vs MA200",
+                (close > ma_slow) if is_long else (close < ma_slow),
+                f"{ma_slow:.2f}")
+        if "ma_fast" in df.columns and len(df) >= 11:
+            mf_prev = df["ma_fast"].iloc[-11]
+            if pd.notna(mf_prev) and ma_fast is not None and float(mf_prev) != 0:
+                slope = (ma_fast - float(mf_prev)) / abs(float(mf_prev)) * 100
+                add("TREND", "MA50 slope",
+                    (slope > 0) if is_long else (slope < 0), f"{slope:+.1f}%")
+        wk = f("weekly_sma10")
+        if close is not None and wk is not None:
+            add("TREND", "Weekly",
+                (close > wk) if is_long else (close < wk), f"{wk:.2f}")
+
+        # ── MOMENTUM ─────────────────────────────────────────────────────────
+        sig = self._cfg["signals"]
+        if signal_type == "momentum":
+            tcfg = sig["momentum"]["long"] if is_long else (sig["momentum"].get("short_entry") or {})
+        else:
+            tcfg = sig["mean_reversion"]["long"] if is_long else (sig["mean_reversion"].get("short_entry") or {})
+
+        if rsi is not None:
+            rsi_min = tcfg.get("rsi_min")
+            rsi_max = tcfg.get("rsi_max")
+            if rsi_min is not None and rsi_max is not None:
+                in_band = rsi_min <= rsi <= rsi_max
+                strength = clamp01((rsi - rsi_min) / (rsi_max - rsi_min)) if rsi_max > rsi_min else None
+                add("MOMENTUM", "RSI", in_band, f"{rsi:.1f} [{rsi_min:g}-{rsi_max:g}]", strength)
+            elif rsi_max is not None:  # mean-rev long: oversold gate
+                add("MOMENTUM", "RSI", rsi < rsi_max, f"{rsi:.1f} <{rsi_max:g}",
+                    clamp01((rsi_max - rsi) / rsi_max))
+            elif rsi_min is not None:  # mean-rev short: overbought gate
+                add("MOMENTUM", "RSI", rsi > rsi_min, f"{rsi:.1f} >{rsi_min:g}",
+                    clamp01((rsi - rsi_min) / max(1.0, 100 - rsi_min)))
+
+        if hist is not None:
+            add("MOMENTUM", "MACD hist",
+                (hist > 0) if is_long else (hist < 0), f"{hist:+.3f}")
+        if hist is not None and prev_hist is not None and atr is not None:
+            delta = hist - prev_hist
+            thr = float(tcfg.get("min_hist_delta_atr", 0.0)) * atr
+            passed = (delta >= thr) if is_long else (delta <= -thr)
+            strength = clamp01(sgn * delta / thr) if thr > 0 else None
+            add("MOMENTUM", "MACD Δ", passed, f"{delta:+.3f}/{thr:.3f}", strength)
+
+        if signal_type == "momentum" and "macd_hist" in df.columns:
+            max_bars = int(tcfg.get(
+                "max_bars_since_cross",
+                DEFAULTS.get("filters.signals.momentum.long.max_bars_since_cross")))
+            h = df["macd_hist"].iloc[-(max_bars + 3):]
+            bars_ago = None
+            for i in range(len(h) - 2, -1, -1):
+                up = h.iloc[i] < 0 <= h.iloc[i + 1]
+                down = h.iloc[i] >= 0 > h.iloc[i + 1]
+                if (up if is_long else down):
+                    bars_ago = len(h) - 2 - i
+                    break
+            if bars_ago is not None:
+                add("MOMENTUM", "Fresh cross", bars_ago <= max_bars,
+                    f"{bars_ago}b ≤{max_bars}")
+
+        # ── LOCATION & STRENGTH ──────────────────────────────────────────────
+        window = df.tail(252)
+        if close is not None and len(window) >= 60:
+            hi = float(window["high"].max())
+            lo = float(window["low"].min())
+            if hi > lo:
+                pos = (close - lo) / (hi - lo)
+                strength = clamp01(pos if is_long else 1 - pos)
+                add("LOCATION", "52W pos", strength >= 0.5, f"{pos * 100:.0f}%", strength)
+
+        spy = (market_dfs or {}).get("SPY")
+        if close is not None and spy is not None and len(spy) >= 61 and len(df) >= 61:
+            base_t = float(df["close"].iloc[-61])
+            base_s = float(spy["close"].iloc[-61])
+            if base_t > 0 and base_s > 0:
+                rs = (close / base_t - float(spy["close"].iloc[-1]) / base_s) * 100
+                add("LOCATION", "RS vs SPY",
+                    (rs > 0) if is_long else (rs < 0), f"{rs:+.1f}%",
+                    clamp01(0.5 + sgn * rs / 40))
+
+        if close is not None and atr is not None and atr > 0:
+            try:
+                from core.indicators.vbp import (
+                    compute_vbp, nearest_high_volume_node_above,
+                    nearest_high_volume_node_below,
+                )
+                vbp = compute_vbp(df)
+                node = (nearest_high_volume_node_above(vbp, close) if is_long
+                        else nearest_high_volume_node_below(vbp, close))
+                if node is None:
+                    add("LOCATION", "Clear path", True, "clear")
+                else:
+                    np_price = node[0]
+                    clear = (np_price >= target_price) if is_long else (np_price <= target_price)
+                    dist = abs(np_price - close) / atr
+                    add("LOCATION", "Clear path", clear, f"{dist:.1f} ATR")
+            except Exception as exc:  # VBP is best-effort context, never fatal
+                logger.debug("trigger-panel VBP failed: %s", exc)
+
+        # ── VOLATILITY ───────────────────────────────────────────────────────
+        bw = f("bb_bw")
+        if bw is not None and "bb_bw" in df.columns:
+            series = df["bb_bw"].tail(120).dropna()
+            if len(series) >= 20:
+                pctile = float((series < bw).mean()) * 100
+                add("VOLATILITY", "BB %ile", pctile <= 50.0,
+                    f"{pctile:.0f}%ile", clamp01(1 - pctile / 100))
+        bbz = f("bb_z")
+        if bbz is not None:
+            add("VOLATILITY", "BB z", abs(bbz) < 2.0, f"{bbz:+.2f}")
+        if close is not None and atr is not None and close > 0:
+            atr_pct = atr / close * 100
+            min_atr = self._cfg["volatility"]["min_atr_pct"]
+            max_atr = self._cfg["volatility"]["max_atr_pct"]
+            add("VOLATILITY", "ATR%", min_atr <= atr_pct <= max_atr, f"{atr_pct:.1f}%")
+
+        # ── RISK ─────────────────────────────────────────────────────────────
+        add("RISK", "R:R", True, f"{float(min_rr):.2f}")
+        if close is not None and atr is not None and close > 0:
+            stop_dist = atr * atr_mult
+            add("RISK", "Stop", True, f"{stop_dist / close * 100:.1f}% / {atr_mult:.1f}ATR")
+        # Position-size multiplier (macro × behavioral) — the validated portfolio
+        # sizes each entry by this, so the live read must show it (NORTH STAR).
+        smult = clamp01(float(regime.size_multiplier))
+        add("RISK", "Size", smult >= 0.5, f"{smult:.2f}x", strength=smult)
+        if earnings_date is not None and earnings_date >= self._today:
+            days = (earnings_date - self._today).days
+            add("RISK", "Earnings", days > self._earnings_buffer_days(), f"{days}d")
+        else:
+            add("RISK", "Earnings", True, "—")
+        if not is_long:
+            # A fired short already cleared the hard-to-borrow gate, so it is
+            # borrowable; surface the borrow drag that will be charged.
+            rate = float(sig.get("borrow", {}).get("annual_rate_default", 0.0)) * 100
+            add("RISK", "Borrow", True, f"{rate:.1f}%/yr")
+
+        # ── CONTEXT (engine portion; main.py adds RP / budget / health) ──────
+        macro = getattr(regime, "macro", None)
+        risk_on = getattr(macro, "risk_on_score", None) if macro is not None else None
+        if risk_on is not None:
+            tail = (risk_on > 0.5) == is_long
+            add("CONTEXT", "Regime", tail, f"{regime.label} risk-on {risk_on:.2f}")
+        else:
+            add("CONTEXT", "Regime", regime.allows_longs if is_long else regime.allows_shorts,
+                regime.label)
+        if "volume" in df.columns and close is not None:
+            dv20 = float((df["close"] * df["volume"]).tail(20).mean())
+            add("CONTEXT", "Liquidity", True, f"${dv20 / 1e6:.1f}M")
+
+        return checks
 
     # ── exit mode ───────────────────────────────────────────────────
 
@@ -1339,5 +1604,4 @@ class FilterEngine:
         obj._validate_config()
         obj._stop_dates = obj._build_stop_dates_index()
         obj._sector_map = obj._load_sector_map()
-        obj._quarantine = set()
         return obj

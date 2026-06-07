@@ -206,7 +206,7 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
-    # Portfolio open-risk budget (--max-open-risk). Default 6.0 (set in base_port
+    # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
     if args.max_open_risk is not None:
         base_port["max_open_risk"] = float(args.max_open_risk)
@@ -303,7 +303,8 @@ def main() -> None:
 
         # ── SQL journaling (ON by default — policy; --no-journal to skip) ──
         if not args.no_journal:
-            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni)
+            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni,
+                              use_scoring=use_scoring)
         else:
             print("  ▸ Journaling: OFF (--no-journal) — this run leaves no DB record")
 
@@ -408,6 +409,7 @@ def main() -> None:
                 report.baseline, report.baseline.trades,
                 base_cfg, start_date, end_date, uni,
                 notes=f"sweep baseline ({len(report.points)} variants run)",
+                use_scoring=use_scoring,
             )
 
         if not args.no_csv:
@@ -493,9 +495,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--tickers", nargs="+", metavar="TICKER",
                    help="Restrict the run to these tickers (space-separated). "
                         "Default: the full watchlist universe.")
-    p.add_argument("--earnings-aware", action="store_true",
-                   help="Reconstruct historical earnings dates and apply the "
-                        "earnings-proximity buffer gate during the replay.")
     p.add_argument("--workers", type=int, default=1, metavar="N",
                    help="Parallel worker processes for sweep / walk-forward "
                         "(1 = sequential).")
@@ -566,6 +565,7 @@ def _journal_baseline(
         end_date,
         uni,
         notes: str | None = None,
+        use_scoring: bool | None = None,
 ) -> None:
     """
     Write one baseline run + all its closed trades to MySQL.
@@ -586,6 +586,9 @@ def _journal_baseline(
             "start_date": str(start_date) if start_date else None,
             "end_date": str(end_date) if end_date else None,
             "universe": uni.summary(),
+            # Run provenance: the reconcilers prefer the latest scoring-OFF run as
+            # the expectancy reference (matches the live default) — see #9a.
+            "use_scoring": bool(use_scoring) if use_scoring is not None else None,
         }
 
         run_id = save_backtest_run(

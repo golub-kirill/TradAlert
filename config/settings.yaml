@@ -39,6 +39,16 @@ market_hours: # block: trade horizon
   # code default (scoring.py): 15  |
 
 
+# ── RISK BUDGET ───────────────────────────────────────────────────────────────
+# Aggregate open-risk cap the live scanner is budget-aware of. Mirrors the
+# portfolio backtest's max_open_risk (validated default 5.0 R). The scanner is an
+# ALERTER — it surfaces consumed-vs-budget and flags entries that would exceed the
+# cap, plus each signal's size_mult, but never auto-executes.
+
+risk: # block: live open-risk budget awareness
+  max_open_risk: 5.0                   # aggregate open-risk cap in R units [5.0]
+
+
 # ── SCANNER ───────────────────────────────────────────────────────────────────
 # Confidence-scoring weights, thresholds, and alert gate.
 
@@ -207,3 +217,21 @@ behavioral: # block: behavioral data configuration
     sentiment_state: 1
 
   breadth_divergence_penalty: 0.2       # subtracted from behavioral_score when True
+
+
+# ── TELEGRAM ──────────────────────────────────────────────────────────────────
+# Push alerts (phase 1) + interactive daemon (phase 2). Token/chat id live in
+# config/secrets.env (TG_BOT_TOKEN / TG_CHAT_ID), never here. All keys optional;
+# master switch OFF → the scan is byte-identical to no-telegram.
+telegram:
+  enabled: false              # master switch for the daily push (main.py hook)
+  daemon_enabled: false       # attach inline action buttons (the phase-2 daemon answers them)
+  parse_mode: HTML            # HTML | MarkdownV2
+  send_stand_down: false      # send a "no signals today" message when the alert set is empty
+  compact: false              # media-group (no buttons) instead of per-signal photos
+  alert_types:                # which fired signals to push
+    - long_entry
+    - exit_long
+    - short_entry
+    - exit_short
+  mute: []                    # ticker blocklist, e.g. ["TSLA"]

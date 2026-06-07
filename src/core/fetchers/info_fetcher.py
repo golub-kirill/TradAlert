@@ -76,7 +76,12 @@ def get_market_cap(
 
     logger.debug("Market-cap fetch    ↓ %s", ticker)
     value = _fetch(ticker)
-    save_section(ticker, _SECTION, {"market_cap": value}, cache_dir)
+    # Cache on success only. A failed fetch returns None indistinguishably from a
+    # symbol with no fundamentals; caching that None would pin "no market cap" for
+    # the whole staleness window, silently skipping the market-cap floor gate for a
+    # genuine fetch outage. The daily scan re-tries None on the next run instead.
+    if value is not None:
+        save_section(ticker, _SECTION, {"market_cap": value}, cache_dir)
     return value
 
 
