@@ -19,9 +19,11 @@
   /recalc /open /close /stop /status /chart /scan /help`, all mutations through the broker-adapter seam,
   `/close` behind a Yes/No confirm. `tests/test_telegram_bot.py` (+8). **Not yet run live** — stop any
   other poller first (409 Conflict). See "Phase 2" below for the as-built notes.
-- **Still pending:** richer/creative templates. *(The `🔎 TREND ✅ · MOM ✅ · …` factor line is lit since*
-  *2026-06-07: `push._checklist` derives per-group marks from `SignalResult.checks`, the same source as*
-  *the chart trigger panel, and passes them to `format_entry(checklist=)`.)*
+- **Richer/creative templates: SHIPPED 2026-06-08.** `format.py` gained ▰▱ R:R fill bars, ●-marker PnL
+  gauges (entry/exit/position), entry→target upside % + stop downside %, win/loss header emoji on exits,
+  and a collapsible `<blockquote expandable>` detail block — HTML-safe, captions ≤1024, deterministic,
+  tests de-tagged. Only optional leftover: a MarkdownV2 variant. *(The `🔎 TREND ✅ · MOM ✅ · …` factor*
+  *line has been lit since 2026-06-07 via `push._checklist` from `SignalResult.checks`.)*
 
 ## Context
 TradAlert is a one-shot daily scanner (Task Scheduler → `main.py`) whose output is logs +

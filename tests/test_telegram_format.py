@@ -138,3 +138,42 @@ def test_position_card():
     assert "→ tgt +1.70R" in p and "→ stop -1.00R" in p
     assert "time-stop 16d left (25d, if_not_profit)" in p
     assert "HOLD — no exit signal" in p and "risk-on 0.72" in p
+
+
+# ── rich visuals (bars / gauges / pcts / expandable) ─────────────────────────────
+
+def test_entry_rr_bar_and_expandable_detail():
+    out = fmt.format_entry(_entry(), risk_on=0.75, n_open=4, checklist=[("TREND", True)])
+    assert "<blockquote expandable>" in out          # secondary detail tucked away
+    assert len(out) <= fmt.CAPTION_LIMIT
+    p = _plain(out)
+    assert "▰" in p and "▱" in p                      # R:R fill bar rendered
+
+
+def test_entry_shows_move_pcts():
+    p = _plain(fmt.format_entry(_entry()))
+    assert "+11.7%" in p                              # entry 232.77 → target 260.07
+    assert "-4.7%" in p                               # entry → stop 221.85 (downside)
+
+
+def test_position_card_has_pnl_gauge():
+    pos = Position(id=12, ticker="JNJ", side="long", entry_price=232.77,
+                   entry_date=date(2026, 5, 28), stop_price=221.85)
+    out = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78,
+                                   unrealized_pct=3.7, days_held=9)
+    assert "&" not in out
+    p = _plain(out)
+    assert "●" in p and "🛑" in p and "🎯" in p        # gauge marker + flanks
+
+
+def test_exit_winloss_emoji():
+    assert "🟢" in _plain(fmt.format_exit(_exit(), realized_r=0.58, realized_pct=2.7))
+    assert "🔴" in _plain(fmt.format_exit(_exit(), realized_r=-0.40, realized_pct=-1.9))
+
+
+def test_meters_are_html_safe():
+    # No meter/divider character ever introduces a raw ampersand into the HTML.
+    out = fmt.format_entry(_entry(direction="short", ticker="X&Y", close=88.40),
+                           risk_on=0.35, borrow_pct=4.0, htb=True,
+                           checklist=[("TREND", False)])
+    assert "X&amp;Y" in out and "X&Y" not in out

@@ -33,14 +33,27 @@ Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down: true`; t
 `config/secrets.env`). No sweep/WF running → engine edits are safe.
 
 **▶ NEXT MOVE — run the daemon live + start the paper-fill on-ramp.** The buttons are now wired:
-1. **Stop the other poller first** (whatever is draining this bot's `getUpdates` — else Telegram 409
-   Conflict), then `python telegram_bot.py` (or `scripts/register_telegram_bot.ps1` for at-logon,
-   auto-restart). Tap **📈 Log opened** on an entry card to journal a position → `/positions` to manage
-   → **Close** (confirm) to exit → `python scripts/reconcile_fills.py` reads the live edge. This feeds
-   the "log real/paper fills so the live meter has data" item (the `positions` table is still empty).
-2. **Telegram — richer/prettier messages** (user request, still open): iterate `format.py` templates
-   (unicode ▰▱ bars for R:R & distance-to-stop, PnL gauge, section dividers, `<blockquote expandable>`,
-   tiered emoji, maybe a MarkdownV2 variant). HTML-safe, caption ≤1024, keep tests de-tagged.
+1. **Start MySQL first.** The `MySQL97` service is **Stopped** → all position journaling fails
+   (`Can't connect to localhost:3306`), so **Log opened** / `/positions` / `/close` and the daily-scan
+   journal don't work. Start it from an **elevated** shell: `Start-Service MySQL97` (optionally
+   `Set-Service MySQL97 -StartupType Automatic`). Then tap **📈 Log opened** on an entry card to journal a
+   position → `/positions` to manage → **Close** (confirm) to exit → `python scripts/reconcile_fills.py`
+   reads the live edge. This feeds the "log real/paper fills" item (the `positions` table is still empty).
+2. ☑ **Telegram — richer/prettier messages — SHIPPED** (2026-06-08). `format.py` redesigned: ▰▱ R:R fill
+   bar, ●-marker PnL gauge (entry/exit/position), entry→target upside % + stop downside %, win/loss
+   header emoji on exits, and a collapsible `<blockquote expandable>` detail block (hold/size/factor
+   line/regime/open). HTML-safe, captions ≤1024, deterministic. `tests/test_telegram_format.py` (+5) →
+   suite **351 green**. The live daemon was restarted to load it. **All 8 ready templates were sent to
+   Telegram as a live showcase** (2026-06-08): daily-header, entry long, entry short (borrow/HTB),
+   watch-only, exit win, exit cover (loss), position card, stand-down — entry & position carried their
+   live inline buttons.
+   **Remaining template work (the "rest"):**
+   - ◻ **MarkdownV2 variant** of the formatters (the only un-built idea from the original brief).
+   - ◻ **Verify the production photo form live** — the showcase sent captions as text messages; real
+     entry/exit/position alerts attach a chart `.webp` + caption + buttons. Confirm that combo end-to-end
+     on the next real scan / once MySQL is up (so `/positions` cards render against real rows).
+   - ◻ **Template the daemon's inline reply strings** (`/help`, `/status`, "✅ logged", confirm prompts)
+     — currently literals in `telegram_bot.py`, not in `format.py`. Low priority.
 
 **Secondary (optional rigor, per NORTH STAR #1):** the V5 re-tune walk-forward + Phase-D (below). It
 was attempted twice this cycle and **orphaned both times** (agent-spawned background process cut off
@@ -102,13 +115,11 @@ already-thin-but-OOS-passing headline, so it's behind live/paper-trading.
   run; it only de-biases the already-thin headline (the fixed-config OOS already PASSED, `run_id=12`:
   68% OOS, p≈0.009), so it's secondary to live/paper-trading.
 
-**Telegram — richer/prettier/creative messages (user request, STILL OPEN).** Phase-1 ships a clean
-`<blockquote>` card (`src/core/telegram/format.py`), but the user wants a **more visually rich,
-creative** look — iterate the templates: e.g. unicode progress/▰▱ bars for R:R & distance-to-stop,
-mini PnL gauge, tiered/section dividers, `<blockquote expandable>` for detail, smarter emoji tiers,
-maybe a MarkdownV2 variant. Stay HTML-safe (caption ≤1024, escape values) and keep tests de-tagged.
-The **Phase-2 interactive daemon** `telegram_bot.py` is now **SHIPPED** (see Done this session) — these
-template tweaks light up on both the push and the daemon's cards (one source: `format.py`).
+**Telegram — richer/prettier/creative messages (user request, SHIPPED 2026-06-08).** `format.py`
+redesigned with ▰▱ R:R fill bars, ●-marker PnL gauges, entry→target upside % + stop downside %,
+win/loss header emoji on exits, and a collapsible `<blockquote expandable>` detail block — HTML-safe,
+captions ≤1024, deterministic, tests de-tagged. Shared by both the push and the daemon cards (one
+source). **Remaining optional:** a MarkdownV2 variant (the only un-done idea from the original list).
 
 ---
 
@@ -311,9 +322,11 @@ reconciliation in ACTIVE above.
   stand-down + position card; `format_entry(checklist=)` factor line **lit** (2026-06-07). **Phase 2
   (2026-06-08): `telegram_bot.py` interactive daemon SHIPPED** — owner-only PTB long-poll, lockfile,
   commands `/positions /pos /recalc /open /close /stop /status /chart /scan`, inline buttons, `/close`
-  confirm gate (see "Done this session"). Tests: `test_telegram_format`/`_push`/`test_execution_adapter`/
-  `test_trigger_panel`/`test_telegram_bot`. Plan: `docs/telegram_integration_plan.md`. **Open:** richer/
-  creative templates + run the daemon live (paper-fill on-ramp).
+  confirm gate (see "Done this session"). **Richer/creative card templates SHIPPED** (2026-06-08: ▰▱
+  R:R bars, PnL gauges, move %s, expandable detail). Tests: `test_telegram_format`/`_push`/
+  `test_execution_adapter`/`test_trigger_panel`/`test_telegram_bot`. Plan:
+  `docs/telegram_integration_plan.md`. **Open:** run the daemon live for the paper-fill on-ramp
+  (needs MySQL up); optional MarkdownV2 variant.
 
 **Watchlist expansion** (mind NORTH STAR #2)
 - ☑ **Universe-agnosticism checked on v3** (2026-06-06). The 91→213 expansion showed the edge IS
@@ -333,7 +346,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **346**).
+- `pytest tests/` green at the end of every step (currently **351**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
