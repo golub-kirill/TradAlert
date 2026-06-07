@@ -29,6 +29,7 @@ load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from core import position_manager as pm  # noqa: E402
+from exceptions import ValidationError  # noqa: E402
 
 
 def _iso_date(s: str) -> date:
@@ -69,19 +70,25 @@ def _cmd_list(_args: argparse.Namespace) -> int:
 
 def _cmd_open(args: argparse.Namespace) -> int:
     entry_date = args.date or date.today()
-    new_id = pm.open_position(
-        ticker=args.ticker,
-        entry_price=args.price,
-        entry_date=entry_date,
-        side=args.side,
-        stop_price=args.stop,
-        notes=args.notes,
-    )
+    try:
+        new_id = pm.open_position(
+            ticker=args.ticker,
+            entry_price=args.price,
+            entry_date=entry_date,
+            side=args.side,
+            stop_price=args.stop,
+            notes=args.notes,
+        )
+    except ValidationError as exc:
+        print(f"✗ rejected: {exc.detail}")
+        return 1
     if new_id is None:
         print("✗ failed to open position (see log)")
         return 1
     print(f"✓ opened id={new_id}  {args.side.upper()} {args.ticker.upper()} "
           f"@ {args.price:.4f} on {entry_date.isoformat()}")
+    if args.stop is None:
+        print("  ⚠ no stop recorded — set one with `stop` so the position can be scored")
     return 0
 
 

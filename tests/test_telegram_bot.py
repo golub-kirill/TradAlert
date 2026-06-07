@@ -11,10 +11,20 @@ import asyncio
 import logging
 from datetime import date
 
+import pytest
+
 import telegram_bot as tb
 from core.position_manager import Position
+from exceptions import ValidationError
 
 _OWNER = 100
+
+
+@pytest.fixture(autouse=True)
+def _no_db_budget(monkeypatch):
+    """Keep open handlers DB-free: stub the budget advisory + config read."""
+    monkeypatch.setattr(tb, "_max_open_risk", lambda: 5.0)
+    monkeypatch.setattr(tb.pm, "open_risk_advisory", lambda *a, **k: None)
 
 
 # ── duck-typed PTB fakes ─────────────────────────────────────────────────────
@@ -205,6 +215,23 @@ def test_cb_open_journals_short_side(monkeypatch):
     asyncio.run(tb._route(upd, _Context()))
 
     assert adapter.opened == [("XYZ", 88.4, date.today(), "short", 93.1)]
+
+
+def test_cb_open_surfaces_validation_rejection(monkeypatch):
+    # An invalid open (e.g. inverted-risk short logged long) is rejected at the
+    # data layer; the user is told the reason and the buttons stay armed.
+    monkeypatch.setattr(tb, "OWNER_ID", _OWNER)
+
+    class _Reject:
+        def open(self, *a, **k):
+            raise ValidationError("stop 93.1 must be below entry 88.4 for a long", ticker="AB")
+
+    monkeypatch.setattr(tb, "get_adapter", lambda: _Reject())
+    upd = _Update(uid=_OWNER, data="open:AB:88.4000:93.1000:long")
+    asyncio.run(tb._route(upd, _Context()))
+
+    assert any("must be below entry" in a[0] for a in upd.callback_query.answers)
+    assert upd.callback_query.markup_edits == []           # not disarmed — open failed
 
 
 def test_cb_open_legacy_3arg_defaults_long(monkeypatch):

@@ -47,10 +47,9 @@ except ImportError:
 
 # ── pure R math (unit-tested; no DB) ────────────────────────────────────────
 
-def _risk(side: str, entry: float, stop: float) -> float:
-    """Per-share risk to the initial stop. Positive when the stop is on the
-    correct side of entry (below for long, above for short)."""
-    return (entry - stop) if side == "long" else (stop - entry)
+# Single source for the risk-unit geometry — shared with the open-position guard
+# (position_manager.validate_open) so a stop the guard rejects can't be scored here.
+from core.position_manager import risk_unit as _risk  # noqa: E402
 
 
 def _r_multiple(side: str, entry: float, stop: float, exit_price: float) -> float | None:

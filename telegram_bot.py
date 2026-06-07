@@ -56,6 +56,7 @@ from core import position_manager as pm  # noqa: E402
 from core.exits import max_hold_exit_due  # noqa: E402
 from core.execution.adapter import get_adapter  # noqa: E402
 from core.paths import DATA_DIR, FILTERS_YAML, SCREENSHOTS_DIR, SETTINGS_YAML  # noqa: E402
+from exceptions import ValidationError  # noqa: E402
 from core.telegram import format as fmt  # noqa: E402
 from core.telegram.config import load_telegram_config  # noqa: E402
 from core.telegram.keyboards import confirm, position_actions  # noqa: E402
@@ -161,6 +162,21 @@ def _acquire_lock() -> bool:
 
 
 # ── shared engine / market context / bar loading ─────────────────────────────
+
+_MAX_OPEN_RISK = None
+
+
+def _max_open_risk() -> float:
+    """The aggregate open-risk budget (``risk.max_open_risk`` in settings; default 5.0)."""
+    global _MAX_OPEN_RISK
+    if _MAX_OPEN_RISK is None:
+        try:
+            s = yaml.safe_load(SETTINGS_YAML.read_text(encoding="utf-8")) or {}
+            _MAX_OPEN_RISK = float((s.get("risk") or {}).get("max_open_risk", 5.0))
+        except Exception:
+            _MAX_OPEN_RISK = 5.0
+    return _MAX_OPEN_RISK
+
 
 def _get_engine():
     """Build (once) and return the shared FilterEngine."""
@@ -374,14 +390,25 @@ async def _cb_open(update, context, args):
         return
     side = side if side in ("long", "short") else "long"
     stop = stop_val if stop_val > 0 else None
-    new_id = await asyncio.to_thread(
-        get_adapter().open, ticker.upper(), ref, date.today(), side, stop)
+    try:
+        new_id = await asyncio.to_thread(
+            get_adapter().open, ticker.upper(), ref, date.today(), side, stop)
+    except ValidationError as exc:
+        await query.answer(f"⚠️ {exc.detail}", show_alert=True)
+        return
     if new_id:
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-        await query.answer(f"✅ logged id={new_id}")
+        notes = []
+        if stop is None:
+            notes.append("no stop set")
+        budget = await asyncio.to_thread(pm.open_risk_advisory, _max_open_risk())
+        if budget:
+            notes.append(budget)
+        suffix = (" · " + " · ".join(notes)) if notes else ""
+        await query.answer(f"✅ logged id={new_id}{suffix}", show_alert=bool(notes))
     else:
         await query.answer("⚠️ open failed (see log)")
 
@@ -627,11 +654,20 @@ async def cmd_open(update, context):
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return
-    new_id = await asyncio.to_thread(
-        get_adapter().open, ticker, price, date.today(), side, stop)
+    try:
+        new_id = await asyncio.to_thread(
+            get_adapter().open, ticker, price, date.today(), side, stop)
+    except ValidationError as exc:
+        await update.message.reply_text(f"⚠️ rejected: {exc.detail}")
+        return
     if new_id:
-        await update.message.reply_text(
-            f"✅ opened id={new_id} {side.upper()} {ticker} @ {price:.2f}")
+        msg = f"✅ opened id={new_id} {side.upper()} {ticker} @ {price:.2f}"
+        if stop is None:
+            msg += "\n⚠️ no stop set — add one with /stop so it can be scored"
+        budget = await asyncio.to_thread(pm.open_risk_advisory, _max_open_risk())
+        if budget:
+            msg += f"\n⚠️ {budget}"
+        await update.message.reply_text(msg)
     else:
         await update.message.reply_text("⚠️ open failed (see log)")
 

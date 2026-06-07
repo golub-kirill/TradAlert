@@ -32,13 +32,13 @@ templates** (▰▱ bars, PnL gauges, expandable detail). Committed + pushed to 
 scheduled task (at-logon, auto-restart), polling for owner `282614062`. **Telegram Phase-1 push is LIVE
 and ON.** No sweep/WF running → engine edits are safe.
 
-**▶ NEXT MOVE — run the daemon live + start the paper-fill on-ramp.** The buttons are now wired:
-1. **Start MySQL first.** The `MySQL97` service is **Stopped** → all position journaling fails
-   (`Can't connect to localhost:3306`), so **Log opened** / `/positions` / `/close` and the daily-scan
-   journal don't work. Start it from an **elevated** shell: `Start-Service MySQL97` (optionally
-   `Set-Service MySQL97 -StartupType Automatic`). Then tap **📈 Log opened** on an entry card to journal a
-   position → `/positions` to manage → **Close** (confirm) to exit → `python scripts/reconcile_fills.py`
-   reads the live edge. This feeds the "log real/paper fills" item (the `positions` table is still empty).
+**▶ NEXT MOVE — let the paper-fill on-ramp run.** MySQL is up, the daemon is live, the open path is
+guarded, and the first real fill (`ATD.TO`) is logged.
+1. ☑ **MySQL running + paper-fill on-ramp active.** `MySQL97` started; **Log opened** journals a position
+   (open path now **guarded** — see Done this session), `/positions` manages, **Close** (confirm) exits,
+   `python scripts/reconcile_fills.py` reads the live edge. `positions` holds the first real fill
+   (`ATD.TO`, long, stop 78.7793). **Remaining:** keep logging real fills + close some so the meter has
+   scored R (signals mature ~25 trading days → meaningful drift ~5 weeks out).
 2. ☑ **Telegram — richer/prettier messages — SHIPPED** (2026-06-08). `format.py` redesigned: ▰▱ R:R fill
    bar, ●-marker PnL gauge (entry/exit/position), entry→target upside % + stop downside %, win/loss
    header emoji on exits, and a collapsible `<blockquote expandable>` detail block (hold/size/factor
@@ -58,9 +58,23 @@ and ON.** No sweep/WF running → engine edits are safe.
      lock, making the next Start exit immediately. Workaround: kill `telegram_bot.py` procs by image
      before Start. Fix idea: point the task action at `pythonw.exe telegram_bot.py` directly (no `.bat`
      wrapper) so Task Scheduler tracks/kills the real process.
-   - ◻ **Clean up 2 showcase test rows** in `positions` (id 1 JNJ, id 2 XYZ — my sample-card taps, not
-     real signals; XYZ has inverted long-risk). **Needs the user's OK to delete** (they were described as
-     logged signals). Then re-log real fills (e.g. re-tap the ATD.TO entry card — now journals long).
+   - ☑ **Showcase test rows cleaned** (user ran SQL); `positions` now holds the real `ATD.TO` fill.
+4. ☑ **Open-position guarding — SHIPPED + verified** (2026-06-08). All open paths funnel through
+   `position_manager.open_position`, which now validates before INSERT and **raises `ValidationError`**
+   (propagated, not swallowed) on: a `TEST.*` ticker (showcase-only, never journaled), an unknown side, a
+   non-positive/non-finite entry, a stop on the wrong side of entry (the inverted-risk bug), or a
+   **duplicate open** for a ticker that already holds one. A **missing stop** is allowed but warned
+   (unscoreable until set); **over the `max_open_risk` budget** is warned, not blocked. Risk geometry
+   extracted to `position_manager.risk_unit` — the single source now shared by the guard AND
+   `reconcile_fills` (can't drift). Callers (`_cb_open`, `cmd_open`, `position_CLI open`) surface the
+   reason. `tests/test_position_guards.py` (+9) + daemon rejection test → suite **366 green**;
+   **live-verified** against the DB (6/6 bad opens rejected, 0 rows written). *Decisions: no-stop→warn,
+   duplicate→reject, over-budget→warn, TEST.*→reject.*
+   - ◻ **Optional phase 2 (DB-level):** `CHECK` constraints (`entry_price>0`; stop on the correct side via
+     a `CASE`) + a generated-column unique index for one-open-per-ticker — needs an `ALTER` on the live
+     table (I can hand over the SQL). App-level guard covers it today; DB constraints are defense-in-depth.
+   - ◻ **Budget = aggregate R, not count:** the advisory counts open positions as ~1R each; refine to
+     size_mult-weighted risk once positions store/derive `size_mult`.
 
    **Remaining template work (the "rest"):**
    - ◻ **MarkdownV2 variant** of the formatters (the only un-built idea from the original brief).
@@ -361,7 +375,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **351**).
+- `pytest tests/` green at the end of every step (currently **366**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
