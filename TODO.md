@@ -23,15 +23,38 @@ slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR
 
 ## ▶ NEXT CHAT — recommended next move (start here)
 
-**State (2026-06-06):** The V5 re-tune walk-forward **died at window 26/47** (resource-killed —
-clean stop, no traceback, process gone; the re-tune spawns ~14 workers/window each holding the
-universe and OOM'd under concurrent load). **No V5 verdict was produced.** Upside: **engine modules
-are now editable** — the "don't edit while a sweep's workers re-import" freeze is lifted. (First
-confirm no `run_backtest`/sweep python is running, then edit freely.) `pytest tests/` green at **308**.
-Telegram **Phase-1 push shipped + live** (token + `TG_CHAT_ID` in `config/secrets.env`, test alerts
-delivered to @foxDev_testBot/TWD_BOT).
+**State (2026-06-07):** Trigger panel + ALL P1 audit fixes + data-driven expected-hold are **shipped,
+committed, and pushed** to `origin/v3-release` (HEAD `cd2646a`); working tree clean; `pytest tests/`
+green at **338**. **Telegram Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down:
+true` in `config/settings.yaml`; token + `TG_CHAT_ID` in `config/secrets.env`). The V5 re-tune
+walk-forward was attempted twice and **orphaned both times** (the agent-spawned background process was
+cut off during an idle gap — NOT OOM, NOT a code error: no Windows 2004 event, no traceback, memory
+fine at 8 workers); deferred as **optional rigor** (see below). No sweep/WF is running → engine edits
+are safe.
 
-**Do, in order:**
+**▶ NEXT MOVE — build the Phase-2 interactive Telegram daemon (`telegram_bot.py`).** Full spec:
+`docs/telegram_integration_plan.md` ("Phase 2"). **Why now:** `daemon_enabled: true` is already set, so
+entry cards render **📈 Log opened** + **📊 Chart** inline buttons that are **DEAD until this daemon
+answers their callback queries** (tapping does nothing today). Building it also opens the **paper-fill
+on-ramp**: "Log opened" journals a position via the broker-adapter seam (`src/core/execution/adapter.py`)
+→ `reconcile_fills.py` reads the live edge.
+- PTB `Application` long-poll, **owner-only** (`filters.Chat(chat_id=TG_CHAT_ID)` on every handler +
+  catch-all reject), `run_polling(stop_signals=None)` (Windows), single-instance lockfile
+  (`data/telegram_bot.lock`). **Stop any other poller draining this bot's `getUpdates` first** (409 Conflict).
+- Answer the Phase-1 button callbacks: `open:TICKER:price:stop` (→ `adapter.open`, journal, edit msg
+  "✅ logged") and `chart:TICKER` (→ re-render a **fresh** chart from the latest bars and send — distinct
+  from the entry-day snapshot already on the alert). Mirror `chartpos:`/`stop:`/`close:`/`recalc:` for
+  position cards (`keyboards.position_actions`); `close` needs a Yes/No `confirm:` gate.
+- Commands → existing fns: `/positions` `/pos` `/recalc` `/open` `/close` `/stop` `/status` `/chart`
+  `/scan` (subprocess `main.py`). Wrap blocking DB/chart calls in `asyncio.to_thread`; serialize chart
+  renders behind an `asyncio.Lock`. Never log the token (extend `mask_api_keys_filter`).
+- Tests: `test_telegram_bot` (non-owner rejected, `/close` confirm gate, build smoke). Deploy:
+  `scripts/register_telegram_bot.ps1` + `scripts/run_bot.bat` (at-logon, auto-restart), mirroring
+  `register_daily_scan.ps1`.
+- *(Clean test WITHOUT the daemon: set `daemon_enabled: false` so the dead buttons don't render — push
+  still sends chart + caption fully.)*
+
+**Done this session (2026-06-07) — committed + pushed to `origin/v3-release`:**
 1. ☑ **Entry-gate "trigger panel" — SHIPPED** (2026-06-07). `GateCheck` + `SignalResult.checks`
    built post-decision behind `signal(with_checks=True)` (default OFF → backtest byte-identical, zero
    extra compute; `with_checks=True` set only in `main.py`). New `_build_gate_checks` re-derives
@@ -53,11 +76,19 @@ delivered to @foxDev_testBot/TWD_BOT).
    `reconcile_live._replay` max-hold parity test; dead code removed (`run_all`, `--earnings-aware`,
    `_quarantine`, `:317` ternary). **Deferred (polish, not a bug):** extract a shared `_maybe_time_stop`
    (the time-stop DECISION already shares `core.exits.max_hold_exit_due`; only boilerplate is duplicated).
-3. ◀ **NEXT: Re-launch a CLEAN V5** `python backtest/run_backtest.py --walk-forward --workers N`
-   (run it ALONE — it OOM'd at `--workers 14` last time; 24 GB free / 16 cores → use **~8–10 workers**),
-   then the real **Phase-D** numbers `python scripts/multiple_testing.py --workers N` → update
-   `verification_results` + README. (V5's degradation metric is fixed in step 2, so this verdict is
-   finally trustworthy.)
+3. ☑ **Expected-hold made data-driven** (2026-06-07) — the "hold N–Md" caption is now the p25–p75 of
+   real `backtest_trades.bars_held` (`backtest.db.expected_hold_range`, no upper clamp — `if_not_profit`
+   winners run past the cap), set on every fired entry **regardless of scoring**; killed the four
+   disagreeing sources. run_id=12 → **(3, 15)**, avg 11.2, max 122. `tests/test_hold_range.py` (+8).
+
+**Deferred — optional rigor (not blocking; secondary per NORTH STAR #1):**
+- ◻ **V5 re-tune walk-forward + Phase-D.** `python backtest/run_backtest.py --walk-forward --workers 8`
+  — run it from a **terminal that stays open** (or detached via `Start-Process`); the agent-spawned
+  background process gets orphaned over idle gaps, so don't launch it from the agent. Then
+  `python scripts/multiple_testing.py --workers 8` → update `verification_results` + README. The
+  degradation metric is fixed (tuned-IS vs tuned-OOS + trade floor) so the verdict is trustworthy when
+  run; it only de-biases the already-thin headline (the fixed-config OOS already PASSED, `run_id=12`:
+  68% OOS, p≈0.009), so it's secondary to live/paper-trading.
 
 **Telegram — richer/prettier/creative messages (user request).** Phase-1 ships a clean
 `<blockquote>` card (`src/core/telegram/format.py`), but the user wants a **more visually rich,
