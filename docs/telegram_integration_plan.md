@@ -14,10 +14,14 @@
   so it was replaced with a clean **`<blockquote>` card** (bold values + emoji labels) in
   `src/core/telegram/format.py`. **User wants this RICHER / PRETTIER / more creative** — see "Message
   formats" below for the next iteration ideas.
-- **Pending:** (a) richer/creative templates; (c) **Phase 2 interactive daemon** `telegram_bot.py`
-  (not built). *(b) DONE 2026-06-07 — the `🔎 TREND ✅ · MOM ✅ · …` factor line is now lit:*
-  *`push._checklist` derives per-group marks from `SignalResult.checks`, the same source as the chart*
-  *trigger panel, and passes them to `format_entry(checklist=)`.*
+- **Phase 2 (interactive daemon `telegram_bot.py`): BUILT & TESTED 2026-06-08.** Owner-only PTB v22
+  long-poll, single-instance lockfile, the alert/position-card buttons + commands `/positions /pos
+  /recalc /open /close /stop /status /chart /scan /help`, all mutations through the broker-adapter seam,
+  `/close` behind a Yes/No confirm. `tests/test_telegram_bot.py` (+8). **Not yet run live** — stop any
+  other poller first (409 Conflict). See "Phase 2" below for the as-built notes.
+- **Still pending:** richer/creative templates. *(The `🔎 TREND ✅ · MOM ✅ · …` factor line is lit since*
+  *2026-06-07: `push._checklist` derives per-group marks from `SignalResult.checks`, the same source as*
+  *the chart trigger panel, and passes them to `format_entry(checklist=)`.)*
 
 ## Context
 TradAlert is a one-shot daily scanner (Task Scheduler → `main.py`) whose output is logs +
@@ -79,11 +83,14 @@ tiered emoji by conviction; a MarkdownV2 variant. Keep HTML-safe + keep tests de
   `Path` (newest `SCREENSHOTS_DIR/{TICKER}_*.webp` via glob — never re-render; matplotlib not thread-safe).
   Owner-only (`TG_CHAT_ID`). `asyncio.run` once per scan; Bot pool `aclose`d.
 
-## Phase 2 — interactive daemon `telegram_bot.py` (NOT built)
-- **PTB `Application` long-poll**, owner-only via `filters.Chat(chat_id=TG_CHAT_ID)` on every handler +
-  catch-all reject. `run_polling(stop_signals=None)` (Windows). Single-instance lockfile
-  (`data/telegram_bot.lock`) to avoid Telegram `409 Conflict`. Push is send-only → never conflicts.
-  NOTE: another poller currently drains this bot's `getUpdates` in real time — find/stop it before P2.
+## Phase 2 — interactive daemon `telegram_bot.py` (BUILT 2026-06-08)
+- **PTB `Application` long-poll**, owner-only via a uniform `_owner_only` decorator on every command +
+  the callback router (checks `effective_user.id == TG_CHAT_ID`; `CallbackQueryHandler` has no
+  chat-filter registration param, so the decorator — not `filters.Chat` — is the single gate) + a
+  catch-all `MessageHandler` reject. `run_polling(stop_signals=None, drop_pending_updates=True)`
+  (Windows). Single-instance lockfile (`data/telegram_bot.lock`) via `msvcrt.locking` on a held handle
+  (auto-released on crash → no stale lock) to avoid Telegram `409 Conflict`. Push is send-only → never
+  conflicts. NOTE: another poller may still drain this bot's `getUpdates` — find/stop it before running.
 - **Commands → existing fns:** `/help`; `/positions` → `position_manager.load_open_positions` → a
   **position card** each with inline `[Stop][Close][Recalc][Chart]`; `/pos ID` → single card;
   `/recalc [ID|all]` → reload latest bars (`cache.load`+`attach_indicators`), recompute unrealized R,

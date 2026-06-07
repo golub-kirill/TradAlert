@@ -23,38 +23,50 @@ slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR
 
 ## ▶ NEXT CHAT — recommended next move (start here)
 
-**State (2026-06-07):** Trigger panel + ALL P1 audit fixes + data-driven expected-hold are **shipped,
-committed, and pushed** to `origin/v3-release` (HEAD `cd2646a`); working tree clean; `pytest tests/`
-green at **338**. **Telegram Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down:
-true` in `config/settings.yaml`; token + `TG_CHAT_ID` in `config/secrets.env`). The V5 re-tune
-walk-forward was attempted twice and **orphaned both times** (the agent-spawned background process was
-cut off during an idle gap — NOT OOM, NOT a code error: no Windows 2004 event, no traceback, memory
-fine at 8 workers); deferred as **optional rigor** (see below). No sweep/WF is running → engine edits
-are safe.
+**State (2026-06-08):** The **Phase-2 interactive Telegram daemon (`telegram_bot.py`) is built + tested**
+on `v3-release` (working tree — **commit pending**) — owner-only PTB long-poll, single-instance lockfile
+(`data/telegram_bot.lock`), the alert/position buttons + commands (`/positions /pos /recalc /open
+/close /stop /status /chart /scan /help`), every mutation through the broker-adapter seam, `/close`
+behind a Yes/No confirm. `pytest tests/` green at **346** (+8 `tests/test_telegram_bot.py`). Earlier
+this cycle (HEAD `cd2646a`): trigger panel + ALL P1 audit fixes + data-driven expected-hold. **Telegram
+Phase-1 push is LIVE and ON** (`enabled/daemon_enabled/send_stand_down: true`; token + `TG_CHAT_ID` in
+`config/secrets.env`). No sweep/WF running → engine edits are safe.
 
-**▶ NEXT MOVE — build the Phase-2 interactive Telegram daemon (`telegram_bot.py`).** Full spec:
-`docs/telegram_integration_plan.md` ("Phase 2"). **Why now:** `daemon_enabled: true` is already set, so
-entry cards render **📈 Log opened** + **📊 Chart** inline buttons that are **DEAD until this daemon
-answers their callback queries** (tapping does nothing today). Building it also opens the **paper-fill
-on-ramp**: "Log opened" journals a position via the broker-adapter seam (`src/core/execution/adapter.py`)
-→ `reconcile_fills.py` reads the live edge.
-- PTB `Application` long-poll, **owner-only** (`filters.Chat(chat_id=TG_CHAT_ID)` on every handler +
-  catch-all reject), `run_polling(stop_signals=None)` (Windows), single-instance lockfile
-  (`data/telegram_bot.lock`). **Stop any other poller draining this bot's `getUpdates` first** (409 Conflict).
-- Answer the Phase-1 button callbacks: `open:TICKER:price:stop` (→ `adapter.open`, journal, edit msg
-  "✅ logged") and `chart:TICKER` (→ re-render a **fresh** chart from the latest bars and send — distinct
-  from the entry-day snapshot already on the alert). Mirror `chartpos:`/`stop:`/`close:`/`recalc:` for
-  position cards (`keyboards.position_actions`); `close` needs a Yes/No `confirm:` gate.
-- Commands → existing fns: `/positions` `/pos` `/recalc` `/open` `/close` `/stop` `/status` `/chart`
-  `/scan` (subprocess `main.py`). Wrap blocking DB/chart calls in `asyncio.to_thread`; serialize chart
-  renders behind an `asyncio.Lock`. Never log the token (extend `mask_api_keys_filter`).
-- Tests: `test_telegram_bot` (non-owner rejected, `/close` confirm gate, build smoke). Deploy:
-  `scripts/register_telegram_bot.ps1` + `scripts/run_bot.bat` (at-logon, auto-restart), mirroring
-  `register_daily_scan.ps1`.
-- *(Clean test WITHOUT the daemon: set `daemon_enabled: false` so the dead buttons don't render — push
-  still sends chart + caption fully.)*
+**▶ NEXT MOVE — run the daemon live + start the paper-fill on-ramp.** The buttons are now wired:
+1. **Stop the other poller first** (whatever is draining this bot's `getUpdates` — else Telegram 409
+   Conflict), then `python telegram_bot.py` (or `scripts/register_telegram_bot.ps1` for at-logon,
+   auto-restart). Tap **📈 Log opened** on an entry card to journal a position → `/positions` to manage
+   → **Close** (confirm) to exit → `python scripts/reconcile_fills.py` reads the live edge. This feeds
+   the "log real/paper fills so the live meter has data" item (the `positions` table is still empty).
+2. **Telegram — richer/prettier messages** (user request, still open): iterate `format.py` templates
+   (unicode ▰▱ bars for R:R & distance-to-stop, PnL gauge, section dividers, `<blockquote expandable>`,
+   tiered emoji, maybe a MarkdownV2 variant). HTML-safe, caption ≤1024, keep tests de-tagged.
 
-**Done this session (2026-06-07) — committed + pushed to `origin/v3-release`:**
+**Secondary (optional rigor, per NORTH STAR #1):** the V5 re-tune walk-forward + Phase-D (below). It
+was attempted twice this cycle and **orphaned both times** (agent-spawned background process cut off
+over an idle gap — NOT OOM/code error). Run from a terminal that stays open; it only de-biases an
+already-thin-but-OOS-passing headline, so it's behind live/paper-trading.
+
+**Done this session (2026-06-08) — on the working tree, commit pending:**
+1. ☑ **Phase-2 interactive Telegram daemon — BUILT + TESTED** (2026-06-08). New repo-root `telegram_bot.py`:
+   PTB v22 `Application` long-poll, `run_polling(stop_signals=None, drop_pending_updates=True)` (Windows),
+   single-instance lockfile via `msvcrt.locking` on a held handle (auto-released on crash → no stale
+   lock), **owner-only** via a uniform `_owner_only` decorator on every command + the callback router
+   (checks `effective_user.id == TG_CHAT_ID`; `CallbackQueryHandler` has no chat-filter param). Answers
+   the Phase-1 buttons (`open:`→`adapter.open` + disarm buttons, `chart:`→fresh render) and position-card
+   buttons (`chartpos:`/`stop:`/`close:`/`recalc:`/`confirm:`/`cancel`); `close` gated behind a Yes/No
+   `confirm:`. Commands `/positions /pos /recalc /open /close /stop /status /chart /scan /help` reuse
+   existing fns — `/recalc` re-reads latest bars and runs the engine exit-check + time-stop (read-only),
+   `/chart` re-renders fresh, `/scan` subprocesses `main.py`. Blocking DB/engine/chart calls in
+   `asyncio.to_thread`; chart renders serialized behind an `asyncio.Lock` (matplotlib not thread-safe).
+   All mutations through `core.execution.adapter` (journal only). Added `position_manager.get_position(id)`;
+   extended `mask_api_keys_filter` to mask the bot-token shape (`digits:base64ish`). Deploy:
+   `scripts/register_telegram_bot.ps1` + `scripts/run_telegram_bot.bat` (at-logon, auto-restart).
+   `tests/test_telegram_bot.py` (+8: parse_callback, owner-reject-no-mutation, `/close` confirm gate,
+   `cb_open` delegation, build smoke, token masking) → suite **346 green**. **Not yet run live** (must
+   stop the other poller first — 409 Conflict).
+
+**Done previous session (2026-06-07) — committed + pushed to `origin/v3-release`:**
 1. ☑ **Entry-gate "trigger panel" — SHIPPED** (2026-06-07). `GateCheck` + `SignalResult.checks`
    built post-decision behind `signal(with_checks=True)` (default OFF → backtest byte-identical, zero
    extra compute; `with_checks=True` set only in `main.py`). New `_build_gate_checks` re-derives
@@ -90,13 +102,13 @@ on-ramp**: "Log opened" journals a position via the broker-adapter seam (`src/co
   run; it only de-biases the already-thin headline (the fixed-config OOS already PASSED, `run_id=12`:
   68% OOS, p≈0.009), so it's secondary to live/paper-trading.
 
-**Telegram — richer/prettier/creative messages (user request).** Phase-1 ships a clean
+**Telegram — richer/prettier/creative messages (user request, STILL OPEN).** Phase-1 ships a clean
 `<blockquote>` card (`src/core/telegram/format.py`), but the user wants a **more visually rich,
 creative** look — iterate the templates: e.g. unicode progress/▰▱ bars for R:R & distance-to-stop,
 mini PnL gauge, tiered/section dividers, `<blockquote expandable>` for detail, smarter emoji tiers,
 maybe a MarkdownV2 variant. Stay HTML-safe (caption ≤1024, escape values) and keep tests de-tagged.
-Then build **Phase-2 interactive daemon** `telegram_bot.py` (commands `/positions /pos /recalc /open
-/close /stop /status /chart /scan`, owner-only, inline buttons) per `docs/telegram_integration_plan.md`.
+The **Phase-2 interactive daemon** `telegram_bot.py` is now **SHIPPED** (see Done this session) — these
+template tweaks light up on both the push and the daemon's cards (one source: `format.py`).
 
 ---
 
@@ -292,15 +304,16 @@ reconciliation in ACTIVE above.
   weight. Also: should the live `min_score_to_alert` gate be replaced by a smarter entry tiebreak
   (e.g. `min_rr`/ATR) rather than no ranking at all?
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
-- ◑ **Telegram — Phase 1 (push) shipped** (2026-06-06). `src/core/telegram/` (config/format/bot/push/
-  keyboards) + `src/core/execution/adapter.py` (broker-adapter seam, journal-only) + fail-open
-  `main.py` hook + `settings.yaml telegram:` block (default OFF → scan byte-identical) +
-  `python-telegram-bot` dep. Hybrid terminal-style caption + chart photo; variants for
-  entry/short/exit/watch/header/stand-down + position card; `format_entry(checklist=)` factor line is
-  **lit** (2026-06-07, `push._checklist` from `SignalResult.checks`). Tests:
-  `test_telegram_format`/`_push`/`test_execution_adapter`/`test_trigger_panel`.
-  **Phase 2 (interactive daemon `telegram_bot.py`): commands /positions /pos /recalc /open /close /stop
-  /status /chart /scan, inline buttons, owner-only — pending.** Plan: `docs/telegram_integration_plan.md`.
+- ☑ **Telegram — Phase 1 (push) + Phase 2 (daemon) shipped.** Phase 1 (2026-06-06): `src/core/telegram/`
+  (config/format/bot/push/keyboards) + `src/core/execution/adapter.py` (broker-adapter seam, journal-only)
+  + fail-open `main.py` hook + `settings.yaml telegram:` block (default OFF → scan byte-identical) +
+  `python-telegram-bot` dep. Hybrid caption + chart photo; variants for entry/short/exit/watch/header/
+  stand-down + position card; `format_entry(checklist=)` factor line **lit** (2026-06-07). **Phase 2
+  (2026-06-08): `telegram_bot.py` interactive daemon SHIPPED** — owner-only PTB long-poll, lockfile,
+  commands `/positions /pos /recalc /open /close /stop /status /chart /scan`, inline buttons, `/close`
+  confirm gate (see "Done this session"). Tests: `test_telegram_format`/`_push`/`test_execution_adapter`/
+  `test_trigger_panel`/`test_telegram_bot`. Plan: `docs/telegram_integration_plan.md`. **Open:** richer/
+  creative templates + run the daemon live (paper-fill on-ramp).
 
 **Watchlist expansion** (mind NORTH STAR #2)
 - ☑ **Universe-agnosticism checked on v3** (2026-06-06). The 91→213 expansion showed the edge IS
@@ -320,7 +333,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **338**).
+- `pytest tests/` green at the end of every step (currently **346**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`

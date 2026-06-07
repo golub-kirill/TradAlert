@@ -154,13 +154,18 @@ def _safe_url(url: str) -> str:
     return url.split("?", 1)[0]
 
 
-# ── Log filter that masks long hex strings (likely API keys) ────────────────
+# ── Log filter that masks secrets (API keys, bot tokens) ────────────────────
 
 _HEX_KEY_PATTERN = re.compile(r"\b[a-f0-9]{32}\b")
+# Telegram bot token: numeric bot id, a colon, then a ~35-char base64ish secret
+# (e.g. 123456789:AAFakeTokenValue...). Mask it so a leaked token can't be read
+# off a log line — the daemon's polling URL and PTB debug output embed it. No
+# leading \b: the polling URL glues the id to "bot" (…/bot123456789:secret/…).
+_TG_TOKEN_PATTERN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
 
 class _MaskApiKeysFilter(logging.Filter):
-    """Mask 32-hex-char tokens (FRED API key format) in log messages.
+    """Mask secrets in log messages: 32-hex API keys (FRED) and Telegram bot tokens.
 
     Defensive filtering covers cases we missed. Install at the root logger
     in setup_logging so all handlers benefit.
@@ -169,10 +174,12 @@ class _MaskApiKeysFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
-            if _HEX_KEY_PATTERN.search(msg):
+            if _HEX_KEY_PATTERN.search(msg) or _TG_TOKEN_PATTERN.search(msg):
                 # Overwrite the formatted args by setting record.msg to the
                 # already-formatted-and-masked string and clearing args.
-                record.msg = _HEX_KEY_PATTERN.sub("<API-KEY-MASKED>", msg)
+                msg = _HEX_KEY_PATTERN.sub("<API-KEY-MASKED>", msg)
+                msg = _TG_TOKEN_PATTERN.sub("<TG-TOKEN-MASKED>", msg)
+                record.msg = msg
                 record.args = ()
         except Exception:
             pass  # filtering must never break logging

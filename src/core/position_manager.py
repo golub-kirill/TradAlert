@@ -87,6 +87,20 @@ _SELECT_ALL_SQL = """
                   ORDER BY entry_date DESC \
                   """
 
+_SELECT_BY_ID_SQL = """
+                    SELECT id,
+                           ticker,
+                           side,
+                           entry_price,
+                           entry_date,
+                           stop_price,
+                           exit_price,
+                           exit_date,
+                           notes
+                    FROM positions
+                    WHERE id = %(id)s \
+                    """
+
 _INSERT_SQL = """
               INSERT INTO positions (ticker, side, entry_price, entry_date, stop_price, notes)
               VALUES (%(ticker)s, %(side)s, %(entry_price)s, %(entry_date)s,
@@ -146,6 +160,28 @@ def list_all() -> list[Position]:
     except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to list positions — %s", exc)
         return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def get_position(position_id: int) -> Position | None:
+    """Return a single position by id (open or closed), or None when absent.
+
+    A focused lookup for callers that act on one id — the Telegram daemon's
+    per-position buttons (stop/close/recalc/chart). None on a missing row or DB
+    error so the caller can report "not found" rather than abort.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_BY_ID_SQL, {"id": position_id})
+        row = cursor.fetchone()
+        return _row_to_position(row) if row else None
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to load position id=%d — %s", position_id, exc)
+        return None
     finally:
         if conn and conn.is_connected():
             conn.close()

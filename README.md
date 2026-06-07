@@ -8,6 +8,7 @@ held-long exits, portfolio-aware bar-replay, OFAT / walk-forward sweeps.
 ```
 main.py                Live scan: fetch → indicators → scan → signal → score
 position_CLI.py        Manual position CRUD
+telegram_bot.py        Interactive Telegram daemon (owner-only commands + buttons)
 backtest/run_backtest  Backtester: baseline, sweep, walk-forward, robustness
 backtest/repair_parquet Cross-platform parquet re-save utility
 
@@ -223,9 +224,33 @@ telegram:
 ```
 
 The push is **fail-open** — a missing token or Telegram outage degrades to a log
-line and never affects the scan. Interactive commands / position management
-(`/positions`, `/recalc`, `/open`, `/close`, …) are the phase-2 daemon
-(`telegram_bot.py`), not yet shipped. Requires `python-telegram-bot`.
+line and never affects the scan. Requires `python-telegram-bot`.
+
+### Telegram daemon (interactive)
+
+`telegram_bot.py` is the phase-2 interactive daemon: it long-polls Telegram and
+answers the alert/position buttons + owner-only commands. Set `daemon_enabled: true`
+in `settings.yaml::telegram` (so the push attaches inline buttons) and run:
+
+```bash
+python telegram_bot.py        # owner-only; needs TG_BOT_TOKEN + numeric TG_CHAT_ID
+```
+
+Commands: `/positions` `/pos ID` `/recalc [ID|all]` `/open TICKER PRICE [--stop S] [--short]`
+`/close ID [PRICE]` `/stop ID PRICE` `/chart TICKER` `/status` `/scan` `/help`. Inline
+buttons: **Log opened** (journals a fill via the broker-adapter seam), **Chart** (fresh
+render), and per-position **Stop / Close / Recalc / Chart** — `Close` is gated behind a
+Yes/No confirm. `/recalc` re-reads the latest bars and runs the engine exit-check
+(read-only). Every position mutation goes through `core.execution.adapter` (journal only —
+never auto-executes a real trade).
+
+Single-instance: the daemon takes `data/telegram_bot.lock` and exits cleanly if another
+poller holds it (Telegram returns **409 Conflict** if two pollers drain `getUpdates` — stop
+any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/register_telegram_bot.ps1
+```
 
 ## Environment variables (`config/secrets.env`)
 
