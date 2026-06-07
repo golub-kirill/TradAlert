@@ -289,7 +289,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **330**).
+- `pytest tests/` green at the end of every step (currently **338**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -302,6 +302,14 @@ reconciliation in ACTIVE above.
 
 ## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #2)
 
+- **Expected-hold made data-driven + unified** (2026-06-07) — the "hold ~N–Md" caption is now
+  the 25th–75th percentile of ACTUAL `backtest_trades.bars_held` (`backtest.db.expected_hold_range`,
+  no upper clamp since `if_not_profit` winners run past the cap), set on every fired entry by
+  `main.py` **regardless of scoring** (was scorer-only → dead under scoring-OFF). Killed the four
+  disagreeing sources (`settings.market_hours` 20–30, `scoring._DEFAULT_HOLD` 10–15, `defaults.py`
+  10–20, field default) → one source = the data, cap-anchored fallback. Real range from run_id=12
+  (1614 trades): **(3, 15)**, avg 11.2, max 122 — the old 20–30/10–15 were both wrong. Display-only,
+  zero P&L. `tests/test_hold_range.py` (+8) → suite **338 green**.
 - **Fixed-config OOS validation** (2026-06-06, `run_id=12`) — `--wf-no-retune --workers 14`, 47
   windows: IS +0.066 → OOS +0.072 (degradation −0.006), **68% OOS-profitable, p≈0.009**. The
   scoring-OFF headline is temporally stable; `verification_results` updated. (Re-tune V5 + deflated

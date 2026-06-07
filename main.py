@@ -251,6 +251,23 @@ def main() -> None:
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
+def _expected_hold_range(engine) -> tuple[int, int]:
+    """Data-driven (low, high) expected-hold range for the chart/Telegram caption.
+
+    Computed from the reference backtest's actual ``bars_held`` (25th-75th pct) so
+    the displayed hold reflects reality, not a hand-set guess. Fail-open to a
+    cap-anchored default (``execution.max_hold_days``) when the DB/backtest is
+    unavailable. Display-only — no trade decision reads it.
+    """
+    cap = int((engine._cfg.get("execution", {}) or {}).get("max_hold_days", 25) or 25)
+    try:
+        from backtest.db import expected_hold_range
+        return expected_hold_range(cap=cap)
+    except Exception as exc:
+        logging.getLogger(__name__).debug("expected-hold range fell back — %s", exc)
+        return (max(1, round(cap * 0.4)), cap)
+
+
 def _append_live_context_checks(signal, ticker_rp, n_open, max_open_risk=None) -> None:
     """Fold live-only context into a fired entry's trigger-panel ``checks``.
 
@@ -337,6 +354,10 @@ def _run_pipeline(
     # risk at max_open_risk and sizes each entry by size_mult. The scanner is an
     # alerter, so it surfaces budget consumed + size_mult rather than executing.
     max_open_risk = float((settings.get("risk") or {}).get("max_open_risk", 5.0))
+    # Expected-hold range (display-only): the single source of truth, data-driven
+    # from the reference backtest's actual bars_held (p25-p75). Computed once per
+    # scan and applied to every fired entry regardless of scoring. Fail-open.
+    expected_hold = _expected_hold_range(engine)
 
     for ticker in tickers:
         # ^VIX is context-only — not tradeable, not scanned or signalled.
@@ -506,6 +527,12 @@ def _run_pipeline(
 
         # ── 8. live price + 9. score ──────────────────────────────────────────
         if signal.passed:
+            # Data-driven expected-hold range, applied regardless of scoring (set
+            # before enrich so the description reads it). Entries only — exits don't
+            # display a hold horizon.
+            if signal.direction in ("long", "short"):
+                signal.expected_hold_days = expected_hold
+
             # Live price fetch is fail-open — None omits current-price line
             live_price = None
             try:

@@ -33,8 +33,6 @@ _VALUES: dict[str, Any] = {
     # settings.yaml
     "settings.storage.staleness_hours": 12,
     "settings.scanner.min_score_to_alert": 50,
-    "settings.market_hours.expected_hold_days_low": 10,
-    "settings.market_hours.expected_hold_days_high": 20,
     "settings.scanner.vbp.lookback": 120,
     "settings.scanner.vbp.n_bins": 24,
     "settings.scanner.vbp.volume_percentile": 70,

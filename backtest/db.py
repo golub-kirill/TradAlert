@@ -268,6 +268,56 @@ def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
     return chosen
 
 
+def hold_range_from_bars(bars, fallback, *, min_samples: int = 8) -> tuple[int, int]:
+    """Honest "expected hold" range = (25th, 75th) percentile of actual bars_held.
+
+    No upper clamp: in ``if_not_profit`` mode winners run past the max-hold cap, so
+    the real p75 can legitimately exceed it. Falls back to ``fallback`` when there
+    are too few samples to be meaningful. Pure (no DB) so it is unit-testable.
+    """
+    vals = sorted(int(b) for b in bars if b is not None and int(b) > 0)
+    if len(vals) < min_samples:
+        return fallback
+    import statistics
+    q = statistics.quantiles(vals, n=4)  # [p25, p50, p75]
+    lo = max(1, round(q[0]))
+    hi = max(lo, round(q[2]))
+    return (lo, hi)
+
+
+def expected_hold_range(cap: int = 25, fallback: tuple[int, int] | None = None) -> tuple[int, int]:
+    """Single source of truth for the displayed expected-hold range.
+
+    The (low, high) shown on charts / Telegram is the 25th–75th percentile of the
+    ACTUAL ``bars_held`` from the reference backtest run — so the caption reflects
+    how long these trades really last, not a hand-set guess. Display-only: nothing
+    in the entry/exit/sizing path reads it. Fail-open to a cap-anchored fallback
+    (``cap`` = ``execution.max_hold_days``) when the DB is down or no run exists.
+    """
+    if fallback is None:
+        fallback = (max(1, round(cap * 0.4)), int(cap))
+    conn = None
+    try:
+        conn = _connect()
+        cur = conn.cursor(dictionary=True)
+        ref = reference_run(cur)
+        if ref is None:
+            return fallback
+        cur.execute(
+            "SELECT bars_held FROM backtest_trades "
+            "WHERE run_id = %s AND bars_held IS NOT NULL", (ref["id"],)
+        )
+        bars = [r["bars_held"] for r in cur.fetchall()]
+        cur.close()
+        return hold_range_from_bars(bars, fallback)
+    except (MySQLError, ConfigError) as exc:
+        logger.debug("expected_hold_range fell back to %s (%s)", fallback, exc)
+        return fallback
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def _connect() -> PooledMySQLConnection | MySQLConnectionAbstract:
     """Open a MySQL connection. Single source of truth in persistence.db_conn.
 

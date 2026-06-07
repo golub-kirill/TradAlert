@@ -211,7 +211,9 @@ class SignalResult:
     score              : Confidence score in [0, 100]. 0.0 until enriched.
     score_components   : Sub-score dict ``{name: 0..1}``. Empty until enriched.
     timeframe          : "daily".
-    expected_hold_days : (low, high) trading-day range.
+    expected_hold_days : (low, high) trading-day range, display-only. The live path
+                         (main.py) sets it from the reference backtest's actual
+                         bars_held p25-p75; this (10, 15) default is the fallback.
     watch_only         : True when triggered but ``score < min_score_to_alert``.
     description        : Multi-line detail block built by SignalScorer.
     """

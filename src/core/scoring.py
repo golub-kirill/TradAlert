@@ -52,8 +52,6 @@ logger = logging.getLogger(__name__)
 # ── constants ─────────────────────────────────────────────────────────────────
 
 _TIMEFRAME = "daily"
-_DEFAULT_HOLD_LOW = 10
-_DEFAULT_HOLD_HIGH = 15
 _DEFAULT_MIN_SCORE = 60
 
 # Sub-score shape constants (algorithm internals, not config-backed).
@@ -176,7 +174,6 @@ class SignalScorer:
 
     def __init__(self, settings: dict, filters_cfg: dict) -> None:
         sc = settings.get("scanner", {})
-        mh = settings.get("market_hours", {})
 
         self._entry_weights: dict[str, int] = sc.get("weights", {})
         self._exit_weights: dict[str, int] = sc.get("exit_weights", {})
@@ -191,8 +188,6 @@ class SignalScorer:
                     reason="must be 0 until the backing fetcher is validated",
                 )
         self._min_score: int = sc.get("min_score_to_alert", _DEFAULT_MIN_SCORE)
-        self._hold_low: int = mh.get("expected_hold_days_low", _DEFAULT_HOLD_LOW)
-        self._hold_high: int = mh.get("expected_hold_days_high", _DEFAULT_HOLD_HIGH)
         self._filters_cfg: dict = filters_cfg
         self._entry_thr: EntryThresholds = _load_entry_thresholds(settings)
         self._exit_thr: ExitThresholds = _load_exit_thresholds(settings)
@@ -246,7 +241,8 @@ class SignalScorer:
         signal.score = round(score, 1)
         signal.score_components = components
         signal.timeframe = _TIMEFRAME
-        signal.expected_hold_days = (self._hold_low, self._hold_high)
+        # expected_hold_days is set on the live path (main.py) from the data-driven
+        # range, regardless of scoring; the description below just reads it.
         signal.watch_only = signal.passed and signal.score < self._min_score
 
         signal.description = _build_description(
