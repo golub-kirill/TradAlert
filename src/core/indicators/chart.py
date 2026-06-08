@@ -203,7 +203,7 @@ def chart(
     # the same position rectangle.
     _reposition_axes(fig, axes)
 
-    if score_components or regime is not None:
+    if score_components or regime is not None or getattr(signal, "checks", None):
         _render_sidebar(
             fig, plot_df, df, ticker, signal=signal, regime=regime,
             score_components=score_components, rp_rank=rp_rank,
@@ -486,7 +486,17 @@ _CRITERIA_LABELS = {
 def _render_sidebar(fig, plot_df, full_df, ticker,
                     signal=None, regime=None,
                     score_components=None, rp_rank=None):
-    """Render the left-side scorecard panel."""
+    """Render the left-side panel.
+
+    When the signal carries entry-gate ``checks`` (the live path), render the
+    direction-aware, factor-grouped *trigger panel* — the engine's proof of
+    opinion — with graded ●●●○ marks for continuous factors and hard ✓/✗ for
+    binaries. Otherwise fall back to the legacy scorecard (exit signals, or
+    scoring-ON ``score_components``)."""
+    checks = list(getattr(signal, "checks", None) or [])
+    if checks:
+        _render_trigger_panel(fig, ticker, signal, checks)
+        return
 
     criteria_rows = []
     if score_components:
@@ -703,6 +713,132 @@ def _render_sidebar(fig, plot_df, full_df, ticker,
                 ha="right", va="top", fontfamily="DejaVu Sans",
                 zorder=101, transform=fig.transFigure,
             )
+
+
+_TRIGGER_GROUP_ORDER = ("TREND", "MOMENTUM", "LOCATION", "VOLATILITY", "RISK", "CONTEXT")
+_TRIGGER_GROUP_TITLES = {
+    "TREND": "TREND",
+    "MOMENTUM": "MOMENTUM",
+    "LOCATION": "LOCATION & STRENGTH",
+    "VOLATILITY": "VOLATILITY",
+    "RISK": "RISK",
+    "CONTEXT": "CONTEXT",
+}
+
+
+def _mark_glyph(check):
+    """(glyph, color) for one gate check: graded ●●●○ when ``strength`` is set, else ✓/✗."""
+    color = _C_UP if check.passed else _C_DOWN
+    strength = getattr(check, "strength", None)
+    if strength is not None:
+        filled = int(round(max(0.0, min(1.0, float(strength))) * 4))
+        return ("●" * filled + "○" * (4 - filled)), color
+    return ("✓" if check.passed else "✗"), color
+
+
+def _trigger_badge(signal):
+    direction = getattr(signal, "direction", "") or ""
+    if _is_long_direction(direction):
+        return "▲ LONG", _C_UP
+    if _is_short_direction(direction):
+        return "▼ SHORT", _C_DOWN
+    if _is_exit_direction(direction):
+        return "✕ EXIT", _C_AMBER
+    return "", _C_TEXT
+
+
+def _render_trigger_panel(fig, ticker, signal, checks):
+    """Direction-aware, factor-grouped entry-gate panel from ``signal.checks``.
+
+    One rounded section per factor group (in canonical order) with a passed/total
+    summary; each row shows the factor name, its value, and a graded ●●●○ bar (for
+    continuous factors) or ✓/✗ (for binaries). Heights auto-scale to the chart
+    height so a long check set never overflows the panel."""
+    grouped: dict = {}
+    for c in checks:
+        grouped.setdefault(c.group, []).append(c)
+    sections = []
+    for g in _TRIGGER_GROUP_ORDER:
+        rows = grouped.get(g)
+        if rows:
+            n_ok = sum(1 for r in rows if r.passed)
+            sections.append(("{}   {}/{}".format(_TRIGGER_GROUP_TITLES[g], n_ok, len(rows)), rows))
+    if not sections:
+        return
+
+    total_passed = sum(1 for c in checks if c.passed)
+    total = len(checks)
+
+    x0, x1 = _SIDEBAR_LEFT, _SIDEBAR_RIGHT
+    pad_x, pad_y = 0.012, 0.010
+    row_h = 0.0205
+    title_h = 0.024
+    header_h = 0.050
+    section_gap = 0.008
+
+    sec_heights = [title_h + len(rows) * row_h + pad_y for _, rows in sections]
+    total_h = header_h + sum(sec_heights) + len(sections) * section_gap
+
+    avail = _CHART_TOP - _CHART_BOTTOM
+    if total_h > avail:
+        scale = avail / total_h
+        row_h *= scale
+        title_h *= scale
+        header_h *= scale
+        section_gap *= scale
+        pad_y *= scale
+        sec_heights = [h * scale for h in sec_heights]
+        total_h = avail
+
+    y_center = (_CHART_TOP + _CHART_BOTTOM) / 2.0
+    y_cursor = y_center + total_h / 2.0
+
+    # Header — ticker + direction badge + overall trigger count
+    header_top = y_cursor
+    header_bot = header_top - header_h
+    _draw_panel(fig, x0, header_bot, x1 - x0, header_h)
+    fig.text(x0 + pad_x, header_top - pad_y, ticker.upper(),
+             fontsize=18, color=_C_TEXT_BRIGHT, fontweight="bold",
+             ha="left", va="top", fontfamily="DejaVu Sans",
+             zorder=101, transform=fig.transFigure)
+    badge_label, badge_color = _trigger_badge(signal)
+    if badge_label:
+        fig.text(x1 - pad_x, header_top - pad_y - 0.002, badge_label,
+                 fontsize=11, color=badge_color, fontweight="bold",
+                 ha="right", va="top", fontfamily="DejaVu Sans",
+                 zorder=101, transform=fig.transFigure)
+    fig.text(x0 + pad_x, header_top - pad_y - 0.026,
+             "Triggers   {}/{}".format(total_passed, total),
+             fontsize=9.5, color=_C_TEXT, ha="left", va="top",
+             fontfamily="DejaVu Sans", zorder=101, transform=fig.transFigure)
+
+    y_cursor = header_bot - section_gap
+    xm = x1 - pad_x - 0.052  # right edge of the detail column; marks sit to its right
+
+    for (title, rows), sec_h in zip(sections, sec_heights):
+        sect_top = y_cursor
+        sect_bot = sect_top - sec_h
+        _draw_panel(fig, x0, sect_bot, x1 - x0, sec_h)
+        fig.text(x0 + pad_x, sect_top - pad_y * 0.6, title,
+                 fontsize=9.5, color=_C_TEXT_BRIGHT, fontweight="bold",
+                 ha="left", va="top", fontfamily="DejaVu Sans",
+                 zorder=101, transform=fig.transFigure)
+        row_y = sect_top - pad_y * 0.6 - title_h
+        for c in rows:
+            glyph, color = _mark_glyph(c)
+            fig.text(x0 + pad_x, row_y, c.name,
+                     fontsize=9, color=_C_TEXT_BRIGHT, ha="left", va="top",
+                     fontfamily="DejaVu Sans", zorder=101, transform=fig.transFigure)
+            if c.detail:
+                fig.text(xm, row_y, c.detail,
+                         fontsize=8.5, color=_C_TEXT, ha="right", va="top",
+                         fontfamily="DejaVu Sans", zorder=101, transform=fig.transFigure)
+            fig.text(x1 - pad_x, row_y, glyph,
+                     fontsize=11, color=color, fontweight="bold",
+                     ha="right", va="top", fontfamily="DejaVu Sans",
+                     zorder=101, transform=fig.transFigure)
+            row_y -= row_h
+        y_cursor = sect_bot - section_gap
 
 
 def _header_badge(signal, passed_count, total_count):

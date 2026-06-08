@@ -63,7 +63,11 @@ def get_live_price(
 
     logger.debug("Live price fetch ↓ %s", ticker)
     price = _fetch(ticker)
-    _save_cache(ticker, price, cache_dir)
+    # Cache on success only — a None here is always a fetch failure (every live
+    # symbol has a price), and caching it would serve the failure as a valid
+    # "no price" for the full staleness window.
+    if price is not None:
+        _save_cache(ticker, price, cache_dir)
     return price
 
 

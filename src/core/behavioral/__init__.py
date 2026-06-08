@@ -167,7 +167,7 @@ def classify_behavioral_state(
     else:
         breadth_state = "NEUTRAL"
         breadth_divergence = False
-        missing_axes.append("breadth")
+        missing_axes.append("breadth_state")
 
     # ── sector_cycle ─────────────────────────────────────────────────────
     if sector_df is not None and not sector_df.empty:
@@ -177,21 +177,24 @@ def classify_behavioral_state(
         missing_axes.append("sector_cycle")
 
     # ── positioning_state ────────────────────────────────────────────────
+    # One axis fed by two sources (COT + NAAIM). Mark it missing only when BOTH
+    # are absent — with one present it is still scored (NEUTRAL). missing_axes
+    # holds the CANONICAL axis name so the weight loop below actually excludes it.
     if cot_es is not None and not cot_es.empty and naaim is not None and not naaim.empty:
         positioning_state = _classify_positioning(cot_es, naaim)
     else:
         positioning_state = "NEUTRAL"
-        if cot_es is None or cot_es.empty:
-            missing_axes.append("cot")
-        if naaim is None or naaim.empty:
-            missing_axes.append("naaim")
+        cot_absent = cot_es is None or cot_es.empty
+        naaim_absent = naaim is None or naaim.empty
+        if cot_absent and naaim_absent:
+            missing_axes.append("positioning_state")
 
     # ── sentiment_state ──────────────────────────────────────────────────
     if aaii is not None and not aaii.empty:
         sentiment_state = _classify_sentiment(aaii)
     else:
         sentiment_state = "NORMAL"
-        missing_axes.append("aaii")
+        missing_axes.append("sentiment_state")
 
     # ── composite behavioral_score ───────────────────────────────────────
     state_values = {
@@ -222,7 +225,9 @@ def classify_behavioral_state(
 
     behavioral_score = numerator / denominator if denominator > 0 else 0.5
     total_axes = len(axis_weights)
-    confidence = (total_axes - len(missing_axes)) / total_axes if total_axes > 0 else 0.0
+    # Clamp ≥ 0: missing_axes now uses canonical names (one entry per axis), so it
+    # can no longer exceed total_axes, but guard against a negative confidence.
+    confidence = max(0.0, (total_axes - len(missing_axes)) / total_axes) if total_axes > 0 else 0.0
 
     # derive size_multiplier from behavioral_score using behavioral
     # floor/ceiling. Apply breadth_divergence_penalty before mapping so a

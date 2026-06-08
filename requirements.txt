@@ -33,3 +33,6 @@ xlrd
 
 curl-cffi
 pytest
+
+# Telegram push alerts + interactive bot (config/settings.yaml telegram.enabled)
+python-telegram-bot

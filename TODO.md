@@ -16,24 +16,157 @@
 
 ---
 
-## ★ ACTIVE — win now (NORTH STAR #1)
-
-The metric / universe-agnostic / hygiene cleanup tier is cleared (see *Recently shipped*).
-These are the live-performance items that actually move NORTH STAR #1.
-
 **Current headline:** `run_id=11` — 213-name universe, 25d `if_not_profit`, budget 5.0,
 slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR-003).
 
-- ◻ **OOS-validate the scoring-OFF headline (in progress).** Fixed-config walk-forward running
-  `--wf-no-retune --workers 14` (`logs/wf_scoring_off.txt`). Early windows promising (OOS often ≥
-  IS; only 1999–2002 negative). **Next chat:** read the final IS→OOS degradation; then run the
-  FULL re-tune gate over the whole range (`--walk-forward --workers 14`, no `--wf-no-retune`) —
-  the parameter-selection / data-snooping test. NB walk-forward results are not journaled
-  (logs/ only), so capture the verdict into `verification_results` when it lands.
-- ◻ **Real-life "textbook" check.** Sanity-check the engine against first principles: hand-work a
-  known trade (entry/stop/target → realized R) and confirm the backtester reproduces it, and/or
-  benchmark the strategy vs buy-and-hold SPY over the same window — does the edge beat the
-  textbook passive baseline on a risk-adjusted basis?
+---
+
+## ▶ NEXT CHAT — recommended next move (start here)
+
+**State (2026-06-08):** The **Phase-2 interactive Telegram daemon (`telegram_bot.py`) is SHIPPED** —
+owner-only PTB long-poll, single-instance lockfile (`data/telegram_bot.lock`), the alert/position
+buttons + commands (`/positions /pos /recalc /open /close /stop /status /chart /scan /help`), every
+mutation through the broker-adapter seam, `/close` behind a Yes/No confirm — **plus the richer card
+templates** (▰▱ bars, PnL gauges, expandable detail). Committed + pushed to `origin/v3-release`
+(**PR #3**); `pytest tests/` green at **351**. It's **running live** as the `TradAlert Telegram Bot`
+scheduled task (at-logon, auto-restart), polling for owner `282614062`. **Telegram Phase-1 push is LIVE
+and ON.** No sweep/WF running → engine edits are safe.
+
+**▶ NEXT MOVE — let the paper-fill on-ramp run.** MySQL is up, the daemon is live, the open path is
+guarded, and the first real fill (`ATD.TO`) is logged.
+1. ☑ **MySQL running + paper-fill on-ramp active.** `MySQL97` started; **Log opened** journals a position
+   (open path now **guarded** — see Done this session), `/positions` manages, **Close** (confirm) exits,
+   `python scripts/reconcile_fills.py` reads the live edge. `positions` holds the first real fill
+   (`ATD.TO`, long, stop 78.7793). **Remaining:** keep logging real fills + close some so the meter has
+   scored R (signals mature ~25 trading days → meaningful drift ~5 weeks out).
+2. ☑ **Telegram — richer/prettier messages — SHIPPED** (2026-06-08). `format.py` redesigned: ▰▱ R:R fill
+   bar, ●-marker PnL gauge (entry/exit/position), entry→target upside % + stop downside %, win/loss
+   header emoji on exits, and a collapsible `<blockquote expandable>` detail block (hold/size/factor
+   line/regime/open). HTML-safe, captions ≤1024, deterministic. `tests/test_telegram_format.py` (+5) →
+   suite **351 green**. The live daemon was restarted to load it. **All 8 ready templates were sent to
+   Telegram as a live showcase** (2026-06-08): daily-header, entry long, entry short (borrow/HTB),
+   watch-only, exit win, exit cover (loss), position card, stand-down — entry & position carried their
+   live inline buttons.
+3. ☑ **Short-entry "Log opened" direction bug — FIXED + verified** (2026-06-08). `entry_actions` now
+   encodes the side in the callback (`open:TICKER:ref:stop:side`); `_cb_open` journals that side (was
+   hard-coded `long` → a short card logged a long with stop above entry = inverted risk). `push._markup`
+   passes the signal direction. **Backward-compatible:** `parse_callback` still accepts legacy 3-arg
+   `open:` (no side → long) so alert cards pushed before the fix keep working. `tests/test_telegram_bot.py`
+   (+3: short open, legacy 3-arg→long, keyboard→handler round-trip) → suite **354 green**. Daemon restarted.
+   - ◻ **Deployment wart:** `Stop-ScheduledTask` doesn't reliably kill the daemon python — the venv
+     `python.exe` launcher reparents its child out of the task tree, so it survives Stop and keeps the
+     lock, making the next Start exit immediately. Workaround: kill `telegram_bot.py` procs by image
+     before Start. Fix idea: point the task action at `pythonw.exe telegram_bot.py` directly (no `.bat`
+     wrapper) so Task Scheduler tracks/kills the real process.
+   - ☑ **Showcase test rows cleaned** (user ran SQL); `positions` now holds the real `ATD.TO` fill.
+4. ☑ **Open-position guarding — SHIPPED + verified** (2026-06-08). All open paths funnel through
+   `position_manager.open_position`, which now validates before INSERT and **raises `ValidationError`**
+   (propagated, not swallowed) on: a `TEST.*` ticker (showcase-only, never journaled), an unknown side, a
+   non-positive/non-finite entry, a stop on the wrong side of entry (the inverted-risk bug), or a
+   **duplicate open** for a ticker that already holds one. A **missing stop** is allowed but warned
+   (unscoreable until set); **over the `max_open_risk` budget** is warned, not blocked. Risk geometry
+   extracted to `position_manager.risk_unit` — the single source now shared by the guard AND
+   `reconcile_fills` (can't drift). Callers (`_cb_open`, `cmd_open`, `position_CLI open`) surface the
+   reason. `tests/test_position_guards.py` (+9) + daemon rejection test → suite **366 green**;
+   **live-verified** against the DB (6/6 bad opens rejected, 0 rows written). *Decisions: no-stop→warn,
+   duplicate→reject, over-budget→warn, TEST.*→reject.*
+   - ◻ **Optional phase 2 (DB-level):** `CHECK` constraints (`entry_price>0`; stop on the correct side via
+     a `CASE`) + a generated-column unique index for one-open-per-ticker — needs an `ALTER` on the live
+     table (I can hand over the SQL). App-level guard covers it today; DB constraints are defense-in-depth.
+   - ◻ **Budget = aggregate R, not count:** the advisory counts open positions as ~1R each; refine to
+     size_mult-weighted risk once positions store/derive `size_mult`.
+
+   **Remaining template work (the "rest"):**
+   - ◻ **MarkdownV2 variant** of the formatters (the only un-built idea from the original brief).
+   - ◻ **Verify the production photo form live** — the showcase sent captions as text messages; real
+     entry/exit/position alerts attach a chart `.webp` + caption + buttons. Confirm that combo end-to-end
+     on the next real scan / once MySQL is up (so `/positions` cards render against real rows).
+   - ◻ **Template the daemon's inline reply strings** (`/help`, `/status`, "✅ logged", confirm prompts)
+     — currently literals in `telegram_bot.py`, not in `format.py`. Low priority.
+
+**Secondary (optional rigor, per NORTH STAR #1):** the V5 re-tune walk-forward + Phase-D (below). It
+was attempted twice this cycle and **orphaned both times** (agent-spawned background process cut off
+over an idle gap — NOT OOM/code error). Run from a terminal that stays open; it only de-biases an
+already-thin-but-OOS-passing headline, so it's behind live/paper-trading.
+
+**Done this session (2026-06-08) — on the working tree, commit pending:**
+1. ☑ **Phase-2 interactive Telegram daemon — BUILT + TESTED** (2026-06-08). New repo-root `telegram_bot.py`:
+   PTB v22 `Application` long-poll, `run_polling(stop_signals=None, drop_pending_updates=True)` (Windows),
+   single-instance lockfile via `msvcrt.locking` on a held handle (auto-released on crash → no stale
+   lock), **owner-only** via a uniform `_owner_only` decorator on every command + the callback router
+   (checks `effective_user.id == TG_CHAT_ID`; `CallbackQueryHandler` has no chat-filter param). Answers
+   the Phase-1 buttons (`open:`→`adapter.open` + disarm buttons, `chart:`→fresh render) and position-card
+   buttons (`chartpos:`/`stop:`/`close:`/`recalc:`/`confirm:`/`cancel`); `close` gated behind a Yes/No
+   `confirm:`. Commands `/positions /pos /recalc /open /close /stop /status /chart /scan /help` reuse
+   existing fns — `/recalc` re-reads latest bars and runs the engine exit-check + time-stop (read-only),
+   `/chart` re-renders fresh, `/scan` subprocesses `main.py`. Blocking DB/engine/chart calls in
+   `asyncio.to_thread`; chart renders serialized behind an `asyncio.Lock` (matplotlib not thread-safe).
+   All mutations through `core.execution.adapter` (journal only). Added `position_manager.get_position(id)`;
+   extended `mask_api_keys_filter` to mask the bot-token shape (`digits:base64ish`). Deploy:
+   `scripts/register_telegram_bot.ps1` + `scripts/run_telegram_bot.bat` (at-logon, auto-restart).
+   `tests/test_telegram_bot.py` (+8: parse_callback, owner-reject-no-mutation, `/close` confirm gate,
+   `cb_open` delegation, build smoke, token masking) → suite **346 green**. **Not yet run live** (must
+   stop the other poller first — 409 Conflict).
+
+**Done previous session (2026-06-07) — committed + pushed to `origin/v3-release`:**
+1. ☑ **Entry-gate "trigger panel" — SHIPPED** (2026-06-07). `GateCheck` + `SignalResult.checks`
+   built post-decision behind `signal(with_checks=True)` (default OFF → backtest byte-identical, zero
+   extra compute; `with_checks=True` set only in `main.py`). New `_build_gate_checks` re-derives
+   direction-aware factor groups (TREND/MOMENTUM/LOCATION&STRENGTH/VOLATILITY/RISK/CONTEXT) from
+   already-loaded data (incl. `market_dfs["SPY"]` RS, VBP, BB %ile). Chart `_render_trigger_panel`
+   renders grouped rows + graded `●●●○` / `✓`·`✗`; Telegram factor line lit up (`push._checklist`).
+   `main.py` folds in live RP + open-count; added `vbp.nearest_high_volume_node_below`.
+   `tests/test_trigger_panel.py` (+11, incl. replay-equality).
+2. ☑ **P1 engine bug fixes — ALL DONE** (2026-06-07, pytest-gated). Each verified at the code, fixed,
+   and covered by a test (`tests/test_p1_fixes.py` +14, `tests/test_reconcile_provenance.py` +6,
+   trigger-panel +2). Suite **330 green**. Closed: live `max_open_risk`+`size_mult` surfacing
+   (main.py report + trigger panel + `risk.max_open_risk` setting); behavioral `missing_axes` canonical
+   names + non-negative confidence; WF degradation now tuned-IS-vs-tuned-OOS + 20-trade IS floor; macro
+   `regime.py` (12-mo inflation YoY, fresh-inversion→INVERTED, credit ≥1yr date-span guard, WCS
+   Brent−WTI sign reachable); profit-factor r==0 neutral (unified with stats_utils); negative-caching
+   (cache market-cap/live-price on success only); `backtest_trades` gains `effective_r`/`size_mult`/
+   `borrow_annual_rate` (resilient writer + reconcilers aggregate effective_r); reconciler provenance
+   (prefer latest scoring-OFF run via `_meta.use_scoring`) + COALESCE signal_type both sides;
+   `reconcile_live._replay` max-hold parity test; dead code removed (`run_all`, `--earnings-aware`,
+   `_quarantine`, `:317` ternary). **Deferred (polish, not a bug):** extract a shared `_maybe_time_stop`
+   (the time-stop DECISION already shares `core.exits.max_hold_exit_due`; only boilerplate is duplicated).
+3. ☑ **Expected-hold made data-driven** (2026-06-07) — the "hold N–Md" caption is now the p25–p75 of
+   real `backtest_trades.bars_held` (`backtest.db.expected_hold_range`, no upper clamp — `if_not_profit`
+   winners run past the cap), set on every fired entry **regardless of scoring**; killed the four
+   disagreeing sources. run_id=12 → **(3, 15)**, avg 11.2, max 122. `tests/test_hold_range.py` (+8).
+
+**Deferred — optional rigor (not blocking; secondary per NORTH STAR #1):**
+- ◻ **V5 re-tune walk-forward + Phase-D.** `python backtest/run_backtest.py --walk-forward --workers 8`
+  — run it from a **terminal that stays open** (or detached via `Start-Process`); the agent-spawned
+  background process gets orphaned over idle gaps, so don't launch it from the agent. Then
+  `python scripts/multiple_testing.py --workers 8` → update `verification_results` + README. The
+  degradation metric is fixed (tuned-IS vs tuned-OOS + trade floor) so the verdict is trustworthy when
+  run; it only de-biases the already-thin headline (the fixed-config OOS already PASSED, `run_id=12`:
+  68% OOS, p≈0.009), so it's secondary to live/paper-trading.
+
+**Telegram — richer/prettier/creative messages (user request, SHIPPED 2026-06-08).** `format.py`
+redesigned with ▰▱ R:R fill bars, ●-marker PnL gauges, entry→target upside % + stop downside %,
+win/loss header emoji on exits, and a collapsible `<blockquote expandable>` detail block — HTML-safe,
+captions ≤1024, deterministic, tests de-tagged. Shared by both the push and the daemon cards (one
+source). **Remaining optional:** a MarkdownV2 variant (the only un-done idea from the original list).
+
+---
+
+- ☑ **Fixed-config OOS validation PASSED** (2026-06-06, `run_id=12`). `--wf-no-retune --workers 14`:
+  47 windows, IS +0.066 → OOS +0.072 (degradation −0.006), **68% OOS-profitable, p≈0.009**. The
+  scoring-OFF headline is temporally stable (recorded in `verification_results`).
+- ◻ **Run the FULL re-tune walk-forward (V5)** over the whole range (`--walk-forward --workers 14`,
+  no `--wf-no-retune`) — the parameter-selection / data-snooping test the fixed-config WF does NOT
+  cover. Then deflated-Sharpe / White reality check (Phase D). This is what's left to fully de-bias
+  the +0.075 / Sharpe 0.66 headline.
+- ◻ **Real-life "textbook" check (SPY benchmark built; result sobering).** `scripts/benchmark_spy.py`
+  (+`tests/test_benchmark_spy.py`) computes passive SPY buy-and-hold risk-adjusted metrics over
+  full/10y/5y/3y/1y. **Strategy Sharpe 0.66 vs SPY full-window 0.62 (+0.04 only); SPY BEATS it in every
+  recent window** (10y 1.00, 5y 0.87, 3y 1.55, 1y 1.70) — i.e. passive has been the better risk-adjusted
+  bet lately (NORTH STAR #1 red flag). Caveat: that compares strategy *full-history* Sharpe vs SPY
+  *per-window*. **Next:** run the strategy over trailing 1y/3y/5y for an apples-to-apples per-window
+  Sharpe vs SPY (post-V5, needs workers), fold into `verification_results`, and hand-work one known
+  trade (entry/stop/target → realized R) to confirm the backtester reproduces it.
 - ◻ **Let the live feed mature.** Scheduling is done — `scripts/register_daily_scan.ps1`
   registers a Task Scheduler job (`main.py` Mon–Fri 18:00 local, only-when-logged-on,
   catches up missed runs). Now it just needs calendar time: signals mature in ~25 trading
@@ -47,7 +180,128 @@ slippage 0.002, **scoring OFF**: +116.7R, Sharpe 0.66, PF 1.30, E[R] +0.075 (ADR
 
 ---
 
-## Validation & de-biasing (paused per NORTH STAR #1 until live is healthy)
+## Audit — 3-pass bughunt (2026-06-06)
+
+Deep multi-agent review of the whole tree; every item below was verified against the code
+(false positives debunked).
+
+> **✅ ALL P1 ITEMS FIXED (2026-06-07)** — correctness + reconciliation/journaling + the named
+> dead-code removals are done, each re-verified at the code and pytest-gated (suite 330 green). The
+> ◻ checkboxes below are left as the historical record; see NEXT-CHAT step 2 for the consolidated
+> summary. **P2 items remain open.** (No sweep/WF is running now, so engine edits are safe.)
+
+### P1 — correctness
+- ◻ **Live scanner ignores `max_open_risk` + `size_mult`** (`main.py`, NORTH STAR). The headline edge
+  is produced by the 5.0 budget + regime/behavioral sizing; live alerts every fired signal,
+  unsized/uncapped → live exposure ≠ the validated portfolio. Surface `size_mult` and enforce/show
+  the budget (read open `positions` as consumed risk). Biggest live-vs-backtest gap.
+- ◻ **Behavioral `missing_axes` key mismatch** (`behavioral/__init__.py:170-194` vs the `axis_weights`
+  loop). Missing axes use short names (`breadth`/`cot`/`naaim`/`aaii`) but the loop keys on canonical
+  (`breadth_state`/`positioning_state`/`sentiment_state`); only `sector_cycle` is skipped. A down feed
+  is scored NEUTRAL at full weight (not excluded) and `confidence` can go negative. Score does NOT
+  collapse (weight maps ARE canonical) — pollution, not collapse. Use canonical names; mark
+  positioning missing only when BOTH cot+naaim absent; clamp confidence ≥0.
+- ◻ **WF re-tune degradation compares baseline-IS vs tuned-OOS** (`walk_forward.py:438-453`) → understates
+  overfitting; `best_is` picks max IS E[R] with no trade-count floor; OOS gets baseline+1 OFAT param.
+  Report tuned-IS vs tuned-OOS (or both) + trade-count floor. **Affects how to read V5.**
+- ◻ **Macro regime delta bugs** (`macro/regime.py`): inflation YoY `iloc[-12]` is an 11-mo span vs a
+  12-mo comparison leg → flips STABLE/ACCELERATING (`:316`); fresh inversion scored FLAT not INVERTED
+  (`:243-250`); credit percentile `len>=12` assumes monthly but HY OAS is daily (`:260`); WCS WIDE
+  unreachable (Brent−WTI wrong sign, `:387`).
+- ◻ **Negative-caching of failed fetches** — `info_fetcher.py:79` caches a failed market-cap `None` for
+  the full staleness window; `live_price.py:66` same (5-min). Cache on success only.
+- ◻ **profit-factor convention split** — `stats.compute_stats` counts r==0 as a loss; `stats_utils
+  ._profit_factor` treats it neutral → same run, two PF/win-rate. Unify on r==0 neutral.
+
+### P1 — reconciliation / journaling
+- ◻ **`backtest_trades` can't reconstruct the headline** — stores per-trade `r_multiple` only; no
+  `effective_r`/`size_mult`/`borrow_annual_rate` columns, so `SUM(r_multiple) ≠ backtest_runs.total_r`
+  once sizing/shorts are active (latent today — headline is long-only). Add columns + populate;
+  reconcilers should aggregate `effective_r`.
+- ☑ **reconcile_live `max_hold_mode`** — FIXED (now uses `core.exits.max_hold_exit_due` with the
+  configured mode; was hard-coded "hard"). Still owes a `_replay` parity test.
+- ◻ Reconciler defaults to `MAX(id)` run (provenance-blind — can pick a scoring-ON run) and has a NULL
+  bucket asymmetry (live coalesces `signal_type`→momentum, backtest GROUP BY doesn't). Tag runs / COALESCE both sides.
+
+### P2 — dead code / dead config
+- ◻ `PortfolioBacktester.run_all()` is unused (~330-line drifted dup of `run_prepped`) — delete; extract
+  a shared `_maybe_time_stop` (time-stop block triplicated + a 4th copy in `main.py`).
+- ◻ `--earnings-aware` flag is dead (`earnings_aware=True` hard-coded; README says "Default False").
+- ◻ `_quarantine` gate dead (`filter_engine.py:552`); `:317` no-op `Path` ternary; `_run_one` re-inserts
+  `sys.path` every call (`sweep.py:730`).
+- ◻ `defaults.py` `settings.*` defaults are dead + disagree with code (`min_score` 50 vs 60, `hold_high`
+  20 vs 15, `breadth_divergence_penalty` 0.2 vs 0.0) — route consumers through `DEFAULTS`.
+- ◻ Macro `wcs_spread_state` + `policy_stance_ca` carry `risk_on_weights` but no `axis_weights` → never scored.
+
+### P2 — look-ahead leaks (regime/behavioral feeds; modest, sizing-layer)
+- ◻ COT indexed by report (Tue) not release (Fri) → ~3-day leak (`cot.py:168`).
+- ◻ CPI/PCE `release_date = df.index` (period date) and unused → ~1-mo leak (`fred.py:145` + regime).
+- ◻ Breadth from current S&P membership → survivorship (early-history bullish bias) — known.
+- ◻ Earnings tz: `ts.date()` (exchange tz) vs `date.today()` (host tz) → ±1-day buffer boundary.
+
+### P2 — reporting / test gaps (green ≠ correct)
+- ◻ Report: profit-factor ∞ uses 3 sentinels (999 / 999.0 / 999999.9999); `recovery_days==0` renders
+  "not yet recovered"; bootstrap "✓ significant" tests win_rate/PF against null=0 (wrong null).
+- ◻ Tests: **no walk-forward tests at all**; the behavioral missing-axis bug passes green; `_replay`
+  untested; scorer-ranked budget fill never integration-tested; no-lookahead test passes `market_dfs=None`.
+
+### P3 — robustness / infra
+- ◻ Partial-bar look-ahead if `main.py` runs intraday (mitigated by the 18:00 post-close schedule);
+  held SHORT positions unhandled (only `held_long`); live shows un-slipped stop/target.
+- ◻ Borrow drag not scaled by `size_mult` (shorts-only); http rate-limiter not lock-protected;
+  `repair_parquet` no post-write equality check; `yf_macro` serves unbounded-stale cache as valid;
+  Wilder RSI/ATR ewm-seed ≠ textbook (warmup only); `calendar.py` NFP `2026-07-02` is a Thursday.
+
+### Debunked — verified NOT bugs
+- Commission is correctly charged (per-unit-risk → portfolio-R via `× size_mult`); behavioral score does
+  NOT collapse (weight maps canonical); regime `STEEPENING_FROM_INVERTED=0.0` is defensible — confirm intent only.
+
+### Needs a call (shifts published numbers)
+- ◻ `equity_curve` monthly gaps → contiguous 0-fill changes the headline 0.66 Sharpe (my Phase D harness
+  already uses the contiguous convention).
+- ◻ WF degradation tuned-IS-vs-tuned-OOS → larger (more honest) degradation.
+
+### Feature — entry-gate "proof of opinion" panel on charts (committed 2026-06-06)
+
+Replace the chart's scorer-driven "Trend Template" panel with a TRUE, direction-aware, factor-grouped
+read of the actual `_signal_entry` gates + a few independent context factors from data we already
+compute. Sourced from the engine so it can never drift from the real decision; decouples the chart
+from the retired (non-predictive) `SignalScorer`. Engine-gated → land with the post-V5 batch.
+
+**Design:** ~5 factor rows + a context line, graded `●●●○` marks for continuous factors, hard ✓/✗
+only for true binaries. Semantics flip by direction (long ↔ short): strength (RP/RS), location
+(resistance-above vs support-below "clear path"), and regime tailwind/headwind all invert.
+- **TREND** — close vs MA50/MA200, MA50 slope, weekly (fold weekly here).
+- **MOMENTUM** — RSI in band (show value), MACD hist sign + Δ ≥ gate×ATR, fresh cross ≤ N bars.
+- **LOCATION & STRENGTH** — 52W position, RP rank, RS vs SPY (RS20/RS60), nearest VBP node
+  (resistance above for longs / support below for shorts → "clear path").
+- **VOLATILITY** — BB bandwidth %ile (squeeze vs expanding), `bb_z`, ATR% (early vs extended).
+- **RISK** — R:R ≥ `min_rr` (show 2.50), stop as %/ATR, earnings-days (⚠ if near), gap-risk;
+  **shorts add a borrow/HTB row** (`signals.borrow.*`, `hard_to_borrow_list`).
+- **CONTEXT line** — regime tailwind/headwind (risk-on score, direction-aware), liquidity `dv20` $,
+  open-risk budget consumed (`positions` vs `max_open_risk`), ticker-health (chronic-loser streak).
+
+**Build:** (SHIPPED 2026-06-07 — see NEXT-CHAT step 1)
+- ☑ `GateCheck(group, name, passed, detail, strength)` + `SignalResult.checks` — defined in
+  `filter_engine.py` (not `types.py`: `types` already imports from `filter_engine`, so the reverse
+  would cycle) and **re-exported from `core/types.py`** (`__all__`).
+- ☑ `filter_engine._build_gate_checks` re-derives every factor from already-loaded data AFTER the
+  decision (so replay is bit-identical *by construction*, not just by discipline), behind
+  `signal(with_checks=True)`. Computes RS vs SPY (`market_dfs["SPY"]`), VBP distance (added
+  `nearest_high_volume_node_below`), BB %ile/`bb_z`, ATR%, R:R, earnings, liquidity, regime.
+- ☑ `core/indicators/chart.py`: new `_render_trigger_panel` (driven by `signal.checks`); the legacy
+  `score_components` sidebar is kept ONLY as a fallback for exits / scoring-ON.
+- ☑ `main.py`: `with_checks=True` on the live `signal()`; `_append_live_context_checks` folds in RP
+  rank (LOCATION) + open-position count (CONTEXT). *Note:* `chart_signal_history.py` needed no change
+  (the history overlay renders past-bar markers, not the sidebar); open-risk **budget** + **ticker-
+  health** context rows are deferred to the P1 "live `max_open_risk` + `size_mult`" item (not wired live yet).
+- ☑ Tests: `tests/test_trigger_panel.py` — long & short direction-aware ✓/✗ sets with values, near-miss
+  row flip, replay bit-identical (all fields equal bar `checks`), VBP `_below`, Telegram `_checklist`,
+  headless chart render (long+short). Visually verified the rendered panel.
+
+---
+
+## Validation & de-biasing
 
 Edge after de-biasing is real-but-thin. Evidence: `docs/verification_results_2026-06.md`,
 `docs/adr/ADR-001-max-hold-exit.md`. Phase A (survivorship) is closed; Phase E = the live
@@ -56,9 +310,9 @@ reconciliation in ACTIVE above.
 - ◻ **Phase C — locked OOS**: tune ≤2015, lock, test 2016–2026 once.
 - ◻ **Phase D — multiple-testing correction**: deflated Sharpe / White reality check.
 - ◻ **V5 — full re-tune walk-forward over the whole range** (headline OOS gate, `--walk-forward
-  --workers 14`). The headline is now the **scoring-OFF 213-universe if_not_profit** config
-  (`run_id=11`), not 25d-hard. The fixed-config (`--wf-no-retune`) WF on it is running (ACTIVE
-  above); V5 is the slower re-tune gate that tests parameter-selection generalisation.
+  --workers 14`; see the ACTIVE item). The fixed-config (`--wf-no-retune`) WF on the scoring-OFF
+  `run_id=11` headline **PASSED** (`run_id=12`: 68% OOS, p≈0.009, −0.006 degradation). V5 is the
+  slower re-tune gate that tests parameter-selection generalisation — the remaining de-bias step.
 - ◻ Refresh the **deflated** Sharpe under rf=0 — still pending Phase D (White's reality check).
   (OFF baseline, `if_not_profit`, the 10–30d horizon sweep were refreshed 2026-06-05 at the new
   slippage=0.002 default — see the `ADR-001` rf=0-refresh block.)
@@ -90,14 +344,26 @@ reconciliation in ACTIVE above.
   weight. Also: should the live `min_score_to_alert` gate be replaced by a smarter entry tiebreak
   (e.g. `min_rr`/ATR) rather than no ranking at all?
 - ◻ Stand-down log (silent-regime months); per-direction breakdown in report.
-- ◻ Telegram alerts (`TG_CHAT_ID`/`TG_BOT_TOKEN` reserved, unwired).
+- ☑ **Telegram — Phase 1 (push) + Phase 2 (daemon) shipped.** Phase 1 (2026-06-06): `src/core/telegram/`
+  (config/format/bot/push/keyboards) + `src/core/execution/adapter.py` (broker-adapter seam, journal-only)
+  + fail-open `main.py` hook + `settings.yaml telegram:` block (default OFF → scan byte-identical) +
+  `python-telegram-bot` dep. Hybrid caption + chart photo; variants for entry/short/exit/watch/header/
+  stand-down + position card; `format_entry(checklist=)` factor line **lit** (2026-06-07). **Phase 2
+  (2026-06-08): `telegram_bot.py` interactive daemon SHIPPED** — owner-only PTB long-poll, lockfile,
+  commands `/positions /pos /recalc /open /close /stop /status /chart /scan`, inline buttons, `/close`
+  confirm gate (see "Done this session"). **Richer/creative card templates SHIPPED** (2026-06-08: ▰▱
+  R:R bars, PnL gauges, move %s, expandable detail). Tests: `test_telegram_format`/`_push`/
+  `test_execution_adapter`/`test_trigger_panel`/`test_telegram_bot`. Plan:
+  `docs/telegram_integration_plan.md`. **Open:** run the daemon live for the paper-fill on-ramp
+  (needs MySQL up); optional MarkdownV2 variant.
 
 **Watchlist expansion** (mind NORTH STAR #2)
-- ◻ **Re-run the headline on the v3 universe** (213 names) to confirm universe-agnosticism —
-  if per-trade E[R]/Sharpe hold (~+0.07 / ~0.50) the edge isn't watchlist-specific; if they
-  collapse, the old 91-name edge was survivorship. (v3 grew tier_a 91→213, deep Canadian bench
-  + US large-caps, all >5y history; individual-stock share now ~50% — a deliberate departure
-  from the old ETF-heavy ≤20% rule, accepted for more momentum vehicles.)
+- ☑ **Universe-agnosticism checked on v3** (2026-06-06). The 91→213 expansion showed the edge IS
+  somewhat watchlist-sensitive (scoring-ON dropped E[R] +0.071→+0.046), but the composition test
+  traced that to the scoring layer, and the honest broad edge with scoring OFF (+0.075/0.66) then
+  passed fixed-config OOS. So the logic holds across composition once the noise gate is removed.
+- ◻ Consider more `.TO` / sector ETFs and a survivorship-free constituent feed (date-stamped
+  membership) so the universe itself isn't hindsight-selected.
 
 **Architecture / performance**
 - ◻ Split FilterEngine god-class / main.py / sweep.py; `ApplicationContext` DI;
@@ -109,7 +375,7 @@ reconciliation in ACTIVE above.
 
 ## Standing rules
 
-- `pytest tests/` green at the end of every step (currently **244**).
+- `pytest tests/` green at the end of every step (currently **366**).
 - README sync after any landed change (CLI flags, config blocks, test counts, entry points).
   Fresh clone + `pip install -r requirements.txt` + README should run.
 - **Journaling:** every run leaves data. `run_backtest.py` journals by default (`--no-journal`
@@ -120,8 +386,20 @@ reconciliation in ACTIVE above.
 
 ---
 
-## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #1)
+## Recently shipped (condensed — full detail in commits / ADRs, branch `v3-release` / PR #2)
 
+- **Expected-hold made data-driven + unified** (2026-06-07) — the "hold ~N–Md" caption is now
+  the 25th–75th percentile of ACTUAL `backtest_trades.bars_held` (`backtest.db.expected_hold_range`,
+  no upper clamp since `if_not_profit` winners run past the cap), set on every fired entry by
+  `main.py` **regardless of scoring** (was scorer-only → dead under scoring-OFF). Killed the four
+  disagreeing sources (`settings.market_hours` 20–30, `scoring._DEFAULT_HOLD` 10–15, `defaults.py`
+  10–20, field default) → one source = the data, cap-anchored fallback. Real range from run_id=12
+  (1614 trades): **(3, 15)**, avg 11.2, max 122 — the old 20–30/10–15 were both wrong. Display-only,
+  zero P&L. `tests/test_hold_range.py` (+8) → suite **338 green**.
+- **Fixed-config OOS validation** (2026-06-06, `run_id=12`) — `--wf-no-retune --workers 14`, 47
+  windows: IS +0.066 → OOS +0.072 (degradation −0.006), **68% OOS-profitable, p≈0.009**. The
+  scoring-OFF headline is temporally stable; `verification_results` updated. (Re-tune V5 + deflated
+  Sharpe still pending.)
 - **Scoring made opt-in, default OFF** (2026-06-05, ADR-003) — the entry score is non-predictive
   of R (corr −0.03) and its highest-score-first budget fill selected weaker trades. `--scoring`
   flag (run_backtest + main.py; `SweepEngine(use_scoring=)`), default OFF. **New headline run_id=11

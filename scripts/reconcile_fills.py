@@ -47,10 +47,9 @@ except ImportError:
 
 # ── pure R math (unit-tested; no DB) ────────────────────────────────────────
 
-def _risk(side: str, entry: float, stop: float) -> float:
-    """Per-share risk to the initial stop. Positive when the stop is on the
-    correct side of entry (below for long, above for short)."""
-    return (entry - stop) if side == "long" else (stop - entry)
+# Single source for the risk-unit geometry — shared with the open-position guard
+# (position_manager.validate_open) so a stop the guard rejects can't be scored here.
+from core.position_manager import risk_unit as _risk  # noqa: E402
 
 
 def _r_multiple(side: str, entry: float, stop: float, exit_price: float) -> float | None:
@@ -108,26 +107,21 @@ def _cfg_commission_r() -> float:
 def _load_expectancy(conn, bt_run_id):
     """Return (ref_row, exp) where exp maps side -> (E[R], n) plus '__ALL__'.
     ref_row is the backtest_runs row used as the reference, or None."""
+    from backtest.db import reference_run, trade_r_column
     cur = conn.cursor(dictionary=True)
-    rid = bt_run_id
-    if rid is None:
-        cur.execute("SELECT MAX(id) m FROM backtest_runs")
-        row = cur.fetchone()
-        rid = row["m"] if row else None
-    if rid is None:
-        cur.close()
-        return None, {"__ALL__": (0.0, 0)}
-    cur.execute("SELECT id, start_date, end_date, trades_count, expectancy_r, "
-                "win_rate, notes FROM backtest_runs WHERE id = %s", (rid,))
-    ref = cur.fetchone()
+    # Provenance-aware reference (latest scoring-OFF run, matching live) and
+    # effective_r aggregation (matches backtest_runs.total_r once sizing is active).
+    ref = reference_run(cur, bt_run_id)
     if ref is None:
         cur.close()
         return None, {"__ALL__": (0.0, 0)}
-    cur.execute("SELECT direction, AVG(r_multiple) e, COUNT(*) n "
+    rid = ref["id"]
+    rcol = trade_r_column(cur)
+    cur.execute(f"SELECT direction, AVG({rcol}) e, COUNT(*) n "
                 "FROM backtest_trades WHERE run_id = %s GROUP BY direction", (rid,))
     exp = {row["direction"]: (float(row["e"]), int(row["n"]))
            for row in cur.fetchall() if row["e"] is not None}
-    cur.execute("SELECT AVG(r_multiple) e, COUNT(*) n FROM backtest_trades WHERE run_id = %s",
+    cur.execute(f"SELECT AVG({rcol}) e, COUNT(*) n FROM backtest_trades WHERE run_id = %s",
                 (rid,))
     overall = cur.fetchone()
     exp["__ALL__"] = (float(overall["e"]) if overall and overall["e"] is not None else 0.0,

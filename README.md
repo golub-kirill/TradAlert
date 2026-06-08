@@ -8,6 +8,7 @@ held-long exits, portfolio-aware bar-replay, OFAT / walk-forward sweeps.
 ```
 main.py                Live scan: fetch → indicators → scan → signal → score
 position_CLI.py        Manual position CRUD
+telegram_bot.py        Interactive Telegram daemon (owner-only commands + buttons)
 backtest/run_backtest  Backtester: baseline, sweep, walk-forward, robustness
 backtest/repair_parquet Cross-platform parquet re-save utility
 
@@ -64,6 +65,12 @@ python main.py [--force] [--allow-shorts] [--scoring]
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
 `data/tradealert.log`, MySQL `scan_runs` + `scan_results` (when DB env set).
+Each fire chart carries an **entry-gate "trigger panel"** sidebar — the engine's
+direction-aware, factor-grouped read of *why this signal fired* (TREND / MOMENTUM /
+LOCATION & STRENGTH / VOLATILITY / RISK / CONTEXT), with graded `●●●○` marks for
+continuous factors and `✓`/`✗` for binaries. It is sourced from the live signal's
+`SignalResult.checks` (built only on the live path, `signal(with_checks=True)`), so it
+can never drift from the real decision and the backtest replays bit-identically.
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
@@ -118,7 +125,6 @@ Window / IO flags:
 | `--start YYYY-MM-DD`  | None (all data)     | First in-window date.                                |
 | `--end YYYY-MM-DD`    | None (all data)     | Last in-window date.                                 |
 | `--tickers T [T ...]` | watchlist.yaml      | Restrict universe.                                   |
-| `--earnings-aware`    | False               | Reconstruct historical earnings dates; apply buffer. |
 | `--workers N`         | 1                   | ProcessPool size for sweep / walk-forward.           |
 | `--out DIR`           | `data/backtest_out` | Output directory.                                    |
 | `--no-html`           | False               | Skip HTML report.                                    |
@@ -201,6 +207,51 @@ risk unit, bucketed by direction and compared to `backtest_trades`. Open
 positions are listed as carried risk but not scored; closed positions without a
 recorded stop can't be scored (no risk unit).
 
+### Telegram alerts (push)
+
+The daily scan can push fired signals (entries/exits) to Telegram as a chart photo
++ a compact card caption (direction, entry/stop/target, R:R, regime). Entry cards
+also carry a `🔎 TREND ✅ · MOM ✅ · LOC ▫️ · …` factor line — a per-group summary of
+the same trigger-panel checks rendered on the chart (one source of truth). Set
+`TG_BOT_TOKEN` + **numeric** `TG_CHAT_ID` in `config/secrets.env`, then enable in
+`config/settings.yaml`:
+
+```yaml
+telegram:
+  enabled: true          # default false → scan is byte-identical
+  alert_types: [long_entry, exit_long, short_entry, exit_short]
+  mute: []               # ticker blocklist
+```
+
+The push is **fail-open** — a missing token or Telegram outage degrades to a log
+line and never affects the scan. Requires `python-telegram-bot`.
+
+### Telegram daemon (interactive)
+
+`telegram_bot.py` is the phase-2 interactive daemon: it long-polls Telegram and
+answers the alert/position buttons + owner-only commands. Set `daemon_enabled: true`
+in `settings.yaml::telegram` (so the push attaches inline buttons) and run:
+
+```bash
+python telegram_bot.py        # owner-only; needs TG_BOT_TOKEN + numeric TG_CHAT_ID
+```
+
+Commands: `/positions` `/pos ID` `/recalc [ID|all]` `/open TICKER PRICE [--stop S] [--short]`
+`/close ID [PRICE]` `/stop ID PRICE` `/chart TICKER` `/status` `/scan` `/help`. Inline
+buttons: **Log opened** (journals a fill via the broker-adapter seam), **Chart** (fresh
+render), and per-position **Stop / Close / Recalc / Chart** — `Close` is gated behind a
+Yes/No confirm. `/recalc` re-reads the latest bars and runs the engine exit-check
+(read-only). Every position mutation goes through `core.execution.adapter` (journal only —
+never auto-executes a real trade).
+
+Single-instance: the daemon takes `data/telegram_bot.lock` and exits cleanly if another
+poller holds it (Telegram returns **409 Conflict** if two pollers drain `getUpdates` — stop
+any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/register_telegram_bot.ps1
+```
+
 ## Environment variables (`config/secrets.env`)
 
 Loaded by `python-dotenv` at startup.
@@ -214,8 +265,8 @@ Loaded by `python-dotenv` at startup.
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
 | `SEC_USER_AGENT` | reserved                             | Not wired — `form4` uses yfinance, not direct EDGAR yet. For the planned Form 4 XML parser (see TODO). |
-| `TG_CHAT_ID`     | reserved                             | Telegram sender not wired.                                                                             |
-| `TG_BOT_TOKEN`   | reserved                             | Same.                                                                                                  |
+| `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
+| `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
 
 ## Configuration files
 
@@ -252,7 +303,7 @@ Loaded by `python-dotenv` at startup.
 |-----------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `storage.{cache_dir,log_level,staleness_hours,staleness_*}`                 | Parquet/JSON cache TTLs + log level.                                                                                                                                                                                                                              |
 | `fetcher.max_workers`                                                       | ThreadPool size for watchlist fetch.                                                                                                                                                                                                                              |
-| `market_hours.expected_hold_days_{low,high}`                                | Reported in signal description.                                                                                                                                                                                                                                   |
+| `risk.max_open_risk`                                                        | Aggregate open-risk cap the live scanner surfaces (budget consumed vs. cap, size_mult); alerter only, never auto-executes.                                                                                                                                          |
 | `scanner.min_score_to_alert`                                                | Threshold below which a passed signal is `watch_only`.                                                                                                                                                                                                            |
 | `scanner.weights`                                                           | Entry sub-score weights (trend_up, ma50_slope, ma200_slope, volume_spike, rsi_healthy, breakout_20d, near_52w_high, far_from_52w_low, macd_bullish, no_earnings_risk, relative_strength, weekly_trend, bb_zscore, rp_percentile, insider_buying, short_interest). |
 | `scanner.exit_weights`                                                      | Exit sub-score weights (regime_flip, multi_bar_decay, rsi_overbought, macd_cross_down, vol_expansion, rs_divergence, vbp_resistance).                                                                                                                             |

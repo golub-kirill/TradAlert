@@ -8,18 +8,89 @@ functions return safe fallbacks so a DB hiccup never aborts a scan run.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
 from mysql.connector import Error as MySQLError
 
-from exceptions import ConfigError
+from exceptions import ConfigError, ValidationError
 from persistence.db_conn import connect as _connect
 
 logger = logging.getLogger(__name__)
 
 Side = Literal["long", "short"]
+
+
+# ── risk geometry + open guards ─────────────────────────────────────────────────
+
+def risk_unit(side: str, entry: float, stop: float) -> float:
+    """Per-share risk to the initial stop.
+
+    Positive when the stop is on the correct side of entry (below for a long,
+    above for a short); zero/negative is a degenerate stop. The single source for
+    position risk geometry — shared by the open guard and ``reconcile_fills`` so
+    the two can never disagree.
+    """
+    return (entry - stop) if side == "long" else (stop - entry)
+
+
+def _is_test_ticker(t: str) -> bool:
+    """``TEST`` / ``TEST.1`` / … — example-chart/showcase symbols, never journaled."""
+    return t == "TEST" or t.startswith("TEST.")
+
+
+def validate_open(ticker: str, entry_price: float, side: str,
+                  stop_price: float | None, *, open_tickers=()) -> None:
+    """Raise ``ValidationError`` when an open would be invalid; else return None.
+
+    Hard rejections: a ``TEST.*`` ticker (showcase only), an unknown side, a
+    non-positive/non-finite entry, a stop that is non-positive or on the wrong
+    side of entry (which would invert the risk unit — the bug that logged a short
+    as a long), and a duplicate open for a ticker that already holds one. A
+    *missing* stop is allowed (the caller may add one later) — see ``open_position``.
+    """
+    t = str(ticker).upper()
+    if _is_test_ticker(t):
+        raise ValidationError("TEST.* tickers are example/showcase only — not journaled", ticker=t)
+    if side not in ("long", "short"):
+        raise ValidationError(f"side must be 'long' or 'short', got {side!r}", ticker=t)
+    try:
+        entry = float(entry_price)
+    except (TypeError, ValueError):
+        raise ValidationError(f"entry price must be a number, got {entry_price!r}", ticker=t)
+    if not math.isfinite(entry) or entry <= 0:
+        raise ValidationError(f"entry price must be > 0, got {entry:g}", ticker=t)
+    if stop_price is not None:
+        try:
+            stop = float(stop_price)
+        except (TypeError, ValueError):
+            raise ValidationError(f"stop price must be a number, got {stop_price!r}", ticker=t)
+        if not math.isfinite(stop) or stop <= 0:
+            raise ValidationError(f"stop price must be > 0, got {stop:g}", ticker=t)
+        if risk_unit(side, entry, stop) <= 0:
+            rel = "below" if side == "long" else "above"
+            raise ValidationError(
+                f"stop {stop:g} must be {rel} entry {entry:g} for a {side} "
+                "(else the risk unit is non-positive)", ticker=t)
+    if t in {str(x).upper() for x in open_tickers}:
+        raise ValidationError("already has an open position — close it first", ticker=t)
+
+
+def open_risk_advisory(max_open_risk: float | None, *, open_count: int | None = None) -> str | None:
+    """Advisory string when open positions meet/exceed the aggregate-risk cap, else None.
+
+    Counts each open position as ~1R (the validated portfolio's per-trade risk
+    unit); a size_mult-weighted refinement is a TODO. ``open_count`` defaults to
+    the current number of open positions.
+    """
+    if not max_open_risk:
+        return None
+    n = open_count if open_count is not None else len(load_open_positions())
+    if n >= max_open_risk:
+        return f"{n} open ≥ {max_open_risk:g}R budget — over the validated risk cap"
+    return None
 
 
 # ── dataclass ─────────────────────────────────────────────────────────────────
@@ -87,6 +158,20 @@ _SELECT_ALL_SQL = """
                   ORDER BY entry_date DESC \
                   """
 
+_SELECT_BY_ID_SQL = """
+                    SELECT id,
+                           ticker,
+                           side,
+                           entry_price,
+                           entry_date,
+                           stop_price,
+                           exit_price,
+                           exit_date,
+                           notes
+                    FROM positions
+                    WHERE id = %(id)s \
+                    """
+
 _INSERT_SQL = """
               INSERT INTO positions (ticker, side, entry_price, entry_date, stop_price, notes)
               VALUES (%(ticker)s, %(side)s, %(entry_price)s, %(entry_date)s,
@@ -151,6 +236,28 @@ def list_all() -> list[Position]:
             conn.close()
 
 
+def get_position(position_id: int) -> Position | None:
+    """Return a single position by id (open or closed), or None when absent.
+
+    A focused lookup for callers that act on one id — the Telegram daemon's
+    per-position buttons (stop/close/recalc/chart). None on a missing row or DB
+    error so the caller can report "not found" rather than abort.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_BY_ID_SQL, {"id": position_id})
+        row = cursor.fetchone()
+        return _row_to_position(row) if row else None
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to load position id=%d — %s", position_id, exc)
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def open_position(
         ticker: str,
         entry_price: float,
@@ -161,9 +268,16 @@ def open_position(
 ) -> int | None:
     """
     Insert a new open position. Returns the new id, or None on DB error.
+
+    Raises ``ValidationError`` (NOT swallowed) when the open is invalid — a bad
+    price, a stop on the wrong side of entry, a bad side, a duplicate open for the
+    ticker, or a ``TEST.*`` ticker — so the bad row never enters the journal and
+    the caller can surface the reason. A missing stop is allowed but logged (the
+    position is unscoreable until a stop is set).
     """
+    t = ticker.upper()
     row = {
-        "ticker": ticker.upper(),
+        "ticker": t,
         "side": side,
         "entry_price": entry_price,
         "entry_date": entry_date,
@@ -173,12 +287,22 @@ def open_position(
     conn = None
     try:
         conn = _connect()
+        # Read current opens for the duplicate guard, then validate. ValidationError
+        # is a different type than (MySQLError, ConfigError), so it propagates past
+        # the handler below to the caller rather than being turned into None.
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_OPEN_SQL)
+        open_tickers = {r["ticker"] for r in cursor.fetchall()}
+        validate_open(t, entry_price, side, stop_price, open_tickers=open_tickers)
+        if stop_price is None:
+            logger.warning("positions ← %s opened with NO stop — unscoreable until a stop is set", t)
+
         cursor = conn.cursor()
         cursor.execute(_INSERT_SQL, row)
         conn.commit()
         new_id = cursor.lastrowid
         logger.info("positions ← opened id=%d  %s %s @ %.4f",
-                    new_id, side.upper(), ticker.upper(), entry_price)
+                    new_id, side.upper(), t, entry_price)
         return new_id
     except (MySQLError, ConfigError) as exc:
         logger.warning("Failed to open position for %s — %s", ticker, exc)

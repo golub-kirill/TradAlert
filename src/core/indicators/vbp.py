@@ -9,6 +9,7 @@ Public API
 ----------
 compute_vbp(df, lookback, n_bins) -> pd.Series (bin_midpoint → volume_value)
 nearest_high_volume_node_above(vbp, price) -> (price, volume) | None
+nearest_high_volume_node_below(vbp, price) -> (price, volume) | None
 """
 
 from __future__ import annotations
@@ -112,4 +113,42 @@ def nearest_high_volume_node_above(
         return None
 
     nearest = high_vol.index.min()
+    return float(nearest), float(high_vol.loc[nearest])
+
+
+def nearest_high_volume_node_below(
+        vbp: pd.Series,
+        price: float,
+        volume_percentile: int = 70,
+) -> tuple[float, float] | None:
+    """
+    Find the nearest high-volume node *below* the current price.
+
+    Mirror of ``nearest_high_volume_node_above``: the support shelf a long can
+    fall back on, or the first volume barrier a short must break through on the
+    way down. "Clear path below" for a short = no qualifying node nearby.
+
+    Parameters
+    ----------
+    vbp : Series from ``compute_vbp`` (index = price midpoints).
+    price : Current price level.
+    volume_percentile : Minimum percentile of volume to qualify as a "node".
+
+    Returns
+    -------
+    (node_price, node_volume) or None if no qualifying node exists below price.
+    """
+    if vbp.empty:
+        return None
+
+    threshold = np.percentile(vbp.values, volume_percentile)
+    below = vbp[vbp.index < price]
+    if below.empty:
+        return None
+
+    high_vol = below[below >= threshold]
+    if high_vol.empty:
+        return None
+
+    nearest = high_vol.index.max()
     return float(nearest), float(high_vol.loc[nearest])

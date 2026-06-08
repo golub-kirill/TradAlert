@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     exit_price      DOUBLE        NULL,
     exit_reason     VARCHAR(16)   NULL,            -- stop|target|engine_exit|open_eod|time_stop
     bars_held       INT           NULL,
-    r_multiple      DECIMAL(10,4) NULL,
+    r_multiple      DECIMAL(10,4) NULL,            -- per-unit-risk strategy edge (raw)
+    effective_r     DECIMAL(10,4) NULL,            -- r_multiple × size_mult − borrow_drag; sums to backtest_runs.total_r
+    size_mult       DECIMAL(6,4)  NULL,            -- macro × behavioral position-size multiplier at entry
+    borrow_annual_rate DECIMAL(8,5) NULL,          -- short stock-borrow rate (0 for longs)
     market_regime   VARCHAR(32)   NULL,
     ticker_trend    VARCHAR(16)   NULL,
     entry_score     DECIMAL(5,1)  NULL,
@@ -50,3 +53,14 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     CONSTRAINT fk_bt_trades_run
         FOREIGN KEY (run_id) REFERENCES backtest_runs (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── migration for EXISTING deploys (the CREATE above only applies to a fresh
+-- table) ───────────────────────────────────────────────────────────────────────
+-- Run these once on a table created before the effective_r columns existed. The
+-- writer and reconcilers detect column presence and fall back to r_multiple if
+-- absent, so journaling/reconciliation never break — but without these the live
+-- ledger can't reconstruct backtest_runs.total_r once sizing/shorts are active.
+--   ALTER TABLE backtest_trades
+--     ADD COLUMN effective_r        DECIMAL(10,4) NULL AFTER r_multiple,
+--     ADD COLUMN size_mult          DECIMAL(6,4)  NULL AFTER effective_r,
+--     ADD COLUMN borrow_annual_rate DECIMAL(8,5)  NULL AFTER size_mult;

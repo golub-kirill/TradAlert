@@ -237,6 +237,21 @@ class WalkForwardEngine:
     grid          : ParamSpec list for the OFAT sweep. Defaults to PARAM_GRID.
     """
 
+    # Trade-count floor for IS parameter selection: a combo must clear this many
+    # IS trades to be eligible as "best", so a tiny-sample fluke E[R] cannot win
+    # selection. Falls back to the full set when no combo clears it (sparse window).
+    _MIN_IS_TRADES: int = 20
+
+    @staticmethod
+    def _select_best_is(points, min_trades: int):
+        """Pick the highest-E[R] sweep point that clears the trade-count floor.
+
+        Falls back to the unfiltered set if the floor would leave nothing, so a
+        window with few trades still yields a selection.
+        """
+        eligible = [p for p in points if p.stats.trades_count >= min_trades] or list(points)
+        return max(eligible, key=lambda p: p.stats.expectancy_r)
+
     def __init__(
             self,
             universe: UniverseData,
@@ -400,8 +415,8 @@ class WalkForwardEngine:
         Run OFAT sweep on IS, pick best config, apply to OOS.
 
         Returns (is_point, oos_point, tuned_params_dict).
-        The IS point is the sweep baseline (un-tuned config on IS).
-        The OOS point uses the best-tuned config from the IS sweep.
+        The IS point is the best-tuned config's in-sample result; the OOS point is
+        that same config out-of-sample → degradation = tuned-IS − tuned-OOS.
         """
         cache_key = (window.is_start, window.is_end)
 
@@ -433,9 +448,9 @@ class WalkForwardEngine:
                 progress=None,  # suppress individual sweep progress
             )
 
-            # Pick best by E[R]
+            # Pick best by E[R], subject to a trade-count floor (no fluke wins).
             all_pts = sweep_report.all_points
-            best_is = max(all_pts, key=lambda p: p.stats.expectancy_r)
+            best_is = self._select_best_is(all_pts, self._MIN_IS_TRADES)
             self._sweep_cache[cache_key] = best_is
 
         # Extract tuned params from the best sweep point
@@ -449,8 +464,11 @@ class WalkForwardEngine:
             best_is.param_name, best_is.param_value,
         )
 
-        # IS point: use the baseline config on IS (for comparison)
-        is_pt = self._run_window(window.is_start, window.is_end, window)
+        # IS point: the SAME tuned config's in-sample result (best_is is the IS
+        # sweep point that was selected). Reporting tuned-IS vs tuned-OOS makes
+        # degradation an honest overfitting measure — the old baseline-IS-vs-
+        # tuned-OOS understated it (different configs on each side).
+        is_pt = best_is
 
         return is_pt, oos_pt, tuned_params
 

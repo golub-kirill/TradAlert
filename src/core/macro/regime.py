@@ -240,9 +240,11 @@ def classify_macro_state(
             was_spread = dgs10_ago - dgs3mo_ago
             was_inverted = was_spread < 0
 
-        if spread < 0 and was_inverted:
+        if spread < 0:
+            # Inverted now — fresh or sustained. The old `and was_inverted` let a
+            # fresh inversion (not yet inverted 2 months ago) fall through to FLAT.
             state.curve_state = "INVERTED"
-        elif spread >= 0 and was_inverted:
+        elif was_inverted:
             state.curve_state = "STEEPENING_FROM_INVERTED"
         elif spread > 0.5:
             state.curve_state = "NORMAL"
@@ -257,7 +259,10 @@ def classify_macro_state(
         current = hy_oas.iloc[-1]
         # 5-year window, frequency-agnostic
         hist = _series_ago("BAMLH0A0HYM2", 60)
-        if hist is not None and len(hist) >= 12:  # at least 1 year of data
+        # Require ≥ ~1 year of actual history by date span. `len >= 12` meant "12
+        # monthly points", but HY OAS is a daily series — 12 rows there is 12 days,
+        # which would compute the percentile band off a tiny, unreliable window.
+        if hist is not None and len(hist) >= 2 and (hist.index[-1] - hist.index[0]).days >= 330:
             pct_80 = hist.quantile(0.8)
             pct_20 = hist.quantile(0.2)
             if current > pct_80:
@@ -311,9 +316,12 @@ def classify_macro_state(
 
     # Inflation state (Core PCE Y/Y) — time-based, frequency-agnostic
     pce = _series("PCEPILFE")
-    if pce is not None and len(pce) >= 12:
-        # YoY calculation
-        yoy = (pce.iloc[-1] / pce.iloc[-12] - 1) * 100
+    pce_12m_ago = _val_ago("PCEPILFE", 12)
+    if pce is not None and pce_12m_ago is not None and pce_12m_ago > 0:
+        # True 12-month YoY via a time-based lookback. iloc[-12] spanned only 11
+        # months on monthly data, mismatched against the 12-month yoy_6mo_ago leg
+        # below → it could flip STABLE/ACCELERATING on the span mismatch alone.
+        yoy = (pce.iloc[-1] / pce_12m_ago - 1) * 100
         # YoY 6 months ago
         pce_6m_ago = _val_ago("PCEPILFE", 6)
         pce_18m_ago = _val_ago("PCEPILFE", 18)
@@ -383,8 +391,11 @@ def classify_macro_state(
     wcs = _series("BZ=F")
     wti_val = _val("CL=F")
     if wcs is not None and wti_val is not None and not wcs.empty:
+        # BZ=F (Brent) is a rough proxy. Brent−WTI is normally a small POSITIVE
+        # premium, so the old `< -25` (a $25 Brent discount to WTI) was unreachable
+        # → WIDE never fired. Flag an abnormally wide Brent−WTI premium instead.
         spread = wcs.iloc[-1] - wti_val
-        if spread < -25:
+        if spread > 10:
             state.wcs_spread_state = "WIDE"
         else:
             state.wcs_spread_state = "NORMAL"
