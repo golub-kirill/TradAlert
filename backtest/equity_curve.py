@@ -161,14 +161,25 @@ def build_curve(trades: list["Trade"]) -> EquityCurve:
             recovery_days = (dates[recovery_idx] - dates[trough_idx]).days
 
     # ── monthly aggregation ───────────────────────────────────────────────────
-    month_keys = [f"{d.year:04d}-{d.month:02d}" for d in dates]
-    monthly_dict: dict[str, float] = {}
-    for key, r in zip(month_keys, rs):
-        monthly_dict[key] = monthly_dict.get(key, 0.0) + r
+    # Two views of monthly R:
+    #   monthly        — trade-months only ("YYYY-MM" index), for best/worst-month
+    #                    attribution and display.
+    #   monthly_contig — contiguous calendar months, zero-filled for months with no
+    #                    closed trade. Sharpe/Sortino use THIS: flat months are real
+    #                    and the sqrt(12) annualization assumes one value per calendar
+    #                    month. A gapped (trade-months-only) series inflates the ratio.
+    month_periods = pd.PeriodIndex(dates, freq="M")
+    monthly_by_period = (
+        pd.Series(rs, index=month_periods).groupby(level=0).sum().sort_index()
+    )
+    full_months = pd.period_range(
+        monthly_by_period.index.min(), monthly_by_period.index.max(), freq="M"
+    )
+    monthly_contig = monthly_by_period.reindex(full_months, fill_value=0.0)
 
     monthly = pd.Series(
-        list(monthly_dict.values()),
-        index=pd.Index(sorted(monthly_dict), name="month"),
+        monthly_by_period.values,
+        index=pd.Index([str(p) for p in monthly_by_period.index], name="month"),
         name="monthly_r",
     )
 
@@ -184,10 +195,9 @@ def build_curve(trades: list["Trade"]) -> EquityCurve:
         name="annual_r",
     )
 
-    # ── Sharpe / Sortino ──────────────────────────────────────────────────────
-    monthly_vals = list(monthly_dict.values())
-    sh = sharpe_ratio(monthly_vals)
-    so = sortino_ratio(monthly_vals)
+    # ── Sharpe / Sortino (on the contiguous, zero-filled monthly series) ──────
+    sh = sharpe_ratio(monthly_contig.tolist())
+    so = sortino_ratio(monthly_contig.tolist())
 
     # ── Calmar = annualised_r / max_dd ────────────────────────────────────────
     if max_dd > 0:
