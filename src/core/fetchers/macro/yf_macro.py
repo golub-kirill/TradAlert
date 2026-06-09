@@ -71,11 +71,11 @@ def fetch_yf_macro_series(
         # yfinance wraps network and parse errors broadly; cover OS/value
         # for the common cases and Attribute/Runtime for the upstream wraps.
         logger.warning("[yf_macro] fetch failed for %s: %s", ticker, exc, exc_info=True)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     if df.empty:
         logger.warning("[yf_macro] no data returned for %s", ticker)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     result = pd.DataFrame({"value": df["Close"]})
     result.index.name = None
@@ -89,10 +89,22 @@ def fetch_yf_macro_series(
 
     return result
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
+    """Serve the cached parquet (fail-open) when a fetch fails, but WARN with the
+    cache age when it is past the staleness window — a silently-unbounded-stale
+    cache must not masquerade as a fresh series (audit F2)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_hours * 3600:
+                logger.warning(
+                    "[yf_macro] serving STALE cache for %s — %.1f h old (> %g h "
+                    "window); upstream fetch failed, value may be outdated.",
+                    parquet_path.stem, age / 3600.0, staleness_hours,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[yf_macro] cached parquet read failed at %s: %s", parquet_path, exc)
     return pd.DataFrame(index=pd.DatetimeIndex([]), columns=["value"])

@@ -65,7 +65,7 @@ def fetch_fred_series(
     api_key = _get_api_key()
     if api_key is None:
         logger.warning("[fred] no API key configured; returning cached or empty for %s", series_id)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     url = _FRED_BASE_URL
     params = {
@@ -88,21 +88,21 @@ def fetch_fred_series(
             "[fred] fetch failed for %s: %s (status=%s)",
             series_id, type(exc).__name__, status,
         )
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
     except (KeyError, ValueError, TypeError) as exc:
         # Defensive: parsing/JSON errors after a 200 response can't carry the URL.
         logger.warning("[fred] response parse failed for %s: %s",
                        series_id, type(exc).__name__, exc_info=True)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     observations = data.get("observations", [])
     if not observations:
         logger.warning("[fred] no observations returned for %s", series_id)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     df = _parse_fred_observations(observations, series_id)
     if df.empty:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     try:
         df.to_parquet(parquet_path)
@@ -175,11 +175,22 @@ def _get_api_key() -> str | None:
         logger.debug("[fred] reading settings.yaml failed (%s); using default env name", exc)
     return os.environ.get(env_name)
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
-    """Load cached parquet if available, otherwise return empty DataFrame."""
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
+    """Load cached parquet (fail-open) when a fetch fails, but WARN with the cache
+    age when it is past the staleness window so an unbounded-stale cache can't
+    masquerade as a fresh series (audit F2)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_hours * 3600:
+                logger.warning(
+                    "[fred] serving STALE cache for %s — %.1f h old (> %g h window); "
+                    "upstream fetch failed, value may be outdated.",
+                    parquet_path.stem, age / 3600.0, staleness_hours,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[fred] cached parquet read failed at %s: %s", parquet_path, exc)
     return pd.DataFrame(index=pd.DatetimeIndex([]), columns=["value"])

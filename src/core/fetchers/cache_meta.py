@@ -26,6 +26,17 @@ def is_fresh(path: Path, max_age_seconds: float) -> bool:
         return False
 
 
+def age_seconds(path: Path) -> float | None:
+    """Seconds since *path* was last modified, or None if it doesn't exist."""
+    try:
+        if not path.exists():
+            return None
+        return datetime.now().timestamp() - path.stat().st_mtime
+    except (OSError, ValueError) as exc:
+        logger.debug("cache age check failed for %s: %s", path, exc)
+        return None
+
+
 def write_meta(meta_path: Path) -> None:
     """Write a ``{"fetched_at": iso}`` sidecar (freshness uses the file mtime)."""
     try:
