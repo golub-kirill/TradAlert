@@ -205,6 +205,24 @@ _UPDATE_STOP_SQL = """
 
 # ── public API ────────────────────────────────────────────────────────────────
 
+def db_reachable() -> bool:
+    """True iff a DB connection can be opened.
+
+    Used to NOTIFY the operator when a scan ran with the positions table
+    unreadable (open-position awareness lost, scan not journaled) — the scan
+    itself still proceeds fail-open; this is detection for an alert, not a guard.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        return bool(conn.is_connected())
+    except (MySQLError, ConfigError):
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def load_open_positions() -> dict[str, Position]:
     """
     Return open positions keyed by ticker.

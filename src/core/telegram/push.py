@@ -64,6 +64,36 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None) -> None:
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
 
+def send_notice(text: str, settings) -> None:
+    """Send a one-off plain operator notice to the owner chat. Fail-open — never
+    raises into the caller (used e.g. to flag a DB outage during a scan). No-op
+    when telegram is disabled or the token/chat are unset.
+    """
+    cfg = load_telegram_config(settings)
+    if not cfg.enabled:
+        return
+    token = os.environ.get("TG_BOT_TOKEN")
+    chat = os.environ.get("TG_CHAT_ID")
+    if not token or not chat:
+        logger.warning("[telegram] notice skipped — TG_BOT_TOKEN/TG_CHAT_ID missing")
+        return
+    try:
+        chat_id = int(chat)
+    except (TypeError, ValueError):
+        logger.warning("[telegram] notice skipped — TG_CHAT_ID not numeric")
+        return
+    try:
+        asyncio.run(_send_notice(token, chat_id, cfg.parse_mode, text))
+    except Exception as exc:  # alerting must never break the scan
+        logger.warning("[telegram] notice failed (scan unaffected) — %s", exc)
+
+
+async def _send_notice(token, chat_id, parse_mode, text):
+    from core.telegram.bot import TelegramNotifier
+    async with TelegramNotifier(token, chat_id, parse_mode=parse_mode) as nf:
+        await nf.send_message(text)
+
+
 # ── selection (pure) ─────────────────────────────────────────────────────────────
 
 def _select(results, cfg: TelegramConfig):

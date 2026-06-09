@@ -256,6 +256,24 @@ def main() -> None:
     except Exception as exc:
         logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 
+    # ── 8c. DB-health notice (fail-open, notification only) ────────────────────
+    # If MySQL was unreachable, the scan fired with no open-position awareness and
+    # left no journaled record. We do NOT block firing (fail-open by design) — we
+    # alert the operator so a blind run doesn't pass silently.
+    try:
+        from core.position_manager import db_reachable
+        if not db_reachable():
+            from core.telegram.push import send_notice
+            send_notice(
+                "⚠️ TradAlert: MySQL was unreachable during this scan — it ran "
+                "WITHOUT open-position awareness and was NOT journaled. Check the DB.",
+                settings,
+            )
+            logging.getLogger(__name__).warning(
+                "[db] DB unreachable during scan — operator notified; ran fail-open")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[db] health notice skipped — %s", exc)
+
     # ── 9. alpha-decay watch ────────────────────────────────────────────
     _print_alpha_decay_watch()
 
