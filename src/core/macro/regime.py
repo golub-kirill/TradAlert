@@ -96,6 +96,14 @@ _DEFAULT_AXIS_WEIGHTS = {
     "earnings_breadth": 2,
 }
 
+# FRED monthly series are dated at the reference month start but published the
+# following month. Treat a monthly print for month M as KNOWN only from the start
+# of M+2 — conservative (never before CPI/PCE/FEDFUNDS actually release), so a
+# backtest replaying a past as_of cannot see an unpublished figure. Daily/weekly
+# series publish same/next day and need no shift.
+_MONTHLY_FRED = frozenset({"PCEPILFE", "CPIAUCSL", "CPILFESL", "CPIAUCNS", "FEDFUNDS"})
+_MONTHLY_PUBLISH_LAG = pd.DateOffset(months=2)
+
 # classify_macro_state was called once per bar in the portfolio
 # backtester (~6000 bars per cell × N cells). Most underlying series are
 # monthly (FRED CPI/PCE) or weekly (COT). The actual classified state
@@ -152,14 +160,20 @@ def classify_macro_state(
     state = MacroState()
     missing: list[str] = []
 
-    # Slice series to as_of
+    # Slice each series to as_of, pushing monthly FRED prints back to their
+    # release date so an unpublished figure can't leak into a past decision.
+    def _eff_asof(sid: str):
+        if as_of is None:
+            return None
+        return (as_of - _MONTHLY_PUBLISH_LAG) if sid in _MONTHLY_FRED else as_of
+
     def _val(sid: str) -> float | None:
         df = series.get(sid)
         if df is None or df.empty:
             return None
         s = df["value"]
         if as_of is not None:
-            s = s.loc[:as_of]
+            s = s.loc[:_eff_asof(sid)]
         if s.empty:
             return None
         v = s.iloc[-1]
@@ -171,7 +185,7 @@ def classify_macro_state(
             return None
         s = df["value"]
         if as_of is not None:
-            s = s.loc[:as_of]
+            s = s.loc[:_eff_asof(sid)]
         return s if not s.empty else None
 
     def _val_ago(sid: str, months: int) -> float | None:
