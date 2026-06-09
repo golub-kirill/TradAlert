@@ -61,6 +61,21 @@ from backtest.sweep import SweepEngine, SweepPoint, PARAM_GRID, ParamSpec
 logger = logging.getLogger(__name__)
 
 
+def _advance_months(d: date, months: int) -> date:
+    """Add ``months`` to ``d``, clamping the day to the target month's length.
+
+    ``date.replace(month=...)`` keeps the original day, so a 29/30/31 start date
+    landing on a shorter month would raise ValueError. Clamping makes window
+    stepping safe for any universe start date (audit V4); days <= 28 are unchanged.
+    """
+    import calendar
+    month_idx = d.month - 1 + months
+    year = d.year + month_idx // 12
+    month = month_idx % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
+
+
 # ── window descriptor ─────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -323,11 +338,8 @@ class WalkForwardEngine:
             ))
             idx += 1
 
-            # Advance cursor by step_months
-            month = cursor.month - 1 + self._step_months
-            new_year = cursor.year + month // 12
-            new_month = month % 12 + 1
-            cursor = cursor.replace(year=new_year, month=new_month)
+            # Advance cursor by step_months (day clamped to the target month).
+            cursor = _advance_months(cursor, self._step_months)
 
         return windows
 
