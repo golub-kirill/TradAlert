@@ -243,9 +243,11 @@ def main() -> None:
     print(f"    p-value     : {rc.p_value:.4f}   "
           f"[{_verdict(rc.p_value < 0.05)}  (<0.05)]")
     print("  " + "-" * 70)
-    # White's RC is the primary snooping test (does the best of N beat cash?);
-    # the headline DSR is the conservative confidence that the SHIPPED config's
-    # Sharpe beats the chance-maximum over N trials. Read them together.
+    # White's RC is the PRIMARY snooping test (does the best of N beat cash?,
+    # preserving cross-config correlation). The headline DSR is a SECONDARY
+    # diagnostic — the confidence that the SHIPPED config's Sharpe beats the
+    # chance-maximum over the (narrow, correlated OFAT) trial set; see the caveat
+    # below on why that DSR reads optimistic. Read them together.
     rc_pass = rc.p_value < 0.05
     if rc_pass and dsr_headline.dsr > 0.95:
         verdict = "edge SURVIVES the haircut — best config beats cash (RC) AND headline clears the chance-max (DSR)"
@@ -255,9 +257,14 @@ def main() -> None:
     else:
         verdict = "edge does NOT clearly survive the snooping correction (RC p≥0.05)"
     print(f"  Verdict  : {verdict}")
-    print("  Caveat   : OFAT trials are highly correlated (each differs from the")
-    print("             headline by one knob), so the effective number of independent")
-    print("             trials < N — the DSR hurdle is, if anything, conservative.")
+    print("  Caveat   : the DSR/RC inputs are THIS OFAT sweep — a narrow, highly")
+    print("             correlated slice of the actual multi-parameter search that")
+    print("             selected the headline (slippage, exit mode, watchlist, budget,")
+    print("             scoring, ...). Both the trial-Sharpe variance (SR0 ∝ √Var) and")
+    print("             the trial count therefore UNDERSTATE the true search breadth, so")
+    print("             the DSR reads OPTIMISTIC (an upper bound on survival), not")
+    print("             conservative. Treat a pass as necessary, not sufficient; White's")
+    print("             RC (correlation-preserving) is the more robust primary gate.")
     print("=" * 74 + "\n")
 
 

@@ -280,6 +280,15 @@ def deflated_sharpe_ratio(
 
     DSR ≤ PSR(0) always (SR0 ≥ 0 raises the hurdle). When N < 2 or the trial
     Sharpes have zero variance, SR0 = 0 and DSR == PSR(0).
+
+    LIMITATION (audit F6): Var({SR_n}) and N must reflect the FULL strategy search
+    to be an honest deflation. SR0 ∝ √Var, and the √Var term dominates the weak
+    Φ⁻¹(1−1/N) dependence on N. When fed a narrow OFAT sweep (each trial differs
+    from the headline by one knob) the trial Sharpes cluster — Var is small and the
+    trials are correlated — so SR0 is understated and the DSR is OPTIMISTIC (an
+    upper bound on survival), NOT conservative. Pair it with White's reality check
+    on the full return matrix (which preserves cross-config correlation) as the
+    primary multiple-testing verdict.
     """
     clean = np.asarray(
         [s for s in all_monthly_sharpes if s is not None and math.isfinite(float(s))],
