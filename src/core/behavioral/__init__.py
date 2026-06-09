@@ -39,6 +39,30 @@ def _column_or_warn(df, col, axis):
     return None
 
 
+# Publication lag (calendar days) from each feed's data date to its public
+# release. Backtest as_of slicing must use the RELEASE date, not the report/
+# survey date, or a print leaks into decisions made before it existed:
+#   cot_es : CFTC TFF reports Tuesday positions, released the following Friday (+3).
+#   naaim  : weekly exposure survey, released ~1 day after the survey date (+1).
+#   aaii   : weekly sentiment survey, released ~1 day after the Wednesday close (+1).
+# Price-derived feeds (breadth, sector_rotation) have no publication lag.
+_RELEASE_LAG_DAYS = {"cot_es": 3, "naaim": 1, "aaii": 1}
+
+
+def _release_align(df: "pd.DataFrame | None", lag_days: int) -> "pd.DataFrame | None":
+    """Return a copy of ``df`` with its DatetimeIndex shifted forward by
+    ``lag_days`` so as_of slicing reflects when the feed was RELEASED, not its
+    report/survey date. Input is never mutated; non-datetime indexes pass through.
+    """
+    if df is None or getattr(df, "empty", True) or lag_days <= 0:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    out = df.copy()
+    out.index = out.index + pd.Timedelta(days=lag_days)
+    return out
+
+
 @dataclass
 class BehavioralState:
     """
@@ -152,9 +176,11 @@ def classify_behavioral_state(
 
     breadth_df = _slice(data.get("breadth"))
     sector_df = _slice(data.get("sector_rotation"))
-    cot_es = _slice(data.get("cot_es"))
-    naaim = _slice(data.get("naaim"))
-    aaii = _slice(data.get("aaii"))
+    # Release-align the survey/report feeds before slicing so a print is only
+    # visible from its publication date onward (no look-ahead in backtests).
+    cot_es = _slice(_release_align(data.get("cot_es"), _RELEASE_LAG_DAYS["cot_es"]))
+    naaim = _slice(_release_align(data.get("naaim"), _RELEASE_LAG_DAYS["naaim"]))
+    aaii = _slice(_release_align(data.get("aaii"), _RELEASE_LAG_DAYS["aaii"]))
 
     spy_t = _slice(spy_df) if spy_df is not None else None
 
