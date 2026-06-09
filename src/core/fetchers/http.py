@@ -43,11 +43,18 @@ class _MinIntervalLimiter:
     def wait(self) -> None:
         if self.min_interval <= 0:
             return
+        # Reserve this caller's slot atomically (advance _last under the lock),
+        # then sleep OUTSIDE the lock. Concurrent callers therefore get distinct,
+        # interval-spaced slots instead of all reading a stale _last and firing
+        # together. Holding _last unlocked across the sleep (the old code) let N
+        # threads burst, defeating the throttle.
         with self._lock:
-            elapsed = time.monotonic() - self._last
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        self._last = time.monotonic()
+            now = time.monotonic()
+            target = max(now, self._last + self.min_interval)
+            self._last = target
+        sleep_s = target - now
+        if sleep_s > 0:
+            time.sleep(sleep_s)
 
 
 _LIMITERS: dict[str, _MinIntervalLimiter] = {}
