@@ -222,17 +222,29 @@ def bootstrap_ci(
         for _ in range(n)
     ])
 
+    # Drop non-finite resamples before the percentile / SE. profit_factor returns
+    # +inf for a resample with zero losers (common on rare-loss samples), which
+    # would otherwise poison np.percentile/std into nan. The other metrics are
+    # always finite, so this is a no-op for them. n_samples reports how many
+    # resamples actually informed the CI.
+    finite = boots[np.isfinite(boots)]
+    if finite.size == 0:
+        return BootstrapResult(
+            estimate=est, lower=est, upper=est,
+            ci=ci, n_samples=0, std_error=0.0,
+        )
+
     alpha = (1.0 - ci) / 2
-    lower = float(np.percentile(boots, alpha * 100))
-    upper = float(np.percentile(boots, (1 - alpha) * 100))
-    se = float(boots.std())
+    lower = float(np.percentile(finite, alpha * 100))
+    upper = float(np.percentile(finite, (1 - alpha) * 100))
+    se = float(finite.std())
 
     return BootstrapResult(
         estimate=est,
         lower=lower,
         upper=upper,
         ci=ci,
-        n_samples=n,
+        n_samples=int(finite.size),
         std_error=se,
     )
 
@@ -402,7 +414,10 @@ def consecutive_loss_stats(r_multiples: Sequence[float]) -> ConsecutiveLossStats
     """
     Analyse runs of consecutive losing trades.
 
-    A trade is a loss when its R-multiple ≤ 0.
+    A trade is a loss when its R-multiple < 0. Scratch trades (r == 0) are
+    neutral and break a streak — consistent with the project-wide convention
+    (stats.py / _profit_factor); the old ``<= 0`` counted scratches as losses
+    and inflated the loss-streak risk stats.
 
     Returns ConsecutiveLossStats with observed streak lengths,
     max streak, and average streak.
@@ -411,7 +426,7 @@ def consecutive_loss_stats(r_multiples: Sequence[float]) -> ConsecutiveLossStats
     current = 0
 
     for r in r_multiples:
-        if r <= 0:
+        if r < 0:
             current += 1
         else:
             if current > 0:
