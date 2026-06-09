@@ -66,12 +66,15 @@ def reconcile(closed, commission_r: float = 0.0):
     """Score closed positions into realized R, bucketed by side.
 
     `closed` is an iterable of objects with .side/.entry_price/.stop_price/
-    .exit_price/.ticker/.exit_date (the position_manager.Position shape).
+    .initial_stop/.exit_price/.ticker/.exit_date (the position_manager.Position
+    shape). Realized R uses the INITIAL stop as the risk denominator (matching the
+    backtester) so a later trailed stop_price can't drift it; rows without an
+    initial_stop (legacy, pre-migration) fall back to stop_price.
 
     Returns a dict:
         by_side   : {side: [r, ...]}          scored realized R per side
         scored    : [(side, r, ticker, exit_date), ...]
-        no_stop   : int   closed but stop_price is None → unscorable
+        no_stop   : int   closed but no usable stop → unscorable
         bad_risk  : int   stop present but risk <= 0 (degenerate geometry)
     """
     by_side: dict[str, list[float]] = defaultdict(list)
@@ -79,10 +82,13 @@ def reconcile(closed, commission_r: float = 0.0):
     no_stop = 0
     bad_risk = 0
     for p in closed:
-        if p.stop_price is None:
+        risk_stop = getattr(p, "initial_stop", None)
+        if risk_stop is None:
+            risk_stop = p.stop_price
+        if risk_stop is None:
             no_stop += 1
             continue
-        r = _r_multiple(p.side, float(p.entry_price), float(p.stop_price),
+        r = _r_multiple(p.side, float(p.entry_price), float(risk_stop),
                         float(p.exit_price))
         if r is None:
             bad_risk += 1
