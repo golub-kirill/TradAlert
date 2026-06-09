@@ -16,6 +16,10 @@ setlocal
 set "ROOT=%~dp0.."
 pushd "%ROOT%"
 
+REM UTF-8 so the report's box-drawing dividers don't raise UnicodeEncodeError
+REM when stdout is redirected to the cp1252 log below.
+set "PYTHONIOENCODING=utf-8"
+
 if not exist "logs" mkdir "logs"
 
 echo ============================================================>> "logs\scheduler.log"

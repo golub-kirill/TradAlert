@@ -89,6 +89,17 @@ _CONTEXT_ONLY: set[str] = {_VIX_SYMBOL}
 
 def main() -> None:
     """Run the full pipeline for one scan. Exit 1 when no tickers were fetched."""
+    # Force UTF-8 stdout/stderr so the report's box-drawing dividers (─) survive the
+    # scheduler's cp1252 console — run_daily.bat redirects stdout/stderr into
+    # logs/scheduler.log, where otherwise every divider raised UnicodeEncodeError and
+    # spammed the log with logging-error tracebacks (the scan itself was unaffected).
+    import sys as _sys
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     args = _parse_args()
     settings = _load_settings()
     _setup_logging(settings)
