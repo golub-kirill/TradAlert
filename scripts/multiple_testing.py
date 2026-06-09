@@ -181,7 +181,7 @@ def main() -> None:
     if baseline_idx is None or n_valid < 2:
         print("\n  ✗ Not enough valid configs to run the correction "
               f"(valid={n_valid}, excluded={excluded}).")
-        return
+        sys.exit(1)  # void run — non-zero so a wrapper/CI doesn't read it as a pass
 
     # Build the zero-filled contiguous monthly matrix ONCE, then derive every
     # config's Sharpe from those same columns. This keeps the DSR inputs and the
@@ -196,7 +196,7 @@ def main() -> None:
     if n_finite < 2:
         print("\n  ✗ Too few configs with non-degenerate monthly variance to deflate "
               f"(finite Sharpes={n_finite} of {n_valid}).")
-        return
+        sys.exit(1)  # void run — non-zero so a wrapper/CI doesn't read it as a pass
 
     # ── deflated Sharpe: headline + empirical best ────────────────────────────
     dsr_headline = deflated_sharpe_ratio(matrix[:, baseline_idx], all_sharpes, n_trials=n_finite)

@@ -261,10 +261,21 @@ class WalkForwardEngine:
     def _select_best_is(points, min_trades: int):
         """Pick the highest-E[R] sweep point that clears the trade-count floor.
 
-        Falls back to the unfiltered set if the floor would leave nothing, so a
-        window with few trades still yields a selection.
+        Fallback ladder (audit L1): combos clearing the floor → any combo that
+        actually traded → the baseline. The old ``or list(points)`` fallback could
+        pick an arbitrary ZERO-trade point — which, when a whole window's workers
+        crashed (every point zeroed/_empty), silently tuned the OOS leg on a junk
+        config. We never select a 0-trade point: if none traded, return the
+        baseline so a failed window degrades to baseline-config OOS, not garbage.
         """
-        eligible = [p for p in points if p.stats.trades_count >= min_trades] or list(points)
+        if not points:
+            return None
+        eligible = [p for p in points if p.stats.trades_count >= min_trades]
+        if not eligible:
+            eligible = [p for p in points if p.stats.trades_count > 0]
+        if not eligible:
+            baseline = next((p for p in points if getattr(p, "is_baseline", False)), None)
+            return baseline if baseline is not None else points[0]
         return max(eligible, key=lambda p: p.stats.expectancy_r)
 
     def __init__(

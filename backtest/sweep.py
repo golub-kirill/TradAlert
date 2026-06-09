@@ -693,6 +693,7 @@ class SweepEngine:
                 futures[fut] = i
 
             n_done = 0
+            n_failed = 0
             for fut in as_completed(futures):
                 idx = futures[fut]
                 job = jobs[idx]
@@ -701,8 +702,14 @@ class SweepEngine:
                     pt = fut.result()
                     points[idx] = pt
                 except Exception as exc:
-                    logger.error("Job failed [%s=%s]: %s",
-                                 spec.label, job["val"], exc)
+                    n_failed += 1
+                    # Log the FULL worker traceback (exc_info), not just str(exc),
+                    # so a BrokenProcessPool / OOM / pickling crash is diagnosable
+                    # instead of silently swallowed and replaced by a zeroed point
+                    # that downstream tuning then treats as a real 0-trade config
+                    # (audit L1).
+                    logger.error("Job failed [%s=%s] — substituting an empty point",
+                                 spec.label, job["val"], exc_info=exc)
                     points[idx] = _empty_point(
                         spec.dotted, job["val"], spec.label, spec.group
                     )
@@ -712,6 +719,13 @@ class SweepEngine:
                         f"[{n_done}/{len(jobs)}] "
                         f"{spec.label} = {spec.fmt.format(job['val'])}"
                     )
+
+            if n_failed:
+                logger.warning(
+                    "Sweep: %d/%d jobs FAILED (tracebacks above) — their points are "
+                    "zeroed; selection logic must exclude them, not treat them as "
+                    "real 0-trade configs.", n_failed, len(jobs),
+                )
 
         return [p for p in points if p is not None]
 
