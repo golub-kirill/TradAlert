@@ -129,10 +129,13 @@ class Trade:
     def effective_r(self) -> float:
         """R-multiple scaled by position-size multiplier, net of borrow cost.
 
-        ``borrow_drag_r()`` is 0.0 for longs and when ``borrow_annual_rate``
-        is unset, so this is identical to ``r_multiple × size_mult`` for the
-        long-only baseline."""
-        return self.r_multiple * self.size_mult - self.borrow_drag_r()
+        Both the strategy return and the borrow drag scale with position size, so
+        size_mult multiplies the net (r_multiple − borrow_drag_r): a reduced-size
+        short borrows proportionally fewer shares and so pays proportionally less
+        borrow. ``borrow_drag_r()`` is 0.0 for longs and when ``borrow_annual_rate``
+        is unset, so this equals ``r_multiple × size_mult`` for the long-only
+        baseline."""
+        return (self.r_multiple - self.borrow_drag_r()) * self.size_mult
 
     def compute_r(self) -> float:
         """
