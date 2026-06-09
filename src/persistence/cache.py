@@ -191,7 +191,14 @@ def get_or_fetch(
 # ── internals ─────────────────────────────────────────────────────────────────
 
 def _path(ticker: str, cache_dir: Path | str) -> Path:
-    return Path(cache_dir) / f"{ticker.upper()}.parquet"
+    # Reject path-traversal before the ticker becomes a filename. Legit symbols
+    # (^VIX, BRK.B, CL=F, ATD.TO, TEST.1) contain none of these, so this only
+    # blocks separators / parent refs — defense in depth on the owner-gated
+    # Telegram chart path that flows a user-supplied ticker here (audit F4).
+    t = str(ticker).upper()
+    if (not t) or ("/" in t) or ("\\" in t) or (".." in t) or ("\x00" in t):
+        raise ValidationError(f"invalid ticker for cache path: {ticker!r}")
+    return Path(cache_dir) / f"{t}.parquet"
 
 
 def _trim(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame:
