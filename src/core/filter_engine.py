@@ -655,8 +655,14 @@ class FilterEngine:
             )
 
         # size_mult_gate: block entries when the composite macro x behavioral
-        # position-size multiplier is below the configured floor. Default off
-        # (enabled=false) so the long-only baseline replays bit-identically.
+        # position-size multiplier is below the configured floor.
+        #
+        # NOTE (audit F5): this is `enabled: true` in filters.yaml, but it is
+        # currently INERT — regime.size_multiplier is the geometric mean of two
+        # axes each floored at 0.25 (settings.{macro,behavioral}.size_mult_floor),
+        # so it is >= 0.25 == the gate `min`, and the strict `< min` never fires.
+        # To actually gate, lower an axis floor below `min` or raise `min` above
+        # 0.25 — both BLOCK entries and move the headline, so re-validate first.
         smg = self._cfg.get("signals", {}).get("size_mult_gate", {})
         if smg.get("enabled", False):
             min_mult = float(smg.get("min", DEFAULTS.get("filters.signals.size_mult_gate.min")))

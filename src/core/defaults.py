@@ -32,7 +32,7 @@ _VALUES: dict[str, Any] = {
     "filters.signals.size_mult_gate.min": 0.25,
     # settings.yaml
     "settings.storage.staleness_hours": 12,
-    "settings.scanner.min_score_to_alert": 50,
+    "settings.scanner.min_score_to_alert": 60,  # = scoring._DEFAULT_MIN_SCORE
     "settings.scanner.vbp.lookback": 120,
     "settings.scanner.vbp.n_bins": 24,
     "settings.scanner.vbp.volume_percentile": 70,
@@ -44,7 +44,7 @@ _VALUES: dict[str, Any] = {
     "settings.macro.fred_api_key_env": "FRED_API_KEY",
     "settings.behavioral.size_mult_floor": 0.25,
     "settings.behavioral.size_mult_ceiling": 1.0,
-    "settings.behavioral.breadth_divergence_penalty": 0.2,
+    "settings.behavioral.breadth_divergence_penalty": 0.0,  # = behavioral code fallback
     "settings.fetcher.max_workers": 8,
 }
 
