@@ -64,7 +64,7 @@ def main() -> None:
     from backtest.loader import load_universe
     from backtest.report import (
         print_baseline, print_report, save_html, save_csv,
-        print_walk_forward, print_mean_rev_tune,
+        print_walk_forward, print_mean_rev_tune, print_exit_quality,
     )
     from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID, SCORING_GRID
     from backtest.equity_curve import build_curve, attribution_table
@@ -298,6 +298,7 @@ def main() -> None:
         print_baseline(pt, equity=ec, bootstrap=boots,
                        kelly=kel, attribution=attr, streaks=stks,
                        mc_dd=mc_dd)
+        print_exit_quality(trades)  # exit-logic Phase 0 — where do exits leak
         if wf_report:
             print_walk_forward(wf_report)
 

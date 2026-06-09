@@ -141,6 +141,29 @@ def print_bootstrap(bootstrap, bankroll=50_000):
               f"CI [{r.lower:>+7.3f} … {r.upper:>+7.3f}]  SE={r.std_error:.3f}{sig}")
 
 
+def print_exit_quality(trades):
+    """Exit-reason × MFE/MAE table — the core 'where do exits leak' read (Phase 0).
+
+    capture = avg_r / avg_mfe (fraction of the peak favorable move realized);
+    gaveback = share of trades that hit MFE >= 1R but closed below half their peak.
+    """
+    from backtest.stats import exit_quality_by_reason
+    rows = exit_quality_by_reason(trades)
+    if not rows:
+        return
+    print()
+    print(_c("  Exit quality by reason  (R; capture = avg_r / avg_mfe)", _BOLD + _CYAN))
+    print("  " + "─" * 74)
+    print(f"  {'reason':<12} {'n':>5} {'avg_r':>8} {'avg_mfe':>9} {'avg_mae':>9} "
+          f"{'capture':>9} {'gaveback':>9}")
+    print("  " + "─" * 74)
+    for r in rows:
+        cap = f"{r.capture:.0%}" if r.capture == r.capture else "n/a"
+        print(f"  {r.exit_reason:<12} {r.n:>5} {r.avg_r:>+8.3f} {r.avg_mfe_r:>+9.3f} "
+              f"{r.avg_mae_r:>+9.3f} {cap:>9} {r.pct_gave_back:>8.0%}")
+    print("  " + "─" * 74)
+
+
 def print_kelly(kelly, streaks=None, bankroll=50_000, fixed_risk_pct=0.01):
     """Print Kelly fractions + the operator-defined fixed-risk recommendation.
 

@@ -429,6 +429,7 @@ class BarReplayBacktester:
                 b_open = float(bar["open"])
                 b_low = float(bar["low"])
                 b_high = float(bar["high"])
+                open_trade.update_excursion(b_high, b_low)  # exit-quality instrumentation
 
                 # Same-bar pessimistic: if BOTH touched, stop wins.
                 # Long  : stop hit when bar_low <= stop (price falling)
@@ -634,6 +635,7 @@ def _close_trade(
         trade.bars_held = 0
 
     trade.r_multiple = trade.compute_r() - commission_r
+    trade.compute_excursion_r()  # finalize MFE/MAE (after r_multiple is set)
 
 
 def _load_ohlcv_fallback(ticker: str) -> pd.DataFrame:

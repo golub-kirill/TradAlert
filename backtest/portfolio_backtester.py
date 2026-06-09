@@ -456,6 +456,7 @@ class PortfolioBacktester:
                 bar = prepped[ticker].df.loc[D]
                 t_idx = int(prepped[ticker].df.index.get_loc(D))
                 b_open, b_low, b_high = float(bar["open"]), float(bar["low"]), float(bar["high"])
+                trade.update_excursion(b_high, b_low)  # exit-quality instrumentation
                 is_short = (trade.direction == "short")
                 stop_hit = (b_high >= trade.initial_stop) if is_short else (b_low <= trade.initial_stop)
                 if stop_hit:

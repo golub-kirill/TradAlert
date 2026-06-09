@@ -74,7 +74,47 @@ class Trade:
     # per-trade R drag proportional to bars_held (see borrow_drag_r).
     borrow_annual_rate: float = 0.0
 
+    # ── exit-quality instrumentation (Phase 0; zero behavior change) ──────────
+    # Running intrabar extremes over the held bars, finalized to mfe_r/mae_r at
+    # close. R uses the SAME initial-stop denominator as compute_r, so a future
+    # dynamic stop never changes these. None until the first update_excursion.
+    highest_high: float | None = None
+    lowest_low: float | None = None
+    mfe_r: float = 0.0          # max favorable excursion in R (>= 0)
+    mae_r: float = 0.0          # max adverse excursion in R (<= 0)
+    exit_vs_mfe: float | None = None  # r_multiple / mfe_r (capture fraction); None if mfe_r <= 0
+
     # ── helpers ────────────────────────────────────────────────────────────
+
+    def update_excursion(self, bar_high: float, bar_low: float) -> None:
+        """Accumulate the intrabar extremes for one held bar.
+
+        Call once per bar the trade is open (including the entry bar). Pure
+        running max/min — look-ahead-free (only the current bar's H/L).
+        """
+        h, l = float(bar_high), float(bar_low)
+        self.highest_high = h if self.highest_high is None else max(self.highest_high, h)
+        self.lowest_low = l if self.lowest_low is None else min(self.lowest_low, l)
+
+    def compute_excursion_r(self) -> None:
+        """Finalize mfe_r / mae_r / exit_vs_mfe from the accumulated extremes.
+
+        Uses the INITIAL-stop risk denominator (identical to compute_r), so these
+        agree with r_multiple and never move under a dynamic stop. MFE is clamped
+        >= 0 and MAE <= 0 (excursion is 0 at entry by convention). No-op when no
+        bars were seen or risk is non-positive. Call AFTER r_multiple is set
+        (exit_vs_mfe references it)."""
+        risk = self.risk_per_share
+        if risk <= 0 or self.highest_high is None or self.lowest_low is None:
+            self.mfe_r = 0.0
+            self.mae_r = 0.0
+            self.exit_vs_mfe = None
+            return
+        favorable = self.highest_high if self._sign > 0 else self.lowest_low
+        adverse = self.lowest_low if self._sign > 0 else self.highest_high
+        self.mfe_r = max(0.0, self._sign * (favorable - self.entry_price) / risk)
+        self.mae_r = min(0.0, self._sign * (adverse - self.entry_price) / risk)
+        self.exit_vs_mfe = (self.r_multiple / self.mfe_r) if self.mfe_r > 0 else None
 
     @property
     def is_closed(self) -> bool:
