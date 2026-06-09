@@ -8,6 +8,7 @@ __pycache__/
 *.tmp
 *.corrupt
 .opencodeignore
-AGENTS.md
-TODO.md
-validation_program_design.md
+# Only README.md is tracked on GitHub; all other Markdown stays local
+# (TODO, AGENTS, docs/ ADRs + plans + verification notes).
+*.md
+!README.md
