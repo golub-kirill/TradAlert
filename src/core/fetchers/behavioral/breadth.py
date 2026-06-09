@@ -4,6 +4,14 @@ S&P 500 breadth and sector rotation fetchers.
 Computes:
 - pct_above_ma200 : % of S&P 500 constituents trading above their MA200.
 - sector_rotation : (XLI + XLF) / (XLP + XLU) growth-vs-defensive ratio.
+
+SURVIVORSHIP CAVEAT (audit F3): ``pct_above_ma200`` is built from the CURRENT
+S&P 500 membership applied across each name's full price history. Names that were
+removed from the index are absent, and today's members are projected backward, so
+historical breadth is biased bullish (only survivors are counted). The honest fix
+is a date-stamped historical-membership source; until then the early-history
+breadth axis should be read as optimistic. The fetcher emits a WARNING on every
+recompute so the limitation is never silent.
 """
 
 from __future__ import annotations
@@ -53,6 +61,17 @@ def compute_sp500_breadth(
     if not constituents:
         logger.warning("[breadth] no S&P 500 constituents available")
         return _load_cached_or_empty(parquet_path)
+
+    # Survivorship bias (audit F3): this is the CURRENT membership applied to the
+    # full price history — removed names are missing and present names are
+    # projected backward, biasing early-history breadth bullish. A date-stamped
+    # historical-membership feed is the proper fix; flag it loudly until then.
+    logger.warning(
+        "[breadth] computed from CURRENT S&P 500 membership (%d names) across full "
+        "history — survivorship bias; early-history breadth reads optimistic "
+        "(audit F3, needs date-stamped membership).",
+        len(constituents),
+    )
 
     # Full S&P 500 universe — no truncation. The old ``constituents[:100]`` skewed
     # breadth toward alphabetically-early (A–C) names and baked in a fixed count,
