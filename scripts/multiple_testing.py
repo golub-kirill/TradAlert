@@ -103,6 +103,16 @@ def main() -> None:
     ap.add_argument("--max-hold-days", type=int, default=25)
     ap.add_argument("--max-hold-mode", default="if_not_profit")
     ap.add_argument("--max-open-risk", type=float, default=5.0)
+    ap.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
+                    help="Run the whole grid with the breakeven stop enabled at "
+                         "this trigger (validates an exit-rule candidate under "
+                         "the same multiple-testing gates).")
+    ap.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
+                    help="With --breakeven-trigger-r: buffer in ATR multiples.")
+    ap.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
+                    help="Run the whole grid with the ATR trailing stop enabled.")
+    ap.add_argument("--trail-activate-r", type=float, default=None, metavar="R",
+                    help="With --trail-atr-mult: MFE (in R) before trailing starts.")
     ap.add_argument("--start", default=None, metavar="YYYY-MM-DD",
                     help="First entry date (inclusive). Default: earliest bar.")
     ap.add_argument("--end", default=None, metavar="YYYY-MM-DD",
@@ -139,6 +149,14 @@ def main() -> None:
         "max_hold_days": int(args.max_hold_days),
         "max_hold_mode": str(args.max_hold_mode).replace("-", "_"),
     }
+    if args.breakeven_trigger_r is not None:
+        base_port["breakeven_trigger_r"] = float(args.breakeven_trigger_r)
+        if args.breakeven_buffer_atr is not None:
+            base_port["breakeven_buffer_atr"] = float(args.breakeven_buffer_atr)
+    if args.trail_atr_mult is not None:
+        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
+        if args.trail_activate_r is not None:
+            base_port["trail_activate_r"] = float(args.trail_activate_r)
 
     engine = SweepEngine(uni, base_cfg=base_cfg, base_port_cfg=base_port,
                          n_workers=args.workers, use_scoring=False)
@@ -219,9 +237,17 @@ def main() -> None:
     print("\n" + "=" * 74)
     print("  Phase D — Multiple-Testing Correction")
     print("  " + "-" * 70)
+    exit_desc = ""
+    if base_port.get("breakeven_trigger_r") is not None:
+        exit_desc += f" | breakeven@{base_port['breakeven_trigger_r']:g}R"
+        if base_port.get("breakeven_buffer_atr") is not None:
+            exit_desc += f"+{base_port['breakeven_buffer_atr']:g}ATR"
+    if base_port.get("trail_atr_mult") is not None:
+        exit_desc += f" | trail {base_port['trail_atr_mult']:g}×ATR"
     print(f"  Universe : {uni.n_tradeable} names | scoring OFF | "
           f"{base_port['max_hold_days']}d {base_port['max_hold_mode']} | "
-          f"budget {base_port['max_open_risk']:g} | slip {base_port['entry_slippage_pct']:g}")
+          f"budget {base_port['max_open_risk']:g} | slip {base_port['entry_slippage_pct']:g}"
+          + exit_desc)
     print(f"  Trials   : N={n_finite} configs entering deflation "
           f"({n_valid} valid, {excluded} excluded <2 months, {n_valid - n_finite} degenerate) | "
           f"T={dsr_headline.n_periods} months")
