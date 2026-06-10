@@ -50,7 +50,7 @@ from backtest.earnings_history import (
     next_earnings_from,
 )
 from backtest.trade import Trade
-from core.exits import max_hold_exit_due
+from core.exits import max_hold_exit_due, trailing_stop_level
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
@@ -111,6 +111,14 @@ class PortfolioConfig:
     #                          profit at that close (lets winners run to target).
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
+    # ATR trailing stop (exit-logic Phase 2a). None → OFF, so the baseline replays
+    # bit-identically. When set, current_stop = highest_high − ATR×trail_atr_mult
+    # (long; short mirrors), computed at END of each bar and checked on the NEXT bar
+    # (look-ahead-free). trail_activate_r: only start trailing once the trade has
+    # reached this MFE in R (None → trail from entry). The R denominator stays the
+    # INITIAL stop — the trail changes only the exit price/reason.
+    trail_atr_mult: Optional[float] = None
+    trail_activate_r: Optional[float] = None
 
 
 @dataclass
@@ -458,12 +466,20 @@ class PortfolioBacktester:
                 b_open, b_low, b_high = float(bar["open"]), float(bar["low"]), float(bar["high"])
                 trade.update_excursion(b_high, b_low)  # exit-quality instrumentation
                 is_short = (trade.direction == "short")
-                stop_hit = (b_high >= trade.initial_stop) if is_short else (b_low <= trade.initial_stop)
+                # Effective stop = the trailing/dynamic stop once set, else the
+                # initial. This level was set at the PREVIOUS bar's end, so checking
+                # it against this bar is look-ahead-free. The R denominator stays the
+                # initial stop — a trail changes only the exit price/reason.
+                eff_stop = trade.current_stop if trade.current_stop is not None else trade.initial_stop
+                stop_reason = ("trail_stop"
+                               if trade.current_stop is not None and trade.current_stop != trade.initial_stop
+                               else "stop")
+                stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
                 if stop_hit:
-                    fill = (apply_stop_fill_short(trade.initial_stop, b_open)
+                    fill = (apply_stop_fill_short(eff_stop, b_open)
                             if is_short
-                            else apply_stop_fill(trade.initial_stop, b_open))
-                    _close_trade(trade, D_date, fill, "stop",
+                            else apply_stop_fill(eff_stop, b_open))
+                    _close_trade(trade, D_date, fill, stop_reason,
                                  prepped[ticker].df.index, t_idx, self._cfg.commission_r)
                     closed = open_trades.pop(ticker)
                     result.trades.append(closed)
@@ -505,6 +521,20 @@ class PortfolioBacktester:
                         self._record_close(closed)
                         dd_gate.record(closed.effective_r)
                         closed_this_bar.add(ticker)
+
+                # Still open after all exit checks → ratchet the trailing stop for
+                # the NEXT bar from this bar's accumulated extremes (the level checked
+                # above was set at the previous bar — look-ahead-free). Off when
+                # trail_atr_mult is None, so the baseline replays unchanged.
+                if self._cfg.trail_atr_mult and ticker in open_trades:
+                    _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
+                    trade.current_stop = trailing_stop_level(
+                        side=("short" if is_short else "long"),
+                        highest_high=trade.highest_high, lowest_low=trade.lowest_low,
+                        atr=_atr, trail_atr_mult=self._cfg.trail_atr_mult,
+                        prev_stop=trade.current_stop, initial_stop=trade.initial_stop,
+                        mfe_r=trade.current_mfe_r(), activate_r=self._cfg.trail_activate_r,
+                    )
 
             # Engine signal at close
             for ticker in active:

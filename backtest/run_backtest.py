@@ -206,6 +206,15 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
+    # ATR trailing stop (exit-logic Phase 2a). Off by default → baseline identical.
+    if args.trail_atr_mult is not None:
+        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
+        if args.trail_activate_r is not None:
+            base_port["trail_activate_r"] = float(args.trail_activate_r)
+        print(f"  ▸ ATR trailing stop: ENABLED  (mult={args.trail_atr_mult:g}"
+              + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
+              + "; ratchets the stop in the trade's favor — baseline is OFF)")
+
     # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
     if args.max_open_risk is not None:
@@ -540,6 +549,15 @@ def _parse_args() -> argparse.Namespace:
                         "at the cap; 'if-not-profit' exits at the cap only when "
                         "the position is not in profit (lets winners run to "
                         "target).")
+    p.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
+                   help="ATR trailing stop (exit-logic Phase 2a): ratchet the stop to "
+                        "highest_high − ATR×M (long; short mirrors), in the trade's "
+                        "favor only. Off by default so the baseline replays "
+                        "identically. R stays off the INITIAL stop — the trail changes "
+                        "only the exit price/reason.")
+    p.add_argument("--trail-activate-r", type=float, default=None, metavar="R",
+                   help="With --trail-atr-mult: only start trailing once the trade has "
+                        "reached this MFE in R (default: trail from entry).")
     p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
                    help="Aggregate open-risk budget in size_mult units (default "
                         "5.0). Each open position consumes its own size_mult, so a "

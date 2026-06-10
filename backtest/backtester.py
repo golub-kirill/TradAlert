@@ -52,7 +52,7 @@ from typing import Optional
 import pandas as pd
 
 from backtest.trade import Trade
-from core.exits import max_hold_exit_due
+from core.exits import max_hold_exit_due, trailing_stop_level
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
 from core.scoring import SignalScorer
@@ -210,6 +210,11 @@ class BacktestConfig:
     #   mode "if_not_profit" → exit at the cap only when not in profit.
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
+    # ATR trailing stop (exit-logic Phase 2a). None → OFF (baseline bit-identical).
+    # Mirrors PortfolioConfig; see core.exits.trailing_stop_level. R stays off the
+    # initial stop — the trail changes only the exit price/reason.
+    trail_atr_mult: Optional[float] = None
+    trail_activate_r: Optional[float] = None
 
 
 @dataclass
@@ -434,12 +439,19 @@ class BarReplayBacktester:
                 # Same-bar pessimistic: if BOTH touched, stop wins.
                 # Long  : stop hit when bar_low <= stop (price falling)
                 # Short : stop hit when bar_high >= stop (price rallying)
-                stop_hit = (b_high >= stop) if is_short else (b_low <= stop)
+                # Effective stop = trailing/dynamic stop once set, else initial. The
+                # level was set at the PREVIOUS bar's end (look-ahead-free). R stays
+                # off the initial stop.
+                eff_stop = open_trade.current_stop if open_trade.current_stop is not None else stop
+                stop_reason = ("trail_stop"
+                               if open_trade.current_stop is not None and open_trade.current_stop != stop
+                               else "stop")
+                stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
                 if stop_hit:
-                    fill = (apply_stop_fill_short(stop, b_open)
+                    fill = (apply_stop_fill_short(eff_stop, b_open)
                             if is_short
-                            else apply_stop_fill(stop, b_open))
-                    _close_trade(open_trade, today, fill, "stop",
+                            else apply_stop_fill(eff_stop, b_open))
+                    _close_trade(open_trade, today, fill, stop_reason,
                                  df.index, T)
                     trades.append(open_trade)
                     self._record_close(ticker, open_trade)
@@ -491,6 +503,17 @@ class BarReplayBacktester:
                 )
                 if signal.passed and signal.direction in ("exit_long", "exit_short"):
                     pending_exit = True
+                # Still open → ratchet the trailing stop for the NEXT bar (the level
+                # checked above was the previous bar's — look-ahead-free). Off → None.
+                if self._cfg.trail_atr_mult and open_trade is not None:
+                    _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
+                    open_trade.current_stop = trailing_stop_level(
+                        side=("short" if is_short else "long"),
+                        highest_high=open_trade.highest_high, lowest_low=open_trade.lowest_low,
+                        atr=_atr, trail_atr_mult=self._cfg.trail_atr_mult,
+                        prev_stop=open_trade.current_stop, initial_stop=open_trade.initial_stop,
+                        mfe_r=open_trade.current_mfe_r(), activate_r=self._cfg.trail_activate_r,
+                    )
                 continue
 
             # ── 3. Flat: look for entry signal ───────────────────────────

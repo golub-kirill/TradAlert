@@ -761,6 +761,7 @@ class SweepEngine:
             "max_open_risk", "start_date", "end_date", "earnings_aware",
             "close_open_at_eod", "entry_slippage_pct", "commission_r",
             "max_hold_days", "max_hold_mode",
+            "trail_atr_mult", "trail_activate_r",
         }
         pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop"]
+ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop", "trail_stop"]
 
 
 @dataclass
@@ -83,6 +83,9 @@ class Trade:
     mfe_r: float = 0.0          # max favorable excursion in R (>= 0)
     mae_r: float = 0.0          # max adverse excursion in R (<= 0)
     exit_vs_mfe: float | None = None  # r_multiple / mfe_r (capture fraction); None if mfe_r <= 0
+    # Dynamic stop level (None → use initial_stop). A trailing/breakeven rule moves
+    # this in the trade's favor only; initial_stop stays frozen so R is unchanged.
+    current_stop: float | None = None
 
     # ── helpers ────────────────────────────────────────────────────────────
 
@@ -95,6 +98,17 @@ class Trade:
         h, l = float(bar_high), float(bar_low)
         self.highest_high = h if self.highest_high is None else max(self.highest_high, h)
         self.lowest_low = l if self.lowest_low is None else min(self.lowest_low, l)
+
+    def current_mfe_r(self) -> float:
+        """Running max-favorable-excursion in R from the accumulated extremes (>=0).
+
+        Used live during the walk for trailing-stop activation; the finalized form
+        is ``mfe_r`` (set by compute_excursion_r at close)."""
+        risk = self.risk_per_share
+        fav = self.highest_high if self._sign > 0 else self.lowest_low
+        if risk <= 0 or fav is None:
+            return 0.0
+        return max(0.0, self._sign * (fav - self.entry_price) / risk)
 
     def compute_excursion_r(self) -> None:
         """Finalize mfe_r / mae_r / exit_vs_mfe from the accumulated extremes.
