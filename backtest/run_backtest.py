@@ -297,9 +297,15 @@ def main() -> None:
         if args.walk_forward:
             re_tune = not args.wf_no_retune
             _wf_workers = max(args.workers, 0)
+            if re_tune and args.wf_joint > 0:
+                mode_desc = (f"joint re-tune: {args.wf_joint} random "
+                             f"{args.wf_joint_knobs}-knob configs per IS window")
+            elif re_tune:
+                mode_desc = "re-tune sweep per IS window"
+            else:
+                mode_desc = "fixed-config temporal stability"
             print(f"\n  Running walk-forward validation…  "
-                  f"({'re-tune sweep per IS window' if re_tune else 'fixed-config temporal stability'}"
-                  f", workers={_wf_workers})")
+                  f"({mode_desc}, workers={_wf_workers})")
             wfe = WalkForwardEngine(
                 universe=uni,
                 base_cfg=base_cfg,
@@ -310,6 +316,9 @@ def main() -> None:
                 re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
                 n_workers=_wf_workers,      # --workers now reaches the per-window sweep
                 use_scoring=use_scoring,    # default OFF — matches the scoring default
+                joint_samples=args.wf_joint,
+                joint_knobs=args.wf_joint_knobs,
+                joint_seed=args.wf_seed,
             )
             wf_report = wfe.run(progress=_progress)
 
@@ -496,6 +505,24 @@ def _parse_args() -> argparse.Namespace:
                         "Forces --scoring on.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
+    p.add_argument("--wf-joint", type=int, default=0, metavar="N",
+                   help="With --walk-forward re-tune: replace the per-window OFAT "
+                        "sweep with N randomized multi-knob configs (seeded, "
+                        "reproducible). OFAT mutates one knob per config and so "
+                        "understates multi-parameter overfitting; joint sampling "
+                        "reproduces a multi-knob selection with an explicit trial "
+                        "count per window. 0 = keep OFAT. NOTE: degradation is "
+                        "only comparable across runs with the same mode and N "
+                        "(OFAT runs ~90 trials/window; pick N accordingly).")
+    p.add_argument("--wf-joint-knobs", type=int, default=3, metavar="K",
+                   help="With --wf-joint: knobs mutated per sampled config "
+                        "(default 3).")
+    p.add_argument("--wf-seed", type=int, default=1337, metavar="S",
+                   help="Seed for the --wf-joint sampler (offset per window; the "
+                        "same seed reproduces the same candidate sets). The seed "
+                        "is printed in the report tag — re-running with several "
+                        "seeds and quoting the prettiest degradation reintroduces "
+                        "the selection bias this mode exists to measure.")
     p.add_argument("--wf-no-retune", action="store_true",
                    help="With --walk-forward: skip the per-window re-tune sweep and "
                         "run the FIXED current config on each IS/OOS window "

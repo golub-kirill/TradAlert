@@ -26,8 +26,9 @@ Architecture
 
 Public API
 ──────────
-    SweepEngine.baseline()          -> SweepPoint
-    SweepEngine.run_ofat(grid)      -> SweepReport
+    SweepEngine.baseline()              -> SweepPoint
+    SweepEngine.run_ofat(grid)          -> SweepReport
+    SweepEngine.run_random_joint(n, k)  -> SweepReport  (multi-knob samples)
 
     PARAM_GRID                      : default OFAT spec (23 parameters)
     PORTFOLIO_GRID                  : portfolio-level sweep spec
@@ -39,6 +40,7 @@ import copy
 import logging
 import multiprocessing
 import os
+import random
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -206,6 +208,18 @@ PORTFOLIO_GRID: list[ParamSpec] = [
               (6.0, 8.0, 10.0, 12.0),
               "Max portfolio drawdown (R)", "portfolio",
               fmt="{:.1f}"),
+
+    # Dynamic exits. These dimensions WERE searched (2026-06 exit-logic probes),
+    # so they must sit in the grid for honest multiple-testing trial counts —
+    # the deflated-Sharpe N is only as truthful as the grid it sweeps.
+    ParamSpec("portfolio.breakeven_trigger_r",
+              (0.5, 0.75, 1.0, 1.25, 1.5),
+              "Breakeven stop trigger (R)", "exits",
+              fmt="{:.2f}"),
+    ParamSpec("portfolio.trail_atr_mult",
+              (3.0, 5.0, 6.0, 8.0),
+              "ATR trail multiplier", "exits",
+              fmt="{:.1f}"),
 ]
 
 # ── mean-reversion focused grid ───────────────────────────────────────────────
@@ -346,6 +360,11 @@ class SweepPoint:
     n_tickers: int = 0
     elapsed_s: float = 0.0
     trades: list[Trade] = field(default_factory=list)
+
+    # Full {dotted: value} mutation set behind this point. OFAT points carry
+    # their single knob; joint points carry every mutated knob — the
+    # walk-forward OOS leg replays exactly this dict.
+    mutations: dict | None = None
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -570,16 +589,17 @@ class SweepEngine:
         # ── build job list ────────────────────────────────────────────────
         jobs: list[dict] = []
         for spec in all_specs:
-            is_portfolio = spec.dotted.startswith("portfolio.")
             baseline_val = self._resolve_baseline(spec)
             for val in spec.values:
                 if val == baseline_val:
                     continue  # skip exact baseline -- already have it
                 jobs.append({
-                    "spec": spec,
-                    "val": val,
-                    "is_portfolio": is_portfolio,
-                    "baseline_val": baseline_val,
+                    "param_name": spec.dotted,
+                    "param_value": val,
+                    "param_label": spec.label,
+                    "group": spec.group,
+                    "mutations": {spec.dotted: val},
+                    "progress_text": f"{spec.label} = {spec.fmt.format(val)}",
                 })
 
         logger.info("Sweep: %d jobs, %d workers", len(jobs), self._n_workers)
@@ -590,8 +610,7 @@ class SweepEngine:
         if self._n_workers <= 1:
             for job in jobs:
                 if progress:
-                    spec = job["spec"]
-                    progress(f"{spec.label} = {spec.fmt.format(job['val'])}")
+                    progress(job["progress_text"])
                 pt = self._dispatch_job(job)
                 points.append(pt)
         else:
@@ -608,10 +627,126 @@ class SweepEngine:
             n_workers=self._n_workers,
         )
 
+    def run_random_joint(
+            self,
+            n_samples: int,
+            knobs: int = 3,
+            seed: int = 1337,
+            grid: list[ParamSpec] | None = None,
+            port_grid: list[ParamSpec] | None = None,
+            progress: Callable[[str], None] | None = None,
+    ) -> SweepReport:
+        """
+        Randomized multi-knob sweep: each sample mutates ``knobs`` parameters
+        jointly, drawn from the same grids OFAT uses.
+
+        OFAT moves one knob per run, so selecting its winner cannot reproduce
+        a multi-parameter selection and understates overfitting. Joint samples
+        give walk-forward re-tuning an honest multi-knob search space with an
+        explicit trial count (``n_samples``) for multiple-testing corrections.
+        The sampler is seeded → the same (seed, grids, live baseline values)
+        always yields the same candidate set; per-spec pools exclude the live
+        baseline value, so editing a config default shifts the draws.
+
+        Returns a SweepReport whose points carry ``mutations`` (the full
+        {dotted: value} dict) so the selected combo can be replayed exactly.
+        """
+        rng = random.Random(seed)
+        grid = grid if grid is not None else PARAM_GRID
+        port_grid = port_grid if port_grid is not None else PORTFOLIO_GRID
+        all_specs = list(grid) + list(port_grid)
+
+        t_total = time.time()
+
+        if progress:
+            progress("Running baseline...")
+        base_pt = self.baseline()
+        logger.info("Baseline: %d trades E[R]=%+.3f",
+                    base_pt.stats.trades_count, base_pt.stats.expectancy_r)
+
+        # Candidate pool: per spec, its non-baseline values.
+        values_by_spec: dict[str, tuple[ParamSpec, list]] = {}
+        for spec in all_specs:
+            baseline_val = self._resolve_baseline(spec)
+            vals = [v for v in spec.values if v != baseline_val]
+            if vals:
+                values_by_spec[spec.dotted] = (spec, vals)
+
+        spec_keys = sorted(values_by_spec)  # sorted → seed-stable order
+        k = min(knobs, len(spec_keys))
+        if k == 0 or n_samples <= 0:
+            return SweepReport(
+                baseline=base_pt, points=[],
+                universe_info=self._universe.summary(),
+                elapsed_s=time.time() - t_total, n_workers=self._n_workers,
+            )
+
+        # Sample unique mutation sets (cap attempts in case the space is tiny).
+        jobs: list[dict] = []
+        seen: set[frozenset] = set()
+        attempts = 0
+        while len(jobs) < n_samples and attempts < n_samples * 50:
+            attempts += 1
+            chosen = rng.sample(spec_keys, k)
+            mutations: dict = {}
+            label_parts: list[str] = []
+            for dotted in sorted(chosen):
+                spec, vals = values_by_spec[dotted]
+                val = rng.choice(vals)
+                mutations[dotted] = val
+                label_parts.append(f"{dotted}={spec.fmt.format(val)}")
+            key = frozenset(mutations.items())
+            if key in seen:
+                continue
+            seen.add(key)
+            desc = ", ".join(label_parts)
+            jobs.append({
+                "param_name": "joint",
+                "param_value": desc,
+                "param_label": f"J{len(jobs):03d}",
+                "group": "joint",
+                "mutations": mutations,
+                "progress_text": f"J{len(jobs):03d}: {desc}",
+            })
+        if len(jobs) < n_samples:
+            logger.warning(
+                "Joint sweep: only %d unique combos available (asked for %d)",
+                len(jobs), n_samples)
+
+        logger.info("Joint sweep: %d samples × %d knobs (seed=%d), %d workers",
+                    len(jobs), k, seed, self._n_workers)
+
+        points: list[SweepPoint] = []
+        if self._n_workers <= 1:
+            for job in jobs:
+                if progress:
+                    progress(job["progress_text"])
+                points.append(self._dispatch_job(job))
+        else:
+            points = self._run_parallel(jobs, progress)
+
+        elapsed = time.time() - t_total
+        logger.info("Joint sweep complete in %.1fs -- %d points",
+                    elapsed, len(points))
+
+        return SweepReport(
+            baseline=base_pt,
+            points=points,
+            universe_info=self._universe.summary(),
+            elapsed_s=elapsed,
+            n_workers=self._n_workers,
+        )
+
     # ── private ───────────────────────────────────────────────────────────
 
     def _resolve_baseline(self, spec: ParamSpec) -> Any:
-        """Extract the baseline value for a ParamSpec from the live configs."""
+        """Extract the baseline value for a ParamSpec from the live configs.
+
+        Settings-routed specs (scanner.*, behavioral.* — see
+        ``_SETTINGS_ALIASES``) don't exist in filters.yaml, so they fall back
+        to settings.yaml; without that, their live baseline values would
+        enter the job pool as fake mutations and pad the trial count.
+        """
         if spec.dotted.startswith("portfolio."):
             key = spec.dotted[len("portfolio."):]
             return self._base_port.get(key)
@@ -619,34 +754,60 @@ class SweepEngine:
         node = self._base_cfg
         for p in parts:
             if not isinstance(node, dict) or p not in node:
-                return None
+                node = None
+                break
             node = node[p]
-        return node
+        if node is not None:
+            return node
+        settings_path = _SETTINGS_ALIASES.get(spec.dotted)
+        if settings_path is not None:
+            settings = self._load_settings()
+            if settings is not None:
+                return _get_nested(settings, settings_path)
+        return None
+
+    def _load_settings(self) -> dict | None:
+        """Load and cache config/settings.yaml (baseline resolution only)."""
+        if not hasattr(self, "_settings_cache"):
+            try:
+                import yaml as _yaml
+                path = os.path.join(os.path.dirname(__file__), "..",
+                                    "config", "settings.yaml")
+                with open(path, encoding="utf-8") as f:
+                    self._settings_cache = _yaml.safe_load(f)
+            except Exception as exc:
+                logger.debug("settings.yaml load failed for baseline "
+                             "resolution: %s", exc)
+                self._settings_cache = None
+        return self._settings_cache
+
+    def _materialise(self, mutations: dict) -> tuple[dict, dict]:
+        """Build (cfg, port_params) with every ``{dotted: value}`` mutation applied."""
+        cfg = copy.deepcopy(self._base_cfg)
+        port_params = dict(self._base_port)
+        for dotted, val in mutations.items():
+            if dotted.startswith("portfolio."):
+                port_params[dotted[len("portfolio."):]] = val
+            else:
+                _set_nested(cfg, dotted, val)
+        return cfg, port_params
 
     def _dispatch_job(self, job: dict) -> SweepPoint:
         """Build args and call _run_one for a single job dict."""
-        spec = job["spec"]
-        val = job["val"]
-        is_portfolio = job["is_portfolio"]
+        cfg, port_params = self._materialise(job["mutations"])
 
-        cfg = copy.deepcopy(self._base_cfg)
-        port_params = dict(self._base_port)
-
-        if is_portfolio:
-            key = spec.dotted[len("portfolio."):]
-            port_params[key] = val
-        else:
-            _set_nested(cfg, spec.dotted, val)
-
-        return self._run_one(
+        pt = self._run_one(
             cfg=cfg,
             port_params=port_params,
-            param_name=spec.dotted,
-            param_value=val,
-            param_label=spec.label,
-            group=spec.group,
+            param_name=job["param_name"],
+            param_value=job["param_value"],
+            param_label=job["param_label"],
+            group=job["group"],
             is_baseline=False,
+            mutations=job["mutations"],
         )
+        pt.mutations = dict(job["mutations"])
+        return pt
 
     def _run_parallel(
             self,
@@ -655,8 +816,6 @@ class SweepEngine:
     ) -> list[SweepPoint]:
         """Execute jobs across a ProcessPoolExecutor."""
         packed_universe = _pack_universe(self._universe)
-        base_cfg_copy = copy.deepcopy(self._base_cfg)
-        base_port_copy = dict(self._base_port)
 
         futures = {}
         points: list[SweepPoint] = [None] * len(jobs)  # preserve order
@@ -668,27 +827,17 @@ class SweepEngine:
                 initargs=(src_path, packed_universe),  # universe shipped ONCE per worker
         ) as pool:
             for i, job in enumerate(jobs):
-                spec = job["spec"]
-                val = job["val"]
-                is_portfolio = job["is_portfolio"]
-
-                cfg = copy.deepcopy(base_cfg_copy)
-                port_params = dict(base_port_copy)
-
-                if is_portfolio:
-                    key = spec.dotted[len("portfolio."):]
-                    port_params[key] = val
-                else:
-                    _set_nested(cfg, spec.dotted, val)
+                cfg, port_params = self._materialise(job["mutations"])
 
                 fut = pool.submit(
                     _worker_run,
                     cfg,
                     port_params,
-                    spec.dotted,
-                    val,
-                    spec.label,
-                    spec.group,
+                    job["param_name"],
+                    job["param_value"],
+                    job["param_label"],
+                    job["group"],
+                    job["mutations"],
                 )
                 futures[fut] = i
 
@@ -697,7 +846,6 @@ class SweepEngine:
             for fut in as_completed(futures):
                 idx = futures[fut]
                 job = jobs[idx]
-                spec = job["spec"]
                 try:
                     pt = fut.result()
                     points[idx] = pt
@@ -709,16 +857,16 @@ class SweepEngine:
                     # that downstream tuning then treats as a real 0-trade config
                     # (audit L1).
                     logger.error("Job failed [%s=%s] — substituting an empty point",
-                                 spec.label, job["val"], exc_info=exc)
+                                 job["param_label"], job["param_value"], exc_info=exc)
                     points[idx] = _empty_point(
-                        spec.dotted, job["val"], spec.label, spec.group
+                        job["param_name"], job["param_value"],
+                        job["param_label"], job["group"],
                     )
+                if points[idx] is not None:
+                    points[idx].mutations = dict(job["mutations"])
                 n_done += 1
                 if progress:
-                    progress(
-                        f"[{n_done}/{len(jobs)}] "
-                        f"{spec.label} = {spec.fmt.format(job['val'])}"
-                    )
+                    progress(f"[{n_done}/{len(jobs)}] {job['progress_text']}")
 
             if n_failed:
                 logger.warning(
@@ -738,6 +886,7 @@ class SweepEngine:
             param_label: str,
             group: str,
             is_baseline: bool,
+            mutations: dict | None = None,
     ) -> SweepPoint:
         """Hot-path: construct engine, run backtest, collect stats."""
         import sys
@@ -797,9 +946,17 @@ class SweepEngine:
                 _settings = _yaml.safe_load(_f)
 
             # Mutate _settings for sweep params that live in settings.yaml
-            # (scanner weights, exit_weights, min_score_to_alert, behavioral params)
+            # (scanner weights, exit_weights, min_score_to_alert, behavioral
+            # params). When a mutations dict is given, EVERY entry is routed —
+            # param_name alone can't carry multi-knob jobs ("joint") or the
+            # walk-forward OOS replay ("wf_tuned"), whose settings-resident
+            # knobs would otherwise be silent no-ops.
             if not is_baseline:
-                _apply_settings_mutation(_settings, param_name, param_value)
+                if mutations:
+                    for _m_name, _m_val in mutations.items():
+                        _apply_settings_mutation(_settings, _m_name, _m_val)
+                else:
+                    _apply_settings_mutation(_settings, param_name, param_value)
 
             if self._use_scoring:
                 scorer = SignalScorer(_settings, cfg)
@@ -884,6 +1041,7 @@ def _worker_run(
         param_value: Any,
         param_label: str,
         group: str,
+        mutations: dict | None = None,
 ) -> SweepPoint:
     """
     Worker entry-point for ProcessPoolExecutor.
@@ -904,11 +1062,18 @@ def _worker_run(
         param_label=param_label,
         group=group,
         is_baseline=False,
+        mutations=mutations,
     )
 
 
 class _SweepRunHelper:
     """Minimal stand-in for SweepEngine inside worker processes."""
+
+    # Workers never construct the SignalScorer: use_scoring is not shipped to
+    # the pool, so a --scoring sweep scores only the (sequential) baseline.
+    # Made explicit here — previously this fell out of a swallowed
+    # AttributeError inside _run_one's settings try-block.
+    _use_scoring = False
 
     def __init__(self, universe, base_cfg, base_port):
         self._universe = universe
