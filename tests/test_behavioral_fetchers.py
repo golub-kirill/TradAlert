@@ -109,6 +109,42 @@ def test_cot_normalise_handles_empty():
     assert _normalise_tff_rows([{}]).empty  # no date column
 
 
+def _tff_row(date: str, name: str, long_: int, short_: int) -> dict:
+    return {
+        "report_date_as_yyyy_mm_dd": date,
+        "contract_market_name": name,
+        "lev_money_positions_long_all": str(long_),
+        "lev_money_positions_short_all": str(short_),
+    }
+
+
+def test_cot_normalise_filters_to_exact_contract():
+    """The substring $where also matches MICRO E-MINI S&P 500 INDEX — those
+    rows must be dropped or they interleave duplicate dates with ~10x-smaller
+    positions and corrupt the positioning percentile."""
+    from core.fetchers.behavioral.cot import _normalise_tff_rows
+    rows = [
+        _tff_row("2026-05-26", "MICRO E-MINI S&P 500 INDEX", 110_536, 126_887),
+        _tff_row("2026-05-26", "E-MINI S&P 500", 149_287, 607_067),
+        _tff_row("2026-05-19", "MICRO E-MINI S&P 500 INDEX", 116_779, 124_358),
+        _tff_row("2026-05-19", " e-mini  s&p 500 ", 164_096, 565_650),
+    ]
+    df = _normalise_tff_rows(rows, "E-MINI S&P 500")
+    assert len(df) == 2
+    assert not df.index.duplicated().any()
+    assert df["lev_net"].tolist() == [164_096 - 565_650, 149_287 - 607_067]
+
+
+def test_cot_normalise_no_exact_match_keeps_all():
+    """If CFTC renames the contract, fail open (keep rows, warn) rather than
+    silently dropping the whole positioning axis."""
+    from core.fetchers.behavioral.cot import _normalise_tff_rows
+    rows = [_tff_row("2026-05-26", "E-MINI S&P 500 (RENAMED)", 1, 2)]
+    df = _normalise_tff_rows(rows, "E-MINI S&P 500")
+    assert len(df) == 1
+    assert df["lev_net"].iloc[0] == -1
+
+
 # ─── form4.py ────────────────────────────────────────────────────────────────
 
 
