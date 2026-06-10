@@ -52,7 +52,7 @@ from typing import Optional
 import pandas as pd
 
 from backtest.trade import Trade
-from core.exits import max_hold_exit_due, trailing_stop_level
+from core.exits import breakeven_stop_level, max_hold_exit_due, trailing_stop_level
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
 from core.scoring import SignalScorer
@@ -215,6 +215,8 @@ class BacktestConfig:
     # initial stop — the trail changes only the exit price/reason.
     trail_atr_mult: Optional[float] = None
     trail_activate_r: Optional[float] = None
+    breakeven_trigger_r: Optional[float] = None
+    breakeven_buffer_atr: Optional[float] = None
 
 
 @dataclass
@@ -443,7 +445,7 @@ class BarReplayBacktester:
                 # level was set at the PREVIOUS bar's end (look-ahead-free). R stays
                 # off the initial stop.
                 eff_stop = open_trade.current_stop if open_trade.current_stop is not None else stop
-                stop_reason = ("trail_stop"
+                stop_reason = ((open_trade.current_stop_reason or "stop")
                                if open_trade.current_stop is not None and open_trade.current_stop != stop
                                else "stop")
                 stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
@@ -503,16 +505,17 @@ class BarReplayBacktester:
                 )
                 if signal.passed and signal.direction in ("exit_long", "exit_short"):
                     pending_exit = True
-                # Still open → ratchet the trailing stop for the NEXT bar (the level
-                # checked above was the previous bar's — look-ahead-free). Off → None.
-                if self._cfg.trail_atr_mult and open_trade is not None:
+                # Still open → ratchet the dynamic stop (trail/breakeven) for the NEXT
+                # bar (the level checked above was the previous bar's — look-ahead-free).
+                if (self._cfg.trail_atr_mult or self._cfg.breakeven_trigger_r is not None) \
+                        and open_trade is not None:
                     _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
-                    open_trade.current_stop = trailing_stop_level(
-                        side=("short" if is_short else "long"),
-                        highest_high=open_trade.highest_high, lowest_low=open_trade.lowest_low,
-                        atr=_atr, trail_atr_mult=self._cfg.trail_atr_mult,
-                        prev_stop=open_trade.current_stop, initial_stop=open_trade.initial_stop,
-                        mfe_r=open_trade.current_mfe_r(), activate_r=self._cfg.trail_activate_r,
+                    _apply_dynamic_stop(
+                        open_trade, _atr, is_short,
+                        trail_atr_mult=self._cfg.trail_atr_mult,
+                        trail_activate_r=self._cfg.trail_activate_r,
+                        breakeven_trigger_r=self._cfg.breakeven_trigger_r,
+                        breakeven_buffer_atr=self._cfg.breakeven_buffer_atr,
                     )
                 continue
 
@@ -626,6 +629,44 @@ class BarReplayBacktester:
 
 
 # ── module-level helpers ──────────────────────────────────────────────────────
+
+def _apply_dynamic_stop(
+        trade: Trade,
+        atr: float | None,
+        is_short: bool,
+        *,
+        trail_atr_mult,
+        trail_activate_r,
+        breakeven_trigger_r,
+        breakeven_buffer_atr,
+) -> None:
+    """Ratchet ``trade.current_stop`` via the trailing and/or breakeven rules (in the
+    trade's favor only) and tag ``current_stop_reason``.
+
+    Call at the END of each held bar; the resulting level is checked on the NEXT bar
+    (look-ahead-free). Shared by both backtesters so single == portfolio.
+    """
+    side = "short" if is_short else "long"
+    mfe = trade.current_mfe_r()
+    if trail_atr_mult:
+        new = trailing_stop_level(
+            side=side, highest_high=trade.highest_high, lowest_low=trade.lowest_low,
+            atr=atr, trail_atr_mult=trail_atr_mult, prev_stop=trade.current_stop,
+            initial_stop=trade.initial_stop, mfe_r=mfe, activate_r=trail_activate_r)
+        if new is not None and new != trade.current_stop:
+            trade.current_stop = new
+            if new != trade.initial_stop:
+                trade.current_stop_reason = "trail_stop"
+    if breakeven_trigger_r is not None:
+        new = breakeven_stop_level(
+            side=side, entry_price=trade.entry_price, atr=atr,
+            breakeven_trigger_r=breakeven_trigger_r, breakeven_buffer_atr=breakeven_buffer_atr,
+            prev_stop=trade.current_stop, initial_stop=trade.initial_stop, mfe_r=mfe)
+        if new is not None and new != trade.current_stop:
+            trade.current_stop = new
+            if new != trade.initial_stop:
+                trade.current_stop_reason = "breakeven_stop"
+
 
 def _close_trade(
         trade: Trade,

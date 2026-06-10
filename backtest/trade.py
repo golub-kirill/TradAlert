@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop", "trail_stop"]
+ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop",
+                     "trail_stop", "breakeven_stop"]
 
 
 @dataclass
@@ -86,6 +87,9 @@ class Trade:
     # Dynamic stop level (None → use initial_stop). A trailing/breakeven rule moves
     # this in the trade's favor only; initial_stop stays frozen so R is unchanged.
     current_stop: float | None = None
+    # Which rule last moved current_stop ("trail_stop" | "breakeven_stop") — used as
+    # the exit reason when the dynamic stop fills, so the leak table distinguishes them.
+    current_stop_reason: str | None = None
 
     # ── helpers ────────────────────────────────────────────────────────────
 

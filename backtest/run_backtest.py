@@ -215,6 +215,15 @@ def main() -> None:
               + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
               + "; ratchets the stop in the trade's favor — baseline is OFF)")
 
+    # Breakeven stop (exit-logic Phase 2b). Off by default → baseline identical.
+    if args.breakeven_trigger_r is not None:
+        base_port["breakeven_trigger_r"] = float(args.breakeven_trigger_r)
+        if args.breakeven_buffer_atr is not None:
+            base_port["breakeven_buffer_atr"] = float(args.breakeven_buffer_atr)
+        print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{args.breakeven_trigger_r:g}R"
+              + (f", buffer={args.breakeven_buffer_atr:g}×ATR" if args.breakeven_buffer_atr is not None else "")
+              + "; moves stop to breakeven, upside uncapped — baseline is OFF)")
+
     # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
     if args.max_open_risk is not None:
@@ -558,6 +567,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--trail-activate-r", type=float, default=None, metavar="R",
                    help="With --trail-atr-mult: only start trailing once the trade has "
                         "reached this MFE in R (default: trail from entry).")
+    p.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
+                   help="Breakeven stop (exit-logic Phase 2b): once the trade reaches "
+                        "this MFE in R, move the stop to breakeven — protects the "
+                        "downside WITHOUT capping the upside (does not trail further). "
+                        "Off by default. R stays off the INITIAL stop.")
+    p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
+                   help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
+                        "profit past entry (default 0 = exact breakeven).")
     p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
                    help="Aggregate open-risk budget in size_mult units (default "
                         "5.0). Each open position consumes its own size_mult, so a "

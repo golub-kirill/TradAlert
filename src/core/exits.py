@@ -80,3 +80,32 @@ def trailing_stop_level(
         return prev_stop
     candidate = highest_high - atr * trail_atr_mult
     return max(base, candidate)  # long stop ratchets UP, never down
+
+
+def breakeven_stop_level(
+        *,
+        side: str,
+        entry_price: float,
+        atr: float | None,
+        breakeven_trigger_r: float | None,
+        breakeven_buffer_atr: float | None,
+        prev_stop: float | None,
+        initial_stop: float,
+        mfe_r: float | None,
+) -> float | None:
+    """Move the stop to (around) breakeven once the trade reaches
+    ``breakeven_trigger_r`` of favorable excursion — protecting the downside
+    WITHOUT capping the upside (unlike a trail, it does not keep moving, so winners
+    still run to target).
+
+    Long : stop → entry + breakeven_buffer_atr*ATR ; Short mirrors below entry.
+    Ratchets in the trade's favor only and never loosens below the initial stop.
+    Returns ``prev_stop`` unchanged when off (trigger None) or not yet reached. The
+    R denominator stays the INITIAL stop — this changes only the exit price/reason.
+    """
+    if breakeven_trigger_r is None or mfe_r is None or mfe_r < breakeven_trigger_r:
+        return prev_stop
+    buf = (atr * breakeven_buffer_atr) if (atr and atr > 0 and breakeven_buffer_atr) else 0.0
+    be = (entry_price - buf) if side == "short" else (entry_price + buf)
+    base = prev_stop if prev_stop is not None else initial_stop
+    return min(base, be) if side == "short" else max(base, be)

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Optional
 import pandas as pd
 
 from backtest.backtester import (
+    _apply_dynamic_stop,
     _attach_indicators,
     _close_trade,
     adjust_target_for_slippage,
@@ -50,7 +51,7 @@ from backtest.earnings_history import (
     next_earnings_from,
 )
 from backtest.trade import Trade
-from core.exits import max_hold_exit_due, trailing_stop_level
+from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
@@ -119,6 +120,12 @@ class PortfolioConfig:
     # INITIAL stop — the trail changes only the exit price/reason.
     trail_atr_mult: Optional[float] = None
     trail_activate_r: Optional[float] = None
+    # Breakeven stop (exit-logic Phase 2b). None → OFF. Once the trade reaches
+    # breakeven_trigger_r of favorable excursion, move the stop to entry ±
+    # breakeven_buffer_atr×ATR — protects the downside WITHOUT capping the upside
+    # (does not trail further). R denominator stays the INITIAL stop.
+    breakeven_trigger_r: Optional[float] = None
+    breakeven_buffer_atr: Optional[float] = None
 
 
 @dataclass
@@ -471,7 +478,7 @@ class PortfolioBacktester:
                 # it against this bar is look-ahead-free. The R denominator stays the
                 # initial stop — a trail changes only the exit price/reason.
                 eff_stop = trade.current_stop if trade.current_stop is not None else trade.initial_stop
-                stop_reason = ("trail_stop"
+                stop_reason = ((trade.current_stop_reason or "stop")
                                if trade.current_stop is not None and trade.current_stop != trade.initial_stop
                                else "stop")
                 stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
@@ -526,14 +533,15 @@ class PortfolioBacktester:
                 # the NEXT bar from this bar's accumulated extremes (the level checked
                 # above was set at the previous bar — look-ahead-free). Off when
                 # trail_atr_mult is None, so the baseline replays unchanged.
-                if self._cfg.trail_atr_mult and ticker in open_trades:
+                if (self._cfg.trail_atr_mult or self._cfg.breakeven_trigger_r is not None) \
+                        and ticker in open_trades:
                     _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
-                    trade.current_stop = trailing_stop_level(
-                        side=("short" if is_short else "long"),
-                        highest_high=trade.highest_high, lowest_low=trade.lowest_low,
-                        atr=_atr, trail_atr_mult=self._cfg.trail_atr_mult,
-                        prev_stop=trade.current_stop, initial_stop=trade.initial_stop,
-                        mfe_r=trade.current_mfe_r(), activate_r=self._cfg.trail_activate_r,
+                    _apply_dynamic_stop(
+                        trade, _atr, is_short,
+                        trail_atr_mult=self._cfg.trail_atr_mult,
+                        trail_activate_r=self._cfg.trail_activate_r,
+                        breakeven_trigger_r=self._cfg.breakeven_trigger_r,
+                        breakeven_buffer_atr=self._cfg.breakeven_buffer_atr,
                     )
 
             # Engine signal at close
