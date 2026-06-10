@@ -103,12 +103,15 @@ def fetch_cot(
                            contract, exc, exc_info=True)
 
     # ── 2. live fetch via Socrata ────────────────────────────────────────
-    # 260 records ≈ 5 years of weekly data. Use substring matching on
-    # contract_market_name to tolerate whitespace or minor differences.
+    # Use substring matching on contract_market_name to tolerate whitespace
+    # or minor differences; _normalise_tff_rows then keeps only the exact
+    # contract. The limit is applied server-side BEFORE that filter, and the
+    # substring can also match derivative listings (e.g. the Micro E-mini),
+    # so fetch 2× the 260 weeks (≈5 years) we want to keep post-filter.
     params = {
         "$where": f"upper(contract_market_name) like upper('%{contract_name}%')",
         "$order": "report_date_as_yyyy_mm_dd DESC",
-        "$limit": "260",
+        "$limit": "520",
     }
     try:
         resp = request_with_retry(
