@@ -36,6 +36,18 @@ def test_underwater_pct_counts_calendar_days():
     assert abs(underwater_pct(curve) - 10 / 12) < 1e-9
 
 
+def test_underwater_pct_tolerates_duplicate_exit_dates():
+    import pandas as pd
+    # Several trades close on the same day (the real ledger always has this):
+    # intraday-order values for 01-02 are 0.0 then 2.0 — end-of-day depth 2.0.
+    curve = SimpleNamespace(drawdown=pd.Series(
+        [0.0, 0.0, 2.0, 0.0],
+        index=pd.to_datetime(["2020-01-01", "2020-01-02",
+                              "2020-01-02", "2020-01-12"]),
+    ))
+    assert abs(underwater_pct(curve) - 10 / 12) < 1e-9
+
+
 def test_half_r_per_year_splits_at_2013():
     trades = [
         _trade(date(2005, 1, 1), date(2006, 1, 1), +2.0),   # half 1: +2R over 1y

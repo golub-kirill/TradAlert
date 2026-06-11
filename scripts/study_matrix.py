@@ -142,10 +142,13 @@ def subset_tickers(prepped: dict, which: str) -> dict:
 
 def underwater_pct(curve) -> float:
     """% of CALENDAR days spent below the running equity peak. The drawdown
-    series is exit-date-indexed (gaps!), so reindex to a daily calendar."""
+    series is exit-date-indexed — with DUPLICATE labels when several trades
+    close the same day — so collapse to the end-of-day value first, then
+    reindex to a daily calendar."""
     dd = curve.drawdown
     if dd.empty:
         return 0.0
+    dd = dd.groupby(dd.index).last()  # end-of-day depth per exit date
     cal = dd.reindex(pd.date_range(dd.index.min(), dd.index.max(),
                                    freq="D")).ffill()
     return float((cal > 1e-9).mean())
