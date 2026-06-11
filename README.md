@@ -76,7 +76,11 @@ entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 Held long positions (from the `positions` table) are also force-exited live when
 they reach the max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`)
 — a `time_stop` EXIT — using the same `core.exits.max_hold_exit_due` rule as the
-backtester, so live and backtest stay in step.
+backtester, so live and backtest stay in step. Likewise, once a held long's best
+excursion reaches `execution.breakeven_trigger_r` (default `1.0`, ADR-004) the scan
+raises `positions.stop_price` to entry via the shared
+`core.exits.breakeven_stop_level` rule (a Telegram notice is sent; `initial_stop`
+is never touched, so realized-R reconciliation is unaffected).
 
 ### `position_CLI.py` — manual positions
 
@@ -141,6 +145,7 @@ bit-identically; turn on to A/B a refinement):
 | `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
 | `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
+| `--breakeven-trigger-r R` | **Breakeven stop:** once a held trade's best excursion reaches `R` (in initial-risk units), the stop moves to entry — protects the give-back leak without capping the upside (it does not trail further, so winners still run to target). **Default `1.0`** (set in `filters.yaml`; validated walk-forward-stable with better totals, Sharpe and drawdown — see `ADR-004`). Pass `0` to disable. The R denominator stays the **initial** stop. The live scan applies the same rule to held positions (raises `positions.stop_price`, never `initial_stop`). | `execution.breakeven_trigger_r` (filters.yaml) |
 | `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
@@ -281,6 +286,7 @@ Loaded by `python-dotenv` at startup.
 | `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout + manual stop-date calendar.                                            |
 | `execution.{entry_slippage_pct,commission_r}`                                    | Backtest fill model.                                                                      |
 | `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit. **Default `25` bars, `if_not_profit`.** `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit` (lets winners run). CLI `--max-hold-days` / `--max-hold-mode` override. |
+| `execution.breakeven_trigger_r`                                                  | Breakeven stop trigger in initial-risk units. **Default `1.0`** (ADR-004): at `+1R` best excursion the stop moves to entry, upside uncapped; applied identically in the backtest and the live scan. `0`/absent = off; CLI `--breakeven-trigger-r` overrides. |
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
 | `signals.momentum.short`                                                         | Held-long *momentum-fade exit* (legacy name; canonical at `signals.exits.momentum_fade`). |
 | `signals.mean_reversion.long`                                                    | Mean-rev entry: rsi_max, min_hist_delta_atr.                                              |
