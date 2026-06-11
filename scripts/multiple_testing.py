@@ -104,9 +104,9 @@ def main() -> None:
     ap.add_argument("--max-hold-mode", default="if_not_profit")
     ap.add_argument("--max-open-risk", type=float, default=5.0)
     ap.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
-                    help="Run the whole grid with the breakeven stop enabled at "
-                         "this trigger (validates an exit-rule candidate under "
-                         "the same multiple-testing gates).")
+                    help="Breakeven stop trigger for the grid's base config. "
+                         "Default comes from execution.breakeven_trigger_r in "
+                         "filters.yaml (shipped: 1.0); pass 0 to disable.")
     ap.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
                     help="With --breakeven-trigger-r: buffer in ATR multiples.")
     ap.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
@@ -149,10 +149,18 @@ def main() -> None:
         "max_hold_days": int(args.max_hold_days),
         "max_hold_mode": str(args.max_hold_mode).replace("-", "_"),
     }
+    # Breakeven default comes from execution.breakeven_trigger_r in filters.yaml
+    # (the shipped config the DSR must deflate against); CLI overrides, 0 disables.
+    be_trigger = exec_cfg.get("breakeven_trigger_r")
+    be_buffer = exec_cfg.get("breakeven_buffer_atr")
     if args.breakeven_trigger_r is not None:
-        base_port["breakeven_trigger_r"] = float(args.breakeven_trigger_r)
-        if args.breakeven_buffer_atr is not None:
-            base_port["breakeven_buffer_atr"] = float(args.breakeven_buffer_atr)
+        be_trigger = args.breakeven_trigger_r
+    if args.breakeven_buffer_atr is not None:
+        be_buffer = args.breakeven_buffer_atr
+    if be_trigger:
+        base_port["breakeven_trigger_r"] = float(be_trigger)
+        if be_buffer:
+            base_port["breakeven_buffer_atr"] = float(be_buffer)
     if args.trail_atr_mult is not None:
         base_port["trail_atr_mult"] = float(args.trail_atr_mult)
         if args.trail_activate_r is not None:

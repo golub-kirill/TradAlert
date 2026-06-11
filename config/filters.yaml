@@ -72,6 +72,12 @@ execution: # block: backtest fill model
                                         # (lets winners run; 'hard' = always exit).
                                         # if_not_profit dominates hard on every
                                         # metric (ADR-001) — the trading default.
+  # Breakeven stop: once a trade's best excursion reaches this many R, the
+  # stop moves to entry — protects the give-back leak without capping the
+  # upside (ADR-004: +6.8R, +0.04 Sharpe, −7R maxDD in the paired snapshot
+  # A/B; WF-OOS stable; the R denominator stays the INITIAL stop).
+  # Absent or 0 = off. Override with --breakeven-trigger-r (0 disables).
+  breakeven_trigger_r: 1.0
 
 
 # ── SIGNAL FILTERS ────────────────────────────────────────────────────────────

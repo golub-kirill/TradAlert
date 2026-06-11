@@ -214,14 +214,25 @@ def main() -> None:
               + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
               + "; ratchets the stop in the trade's favor — baseline is OFF)")
 
-    # Breakeven stop (exit-logic Phase 2b). Off by default → baseline identical.
+    # Breakeven stop. `execution.breakeven_trigger_r` in filters.yaml supplies the
+    # shipped default (ADR-004); the CLI flag overrides it, and 0 disables.
+    be_trigger = exec_cfg.get("breakeven_trigger_r")
+    be_buffer = exec_cfg.get("breakeven_buffer_atr")
+    be_source = "filters.yaml" if be_trigger else None
     if args.breakeven_trigger_r is not None:
-        base_port["breakeven_trigger_r"] = float(args.breakeven_trigger_r)
-        if args.breakeven_buffer_atr is not None:
-            base_port["breakeven_buffer_atr"] = float(args.breakeven_buffer_atr)
-        print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{args.breakeven_trigger_r:g}R"
-              + (f", buffer={args.breakeven_buffer_atr:g}×ATR" if args.breakeven_buffer_atr is not None else "")
-              + "; moves stop to breakeven, upside uncapped — baseline is OFF)")
+        be_trigger = args.breakeven_trigger_r
+        be_source = "CLI"
+    if args.breakeven_buffer_atr is not None:
+        be_buffer = args.breakeven_buffer_atr
+    if be_trigger:  # 0/absent → off
+        base_port["breakeven_trigger_r"] = float(be_trigger)
+        if be_buffer:
+            base_port["breakeven_buffer_atr"] = float(be_buffer)
+        print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{float(be_trigger):g}R"
+              + (f", buffer={float(be_buffer):g}×ATR" if be_buffer else "")
+              + f"; moves stop to breakeven, upside uncapped — {be_source})")
+    elif args.breakeven_trigger_r is not None:
+        print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
 
     # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
@@ -563,10 +574,12 @@ def _parse_args() -> argparse.Namespace:
                    help="With --trail-atr-mult: only start trailing once the trade has "
                         "reached this MFE in R (default: trail from entry).")
     p.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
-                   help="Breakeven stop (exit-logic Phase 2b): once the trade reaches "
-                        "this MFE in R, move the stop to breakeven — protects the "
-                        "downside WITHOUT capping the upside (does not trail further). "
-                        "Off by default. R stays off the INITIAL stop.")
+                   help="Breakeven stop: once the trade reaches this MFE in R, move "
+                        "the stop to breakeven — protects the downside WITHOUT "
+                        "capping the upside (does not trail further). Default comes "
+                        "from execution.breakeven_trigger_r in filters.yaml "
+                        "(shipped: 1.0, ADR-004); pass 0 to disable. R stays off "
+                        "the INITIAL stop.")
     p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
                    help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
                         "profit past entry (default 0 = exact breakeven).")
