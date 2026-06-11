@@ -40,7 +40,7 @@ from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
 from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
 from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
-from core.exits import max_hold_exit_due  # noqa: E402
+from core.exits import breakeven_stop_level, max_hold_exit_due  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
 from core.fetchers.http import mask_api_keys_filter  # noqa: E402
 
@@ -290,6 +290,78 @@ def _expected_hold_range(engine) -> tuple[int, int]:
     except Exception as exc:
         logging.getLogger(__name__).debug("expected-hold range fell back — %s", exc)
         return (max(1, round(cap * 0.4)), cap)
+
+
+def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> float | None:
+    """Raise a held long's stop to breakeven once its best excursion since entry
+    reaches ``execution.breakeven_trigger_r`` — the live half of the rule the
+    backtester applies in ``_apply_dynamic_stop`` (shared decision:
+    ``core.exits.breakeven_stop_level``; ADR-004).
+
+    Returns the new stop level when the position's stop was raised, else None.
+    The stop only ever moves UP and ``initial_stop`` is never touched (it stays
+    the R denominator for reconciliation). Idempotent across daily scans: once
+    the stop sits at/above the breakeven level this is a no-op. Fail-open —
+    any error logs a warning and never blocks the scan.
+    """
+    logger = logging.getLogger(__name__)
+    trigger = exec_cfg.get("breakeven_trigger_r")
+    if not trigger or position is None or position.side != "long":
+        return None
+    try:
+        entry = float(position.entry_price)
+        # initial_stop is immutable from open; stop_price is the documented
+        # fallback for rows that predate the column.
+        init_stop = position.initial_stop if position.initial_stop is not None \
+            else position.stop_price
+        if init_stop is None:
+            return None
+        risk = entry - float(init_stop)
+        if risk <= 0:
+            return None
+        entry_pos = int(df.index.searchsorted(pd.Timestamp(position.entry_date)))
+        if entry_pos >= len(df):
+            return None
+        # Entry bar inclusive — matches the backtester's update_excursion.
+        mfe_r = (float(df["high"].iloc[entry_pos:].max()) - entry) / risk
+        buffer = exec_cfg.get("breakeven_buffer_atr")
+        atr = None
+        if buffer:
+            _atr = df["atr"].iloc[-1] if "atr" in df.columns else None
+            atr = float(_atr) if _atr is not None and pd.notna(_atr) else None
+        new_stop = breakeven_stop_level(
+            side="long", entry_price=entry, atr=atr,
+            breakeven_trigger_r=float(trigger),
+            breakeven_buffer_atr=float(buffer) if buffer else None,
+            prev_stop=position.stop_price, initial_stop=float(init_stop),
+            mfe_r=mfe_r,
+        )
+        if new_stop is None:
+            return None
+        current = position.stop_price
+        if current is not None and new_stop <= float(current):
+            return None  # already at/above breakeven — nothing to do
+        from core.position_manager import update_stop
+        if not update_stop(position.id, float(new_stop)):
+            logger.warning("[%s] breakeven stop update did not apply (id=%s)",
+                           ticker, position.id)
+            return None
+        logger.info("[%s] stop raised to breakeven %.4f (MFE %.2fR ≥ %.2gR trigger)",
+                    ticker, new_stop, mfe_r, float(trigger))
+        try:
+            from core.telegram.push import send_notice
+            send_notice(
+                f"🔒 {ticker}: stop raised to breakeven {new_stop:.2f} "
+                f"(entry {entry:.2f}, best excursion {mfe_r:+.2f}R ≥ "
+                f"{float(trigger):g}R trigger). Risk on this position is now ~0.",
+                settings,
+            )
+        except Exception as exc:
+            logger.debug("[%s] breakeven notice skipped — %s", ticker, exc)
+        return float(new_stop)
+    except Exception as exc:
+        logger.warning("[%s] breakeven stop check failed — %s", ticker, exc)
+        return None
 
 
 def _append_live_context_checks(signal, ticker_rp, n_open, max_open_risk=None) -> None:
@@ -543,6 +615,17 @@ def _run_pipeline(
                         reason=f"max-hold {int(_mh_days)} bars reached "
                                f"({_mh_mode}) — time-stop exit",
                     )
+
+        # ── 7c. live breakeven stop ───────────────────────────────────────────
+        # Mirror of the backtester's _apply_dynamic_stop breakeven rule
+        # (core.exits.breakeven_stop_level, ADR-004): once a held long's best
+        # excursion reaches the trigger, raise positions.stop_price to entry.
+        # Skipped when the position is exiting this scan anyway. Fail-open.
+        if held_long and held_position is not None and signal.direction != "exit_long":
+            _maybe_raise_stop_to_breakeven(
+                ticker, df, held_position,
+                engine._cfg.get("execution", {}), settings,
+            )
 
         # ── 8. chart fired signals ────────────────────────────────────────────
         if signal.passed:
