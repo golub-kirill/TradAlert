@@ -224,7 +224,9 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         "ticker": r.ticker,
         "passed": int(scan.passed),
         "signal_kind": signal_kind,
-        "score": sig.score if sig and sig.score > 0 else None,
+        # scan_results.score column retained for historical rows; nothing
+        # writes a score anymore, so new rows journal NULL.
+        "score": None,
         "reason": scan.reason or None,
         "close": scan.close,
         "stop_price": stop_price,

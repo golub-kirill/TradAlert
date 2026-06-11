@@ -1,9 +1,9 @@
 """
 Signal-history overlay for charts.
 
-Walks the chart's last ``lookback`` bars, calls ``engine.signal`` +
-``scorer.enrich`` per bar (entry mode and exit mode separately), and
-returns a list of ``HistoricalSignal`` markers for rendering.
+Walks the chart's last ``lookback`` bars, calls ``engine.signal`` per bar
+(entry mode and exit mode separately), and returns a list of
+``HistoricalSignal`` markers for rendering.
 
 Public API
 ----------
@@ -14,7 +14,7 @@ collect_signal_history — walk bars and collect signals
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -22,7 +22,6 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from core.filter_engine import FilterEngine
-    from core.scoring import SignalScorer
     from core.position_manager import Position
 
 logger = logging.getLogger(__name__)
@@ -34,24 +33,19 @@ class HistoricalSignal:
     bar_date: date
     direction: str  # "long" | "exit_long"
     signal_type: str  # "momentum" | "mean_reversion" | "regime"
-    score: float  # 0–100
     passed: bool
-    watch_only: bool = False
     market_regime: str = ""
     ticker_trend: str = ""
     stop_price: float = 0.0
     target_price: float = 0.0
-    score_components: dict = field(default_factory=dict)
 
     @property
     def marker_symbol(self) -> str:
-        """Chart marker symbol based on direction and watch_only."""
+        """Chart marker symbol based on direction."""
         if not self.passed:
             return ""
-        if self.direction == "long" and not self.watch_only:
+        if self.direction == "long":
             return "▲"
-        if self.direction == "long" and self.watch_only:
-            return "△"
         if self.direction == "exit_long":
             return "▼"
         return ""
@@ -61,7 +55,6 @@ def collect_signal_history(
         ticker: str,
         df: pd.DataFrame,
         engine: FilterEngine,
-        scorer: SignalScorer | None,
         market_dfs: dict[str, pd.DataFrame] | None = None,
         vix_df: pd.DataFrame | None = None,
         earnings_history: list[date] | None = None,
@@ -76,7 +69,6 @@ def collect_signal_history(
     ticker : Symbol.
     df : Full OHLCV DataFrame with indicators attached.
     engine : FilterEngine instance.
-    scorer : SignalScorer for enrichment (optional).
     market_dfs : Market index DataFrames for regime.
     vix_df : VIX DataFrame.
     earnings_history : List of upcoming earnings dates.
@@ -127,24 +119,16 @@ def collect_signal_history(
             logger.debug("[signal_history] entry signal failed at %s: %s", bar_date, exc)
             continue
 
-        if signal.passed and scorer:
-            regime = engine.market_regime(market_dfs, vix_df)
-            scorer.enrich(signal, df_slice, regime, earnings_date=next_earnings,
-                          position=position, market_dfs=market_dfs, vix_df=vix_df)
-
         if signal.passed:
             hs = HistoricalSignal(
                 bar_date=bar_date,
                 direction=signal.direction,
                 signal_type=signal.signal_type,
-                score=signal.score,
                 passed=signal.passed,
-                watch_only=getattr(signal, "watch_only", False),
                 market_regime=signal.market_regime,
                 ticker_trend=signal.ticker_trend,
                 stop_price=signal.stop_price,
                 target_price=signal.target_price,
-                score_components=getattr(signal, "score_components", {}),
             )
             signals.append(hs)
 
@@ -159,21 +143,14 @@ def collect_signal_history(
             except Exception:
                 exit_signal = None
 
-            if exit_signal and exit_signal.passed and scorer:
-                regime = engine.market_regime(market_dfs, vix_df)
-                scorer.enrich(exit_signal, df_slice, regime,
-                              position=position, market_dfs=market_dfs, vix_df=vix_df)
-
             if exit_signal and exit_signal.passed:
                 hs = HistoricalSignal(
                     bar_date=bar_date,
                     direction=exit_signal.direction,
                     signal_type=exit_signal.signal_type,
-                    score=exit_signal.score,
                     passed=exit_signal.passed,
                     market_regime=exit_signal.market_regime,
                     ticker_trend=exit_signal.ticker_trend,
-                    score_components=getattr(exit_signal, "score_components", {}),
                 )
                 signals.append(hs)
 

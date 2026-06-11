@@ -4,13 +4,6 @@ Portfolio-aware bar-replay backtester with concurrent-position cap.
     Slippage apply_stop_fill() from backtester.py handles gap-through
             stops. Entry slippage applied as PortfolioConfig.entry_slippage_pct.
 
-    Scoring When a SignalScorer is injected, it enriches each entry signal
-            before the signal is queued. The entry-fill step then sorts
-            contested signals by score descending — highest-confidence
-            trade wins the slot when the portfolio is at cap.
-            No scorer → score defaults to 0.0 for all → alphabetical
-            tiebreak preserved.
-
     Regime  Computed once per bar from market_t / vix_t and reused
             across all per-bar engine calls. Saves N engine._market_regime
             calls per bar.
@@ -20,10 +13,9 @@ Portfolio-aware bar-replay backtester with concurrent-position cap.
 Per-bar pipeline (in order)
 ────────────────────────────────
     1  Pending exits fill at open (frees slots before entries compete).
-    2  Pending entries fill at open, highest-score first, cap respected.
+    2  Pending entries fill at open in queue (scan) order, cap respected.
     3  Stop/target check on held trades against bar H/L.
     4  Engine.signal at close — queues exits and entries for next bar.
-             Entry signals enriched with scorer before queuing.
 """
 
 from __future__ import annotations
@@ -46,17 +38,13 @@ from backtest.backtester import (
     apply_target_fill_short,
     call_engine_slice,
 )
-from backtest.earnings_history import (
-    get_earnings_history,
-    next_earnings_from,
-)
+from backtest.earnings_history import get_earnings_history
 from backtest.trade import Trade
 from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
 if TYPE_CHECKING:
-    from core.scoring import SignalScorer
     from core.ticker_health import TickerHealth
 
 logger = logging.getLogger(__name__)
@@ -253,23 +241,17 @@ class PortfolioBacktester:
     ----------
     engine  : FilterEngine. Its _today is mutated per call via try/finally.
     cfg     : PortfolioConfig with max_open_risk > 0.
-    scorer  : Optional SignalScorer from scoring.py. When provided, every
-              queued entry signal is enriched in-place (score, components,
-              description) and the entry-fill step selects by highest score first.
-              When None, score defaults to 0.0 and order is alphabetical.
     """
 
     def __init__(
             self,
             engine: FilterEngine,
             cfg: PortfolioConfig,
-            scorer: SignalScorer | None = None,
     ):
         if cfg.max_open_risk <= 0:
             raise ValueError(f"max_open_risk must be > 0, got {cfg.max_open_risk}")
         self._engine = engine
         self._cfg = cfg
-        self._scorer = scorer
 
     # ── ticker-health helper ──────────────────────────────────────────────
 
@@ -396,25 +378,20 @@ class PortfolioBacktester:
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
 
-            # Pending entries at open, score-ranked
+            # Pending entries at open, in queue (scan) order. The iteration
+            # order is pending_entries insertion order — the order signals were
+            # queued on the previous bar — which decides who wins the last
+            # budget slot on a contested bar. Do not re-sort.
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
             if dd_gate.blocked:
                 # Skip entry fills but still process exits
-                for ticker in sorted(
-                        [tk for tk in pending_entries if D in date_sets[tk]],
-                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
-                        reverse=True,
-                ):
+                for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
                     result.capped_signals.append(
                         CappedSignal(D_date, ticker, pending_entries.pop(ticker))
                     )
             else:
-                for ticker in sorted(
-                        [tk for tk in pending_entries if D in date_sets[tk]],
-                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
-                        reverse=True,
-                ):
+                for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
                     if ticker in closed_this_bar:
                         pending_entries.pop(ticker, None)
                         continue
@@ -459,8 +436,6 @@ class PortfolioBacktester:
                         market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
                         size_mult=final_mult,  # regime × chronic-loser
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
-                        entry_score=signal.score,
-                        entry_score_components=dict(signal.score_components),
                     )
 
             # Stop / target on held trades
@@ -566,27 +541,6 @@ class PortfolioBacktester:
                 if held and signal.direction in ("exit_long", "exit_short"):
                     pending_exits.add(ticker)
                 elif not held and signal.direction in ("long", "short"):
-                    # Enrich with scorer + apply min_score_to_alert gate
-                    if self._scorer is not None:
-                        next_earn = (
-                            next_earnings_from(
-                                prepped[ticker].earnings_history, D_date
-                            )
-                            if prepped[ticker].earnings_history else None
-                        )
-                        try:
-                            self._scorer.enrich(
-                                signal=signal,
-                                df=df_t,
-                                regime=regime,
-                                earnings_date=next_earn,
-                                ticker=ticker,
-                            )
-                        except Exception as exc:
-                            logger.debug("[%s] scorer.enrich failed: %s",
-                                         ticker, exc)
-                        if signal.watch_only:
-                            continue  # below min_score_to_alert -- skip entry
                     pending_entries[ticker] = signal
 
         # Force-close remaining open trades

@@ -55,7 +55,6 @@ from backtest.trade import Trade
 from core.exits import breakeven_stop_level, max_hold_exit_due, trailing_stop_level
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
-from core.scoring import SignalScorer
 from core.ticker_health import TickerHealth
 from core.ticker_store import TickerStore, next_earnings_from
 from exceptions import InsufficientDataError
@@ -254,8 +253,6 @@ class BarReplayBacktester:
     engine : Constructed FilterEngine. Its _today attribute is rewritten on
              every signal call and restored in a finally clause.
     cfg    : BacktestConfig.
-    scorer : Optional SignalScorer. When supplied, entry scores are computed
-             point-in-time and stamped on every Trade.
     store  : Optional TickerStore. Used for OHLCV load and earnings history.
     """
 
@@ -263,12 +260,10 @@ class BarReplayBacktester:
             self,
             engine: FilterEngine,
             cfg: BacktestConfig,
-            scorer: SignalScorer | None = None,
             store: TickerStore | None = None,
     ):
         self._engine = engine
         self._cfg = cfg
-        self._scorer = scorer
         self._store = store
 
     # ── public API ────────────────────────────────────────────────────────

@@ -38,11 +38,9 @@ from core.types import TickerResult  # noqa: E402
 from core.fetchers.fetcher import FetchSummary, fetch_watchlist, fetch_tier_b  # noqa: E402
 from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
 from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
-from core.fetchers.live_price import get_live_price  # noqa: E402
 from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
 from core.exits import max_hold_exit_due  # noqa: E402
-from core.scoring import SignalScorer  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
 from core.fetchers.http import mask_api_keys_filter  # noqa: E402
 
@@ -133,9 +131,9 @@ def main() -> None:
     except Exception as exc:
         logger.warning("[tier_b] fetch failed — proceeding without: %s", exc)
 
-    # ── context → enrich → scan → signal → score ─────────────────────
-    # Parse filters.yaml once; pass the dict to both the engine and the scorer
-    # so the file is not read and parsed a second time inside FilterEngine.__init__.
+    # ── context → enrich → scan → signal ─────────────────────────────
+    # Parse filters.yaml once and pass the dict to the engine so the file is
+    # not read and parsed a second time inside FilterEngine.__init__.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
     # --allow-shorts flips the master switch on. We only mutate
@@ -205,8 +203,6 @@ def main() -> None:
                     "action": evt.action,
                 }
 
-    scorer = SignalScorer(settings=settings, filters_cfg=filters_cfg)
-
     # Build RP rank table (cross-sectional, computed once)
     rp_ranks = {}
     if _PHASE_MODULES_AVAILABLE:
@@ -231,11 +227,10 @@ def main() -> None:
             logger.warning("[rp_rank] rank table build failed: %s", exc, exc_info=True)
 
     results = _run_pipeline(
-        fetch_summary.succeeded, engine, scorer,
+        fetch_summary.succeeded, engine,
         settings=settings,
         macro_state=macro_state, behavioral_state=behavioral_state,
         rp_ranks=rp_ranks,
-        use_scoring=args.scoring,
     )
 
     elapsed = time.perf_counter() - t0
@@ -332,15 +327,13 @@ def _append_live_context_checks(signal, ticker_rp, n_open, max_open_risk=None) -
 def _run_pipeline(
         tickers: list[str],
         engine: FilterEngine,
-        scorer: SignalScorer,
         settings: dict | None = None,
         macro_state: object | None = None,
         behavioral_state: object | None = None,
         rp_ranks: dict[str, float] | None = None,
-        use_scoring: bool = False,
 ) -> list[TickerResult]:
     """
-    Run enrichment → scan → signal → score for every fetched ticker.
+    Run enrichment → scan → signal for every fetched ticker.
 
     Per-ticker steps:
         1. Load cached OHLCV from parquet
@@ -350,8 +343,6 @@ def _run_pipeline(
         5. Market-cap fetch (24h JSON cache, fail-open)
         6. FilterEngine.scan()
         7. FilterEngine.signal() — entry or exit mode based on positions
-        8. Live price fetch (5-min cache, fail-open)  [entry signal path only]
-        9. SignalScorer.enrich()
 
     Held positions always proceed to signal() regardless of scan outcome.
     Market context (SPY/QQQ/^VIX) and open positions are loaded once
@@ -362,7 +353,6 @@ def _run_pipeline(
     ----------
     tickers          : Symbols successfully fetched (FetchSummary.succeeded).
     engine           : Shared FilterEngine instance.
-    scorer           : Shared SignalScorer instance.
     macro_state      : MacroState for regime size multiplier.
     behavioral_state : BehavioralState for regime size multiplier.
     rp_ranks         : Ticker → RP percentile rank [0, 99].
@@ -385,7 +375,7 @@ def _run_pipeline(
     max_open_risk = float((settings.get("risk") or {}).get("max_open_risk", 5.0))
     # Expected-hold range (display-only): the single source of truth, data-driven
     # from the reference backtest's actual bars_held (p25-p75). Computed once per
-    # scan and applied to every fired entry regardless of scoring. Fail-open.
+    # scan and applied to every fired entry. Fail-open.
     expected_hold = _expected_hold_range(engine)
 
     for ticker in tickers:
@@ -554,69 +544,41 @@ def _run_pipeline(
                                f"({_mh_mode}) — time-stop exit",
                     )
 
-        # ── 8. live price + 9. score ──────────────────────────────────────────
+        # ── 8. chart fired signals ────────────────────────────────────────────
         if signal.passed:
-            # Data-driven expected-hold range, applied regardless of scoring (set
-            # before enrich so the description reads it). Entries only — exits don't
-            # display a hold horizon.
+            # Data-driven expected-hold range for the chart/Telegram caption.
+            # Entries only — exits don't display a hold horizon.
             if signal.direction in ("long", "short"):
                 signal.expected_hold_days = expected_hold
 
-            # Live price fetch is fail-open — None omits current-price line
-            live_price = None
-            try:
-                live_price = get_live_price(ticker)
-            except Exception as exc:
-                logger.debug("[%s] live price fetch failed — %s", ticker, exc)
+            # Collect historical signals for chart overlay
+            hist_signals = []
+            if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
+                                                                                             False):
+                try:
+                    hist_signals = collect_signal_history(
+                        ticker, df, engine,
+                        market_dfs=market_dfs, vix_df=vix_df,
+                        lookback=90,
+                    )
+                except Exception as exc:
+                    logger.debug("[%s] signal history collection failed: %s", ticker, exc)
 
-            # regime already computed and enriched above. Scoring is OFF by
-            # default (the score is non-predictive of R): skip enrichment so the
-            # min_score_to_alert gate is bypassed and every engine-triggered fire
-            # is actionable (score stays 0, watch_only False). --scoring restores it.
-            if use_scoring:
-                scorer.enrich(
-                    signal=signal,
-                    df=df,
-                    regime=regime,
-                    earnings_date=earnings_date,
-                    position=held_position,
-                    market_dfs=market_dfs,
-                    vix_df=vix_df,
-                    current_price=live_price,
-                    rp_ranks=rp_ranks,
-                    ticker=ticker,
-                )
-            # Chart only for fire signals (score ≥ threshold, not watch-only)
-            if not signal.watch_only:
-                # Collect historical signals for chart overlay
-                hist_signals = []
-                if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
-                                                                                                 False):
-                    try:
-                        hist_signals = collect_signal_history(
-                            ticker, df, engine, scorer,
-                            market_dfs=market_dfs, vix_df=vix_df,
-                            lookback=90,
-                        )
-                    except Exception as exc:
-                        logger.debug("[%s] signal history collection failed: %s", ticker, exc)
+            # Extract RP rank for scorecard
+            ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
 
-                # Extract RP rank for scorecard
-                ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
+            # Trigger panel: fold live-only context (RP rank, open-risk budget)
+            # into the engine's gate checks so the chart renders one unified,
+            # direction-aware factor read.
+            _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
 
-                # Trigger panel: fold live-only context (RP rank, open-risk budget)
-                # into the engine's gate checks so the chart renders one unified,
-                # direction-aware factor read.
-                _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
-
-                chart(
-                    ticker, df, signal=signal,
-                    output_dir=_ROOT / "data" / "screenshots",
-                    historical_signals=hist_signals,
-                    regime=regime,
-                    score_components=getattr(signal, "score_components", None),
-                    rp_rank=ticker_rp,
-                )
+            chart(
+                ticker, df, signal=signal,
+                output_dir=_ROOT / "data" / "screenshots",
+                historical_signals=hist_signals,
+                regime=regime,
+                rp_rank=ticker_rp,
+            )
         else:
             logger.debug("[%s] no signal — %s", ticker, signal.reason)
 
@@ -767,15 +729,6 @@ def _parse_args() -> argparse.Namespace:
              "signals.allow_shorts in filters.yaml to true. Default off "
              "keeps the long-only baseline replay-stable.",
     )
-    parser.add_argument(
-        "--scoring",
-        action="store_true",
-        default=False,
-        help="Enrich + score signals and apply the min_score_to_alert gate "
-             "(matches `run_backtest.py --scoring`). OFF by default — the entry "
-             "score is non-predictive of R, so every engine-triggered fire is "
-             "reported as actionable instead of being score-gated.",
-    )
     return parser.parse_args()
 
 
@@ -856,18 +809,6 @@ def _print_report(
                      if r.signal is not None and r.signal.direction == "short"]
     short_exits = [r for r in signals
                    if r.signal is not None and r.signal.direction == "exit_short"]
-    fire_entries = [r for r in entries
-                    if r.signal is not None and not r.signal.watch_only]
-    watch_entries = [r for r in entries
-                     if r.signal is not None and r.signal.watch_only]
-    fire_exits = [r for r in exits
-                  if r.signal is not None and not r.signal.watch_only]
-    watch_exits = [r for r in exits
-                   if r.signal is not None and r.signal.watch_only]
-    fire_short_entries = [r for r in short_entries
-                          if r.signal is not None and not r.signal.watch_only]
-    fire_short_exits = [r for r in short_exits
-                        if r.signal is not None and not r.signal.watch_only]
     errors = [r for r in results if r.error]
 
     divider = "─" * 72
@@ -901,102 +842,69 @@ def _print_report(
 
     # ── entries ───────────────────────────────────────────────────────────────
     logger.info(divider)
-    if fire_entries:
-        logger.info("ENTRIES  %d alert(s)", len(fire_entries))
+    if entries:
+        logger.info("ENTRIES  %d alert(s)", len(entries))
         if n_open is not None:
             status = ("BUDGET FULL — new entries exceed the validated risk cap"
                       if budget_full else f"room for ~{max_open_risk - n_open:.0f} more")
             logger.info("  RISK BUDGET  %d open / %.1f R  (%s)", n_open, max_open_risk, status)
-        for r in fire_entries:
+        for r in entries:
             s = r.signal
-            assert s is not None  # filtered by fire_entries comprehension
+            assert s is not None  # filtered by entries comprehension
             logger.info(
-                "  ▲ %-10s  %-15s  score=%s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
+                "  ▲ %-10s  %-15s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
                 "  R:R≥%.1f  %s / %s%s",
                 r.ticker, s.signal_type,
-                _score_label(s), float(s.size_mult), s.stop_price, s.target_price,
+                float(s.size_mult), s.stop_price, s.target_price,
                 s.min_rr, s.market_regime, s.ticker_trend,
                 "  ⚠over-budget" if budget_full else "",
             )
-            for line in s.description.splitlines():
-                logger.info("    %s", line)
     else:
         logger.info("ENTRIES  none")
-
-    if watch_entries:
-        logger.info("  — WATCH (score below threshold) —")
-        for r in watch_entries:
-            s = r.signal
-            assert s is not None  # filtered by watch_entries comprehension
-            logger.info(
-                "  ~ %-10s  %-15s  score=%s  stop=%-10.4f  %s / %s",
-                r.ticker, s.signal_type,
-                _score_label(s), s.stop_price,
-                s.market_regime, s.ticker_trend,
-            )
-            for line in s.description.splitlines():
-                logger.info("    %s", line)
 
     # ── short entries ──────────────────────────────────────────
     # Only rendered when short signals exist, so a long-only (baseline) run
     # produces byte-identical summary output.
-    if fire_short_entries:
+    if short_entries:
         logger.info(divider)
-        logger.info("SHORTS   %d entry alert(s)", len(fire_short_entries))
-        for r in fire_short_entries:
+        logger.info("SHORTS   %d entry alert(s)", len(short_entries))
+        for r in short_entries:
             s = r.signal
-            assert s is not None  # filtered by fire_short_entries comprehension
+            assert s is not None  # filtered by short_entries comprehension
             logger.info(
-                "  ▼ %-10s  %-15s  score=%s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
+                "  ▼ %-10s  %-15s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
                 "  R:R≥%.1f  %s / %s%s",
                 r.ticker, s.signal_type,
-                _score_label(s), float(s.size_mult), s.stop_price, s.target_price,
+                float(s.size_mult), s.stop_price, s.target_price,
                 s.min_rr, s.market_regime, s.ticker_trend,
                 "  ⚠over-budget" if budget_full else "",
             )
-            for line in s.description.splitlines():
-                logger.info("    %s", line)
 
     # ── exits ─────────────────────────────────────────────────────────────────
-    if fire_exits or watch_exits or fire_short_exits:
+    if exits or short_exits:
         logger.info(divider)
-    if fire_exits:
-        logger.info("EXITS    %d alert(s) — held longs", len(fire_exits))
-        for r in fire_exits:
+    if exits:
+        logger.info("EXITS    %d alert(s) — held longs", len(exits))
+        for r in exits:
             s = r.signal
-            assert s is not None  # filtered by fire_exits comprehension
+            assert s is not None  # filtered by exits comprehension
             logger.info(
-                "  ✕ %-10s  %-15s  score=%s  %s / %s  —  %s",
+                "  ✕ %-10s  %-15s  %s / %s  —  %s",
                 r.ticker, s.signal_type,
-                _score_label(s), s.market_regime, s.ticker_trend, s.reason,
-            )
-            for line in s.description.splitlines():
-                logger.info("    %s", line)
-
-    if watch_exits:
-        logger.info("  — WATCH exits (score below threshold) —")
-        for r in watch_exits:
-            s = r.signal
-            assert s is not None  # filtered by watch_exits comprehension
-            logger.info(
-                "  ~ %-10s  %-15s  score=%s  %s / %s  —  %s",
-                r.ticker, s.signal_type,
-                _score_label(s), s.market_regime, s.ticker_trend, s.reason,
+                s.market_regime, s.ticker_trend, s.reason,
             )
 
-    if fire_short_exits:
+    if short_exits:
         logger.info("COVERS   %d cover alert(s) for held shorts",
-                    len(fire_short_exits))
-        for r in fire_short_exits:
+                    len(short_exits))
+        for r in short_exits:
             s = r.signal
-            assert s is not None  # filtered by fire_short_exits comprehension
+            assert s is not None  # filtered by short_exits comprehension
             logger.info(
-                "  ✓ %-10s  %-15s  score=%s  %s / %s  —  %s",
+                "  ✓ %-10s  %-15s  %s / %s  —  %s",
                 r.ticker, s.signal_type,
-                _score_label(s), s.market_regime, s.ticker_trend, s.reason,
+                s.market_regime, s.ticker_trend, s.reason,
             )
-            for line in s.description.splitlines():
-                logger.info("    %s", line)
 
     if errors:
         logger.info(divider)
@@ -1006,11 +914,6 @@ def _print_report(
 
     logger.info(divider)
     logger.info("Done  %.1fs", total_seconds)
-
-
-def _score_label(signal: SignalResult) -> str:
-    """Return compact score string, e.g. '78/100'."""
-    return f"{signal.score:.0f}/100"
 
 
 def _print_alpha_decay_watch() -> None:

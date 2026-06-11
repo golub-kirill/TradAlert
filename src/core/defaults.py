@@ -32,10 +32,6 @@ _VALUES: dict[str, Any] = {
     "filters.signals.size_mult_gate.min": 0.25,
     # settings.yaml
     "settings.storage.staleness_hours": 12,
-    "settings.scanner.min_score_to_alert": 60,  # = scoring._DEFAULT_MIN_SCORE
-    "settings.scanner.vbp.lookback": 120,
-    "settings.scanner.vbp.n_bins": 24,
-    "settings.scanner.vbp.volume_percentile": 70,
     "settings.scanner.chart.signal_history": True,
     "settings.behavioral.data_dir": "data/behavioral",
     "settings.behavioral.stale_window_days": 14,

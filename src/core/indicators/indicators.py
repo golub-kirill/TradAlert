@@ -240,7 +240,7 @@ def attach_indicators(
     df["bb_bw"] = bb["bb_bw"]
     df["bb_z"] = bb["bb_z"]
 
-    # precomputed rolling means consumed by engine/scoring hot loops.
+    # precomputed rolling means consumed by engine hot loops.
     close = df["close"]
     df["ma_fast"] = close.rolling(ma_fast, min_periods=ma_fast).mean()
     df["ma_slow"] = close.rolling(ma_slow, min_periods=ma_slow).mean()

@@ -87,7 +87,7 @@ def _rising_prepped(n: int = 40) -> dict:
 def _run(prepped, **cfg_kw):
     eng = _OneLongEngine()
     cfg = PortfolioConfig(max_open_risk=5.0, close_open_at_eod=True, **cfg_kw)
-    bt = PortfolioBacktester(engine=eng, cfg=cfg, scorer=None)
+    bt = PortfolioBacktester(engine=eng, cfg=cfg)
     return bt.run_prepped(prepped, skipped={})
 
 

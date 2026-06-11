@@ -86,7 +86,7 @@ def test_determinism():
     assert a == b
 
 
-# ── exit / watch / header / stand-down ───────────────────────────────────────────
+# ── exit / header / stand-down ───────────────────────────────────────────────────
 
 def test_exit_render():
     out = _plain(fmt.format_exit(_exit(), entry_price=232.77, held_days=18,
@@ -104,12 +104,6 @@ def test_cover_label():
 def test_caption_cap_truncates():
     out = fmt.format_exit(_exit(), reason="x" * 4000)
     assert len(out) <= fmt.CAPTION_LIMIT
-
-
-def test_watch_only():
-    s = SignalResult(passed=True, direction="long", signal_type="momentum", score=58.0)
-    out = _plain(fmt.format_watch_only(TickerResult("AMD", ScanResult(passed=True, close=142.10), s), gate=65))
-    assert "👀" in out and "AMD" in out and "score 58" in out and "not alerting" in out
 
 
 def test_daily_header_and_stand_down():

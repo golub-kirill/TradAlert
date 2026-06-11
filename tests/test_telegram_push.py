@@ -8,28 +8,26 @@ from core.telegram.config import load_telegram_config
 from core.types import TickerResult
 
 
-def _tr(direction="long", ticker="JNJ", watch=False):
+def _tr(direction="long", ticker="JNJ"):
     s = SignalResult(passed=True, direction=direction, signal_type="momentum",
                      stop_price=221.85, target_price=260.07, min_rr=2.5, size_mult=0.8,
-                     market_regime="BULL_NORMAL", watch_only=watch, reason="x",
+                     market_regime="BULL_NORMAL", reason="x",
                      expected_hold_days=(10, 15))
     return TickerResult(ticker, ScanResult(passed=True, close=232.77), s)
 
 
 def _results():
-    return [_tr("long", "JNJ"), _tr("long", "AMD", watch=True),
-            _tr("exit_long", "KO"), _tr("long", "TSLA")]
+    return [_tr("long", "JNJ"), _tr("exit_long", "KO"), _tr("long", "TSLA")]
 
 
 _ENABLED = {"telegram": {"enabled": True, "mute": ["TSLA"]}}
 
 
-def test_select_excludes_watch_only_and_muted():
+def test_select_excludes_muted():
     sel = push._select(_results(), load_telegram_config(_ENABLED))
     tickers = [tr.ticker for tr, _ in sel]
     kinds = [k for _, k in sel]
     assert "JNJ" in tickers and "KO" in tickers
-    assert "AMD" not in tickers   # watch_only excluded
     assert "TSLA" not in tickers  # muted excluded
     assert "long_entry" in kinds and "exit_long" in kinds
 

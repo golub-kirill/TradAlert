@@ -72,7 +72,7 @@ def _flat_multi_prepped(tickers: list[str], n: int = 40, px: float = 100.0) -> d
 def _run(size_mult: float, max_open_risk: float, n_tickers: int = 6):
     eng = _MultiLongEngine(size_mult=size_mult)
     cfg = PortfolioConfig(max_open_risk=max_open_risk, close_open_at_eod=True)
-    bt = PortfolioBacktester(engine=eng, cfg=cfg, scorer=None)
+    bt = PortfolioBacktester(engine=eng, cfg=cfg)
     tickers = [f"T{i:02d}" for i in range(n_tickers)]
     return bt.run_prepped(_flat_multi_prepped(tickers), skipped={})
 

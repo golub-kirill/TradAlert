@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # TradAlert — settings.yaml
-# Read by main.py, fetcher.py, scoring.py, cache.py, json_cache.py.
+# Read by main.py, fetcher.py, cache.py, json_cache.py.
 # All keys are optional — code falls back to the defaults shown in [brackets].
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,73 +40,10 @@ risk: # block: live open-risk budget awareness
 
 
 # ── SCANNER ───────────────────────────────────────────────────────────────────
-# Confidence-scoring weights, thresholds, and alert gate.
+# Chart rendering options.
 
-scanner: # block: scoring + alerting
+scanner: # block: chart rendering
 
-  min_score_to_alert: 70                # entries below this score are watch_only
-
-  # ── ENTRY WEIGHTS ──────────────────────────────────────────────────────────
-  # Weighted-averaged in scoring._weighted_average(); units are arbitrary,
-  # only relative magnitudes matter. Components present in code but absent
-  # from this dict contribute 0 to the score.
-  weights: # block: long-entry sub-score weights
-    trend_up: 3                # close > MA50 > MA200 stack alignment
-    ma50_slope: 2                # MA50 % change over last 20 bars
-    ma200_slope: 2                # MA200 % change over last 20 bars
-    volume_spike: 2                # today_vol / 20d avg
-    rsi_healthy: 2                # RSI proximity to ideal trend-confirm centre
-    breakout_20d: 3                # close vs prior 20-bar high
-    macd_bullish: 3                # macd_hist sign + direction
-    no_earnings_risk: 2                # days until earnings vs buffer
-    relative_strength: 2                # ticker vs SPY over 20d + 60d
-    weekly_trend: 2                # weekly close > 10w SMA + rising
-    bb_zscore: 2                # Bollinger Z-score positioning; signal-type-aware
-    near_52w_high: 2                # proximity to trailing 252-bar high
-    far_from_52w_low: 2                # advance above trailing 252-bar low
-    rp_percentile: 3                # cross-sectional RP rank
-
-  # ── EXIT WEIGHTS ──────────────────────────────────────────────────────────
-  # Same mechanic as weights; used only when direction == "exit_long".
-  exit_weights: # block: held-long exit sub-score weights
-    regime_flip: 4                  # broad-market trend no longer BULL (strongest)
-    multi_bar_decay: 3                  # consecutive negative macd_hist bars
-    rsi_overbought: 2                  # RSI above the overbought floor
-    macd_cross_down: 3                  # macd_hist crosses below zero
-    vol_expansion: 2                  # atr today / atr 5d avg
-    rs_divergence: 2                  # ticker underperforming SPY over 20d
-    vbp_resistance: 2                  # overhead high-volume node resistance
-
-  # ── ENTRY THRESHOLDS ──────────────────────────────────────────────────────
-  # Tunables loaded into scoring.EntryThresholds; passed to _score_entry().
-  entry_thresholds: # block: entry sub-score tunables
-    rsi_healthy_center: 52.5            # RSI mapped to rsi_healthy score 1.0 [52.5]
-    rsi_healthy_half_w: 12.5            # half-width of the band; score 0.0 at ±half_w [12.5]
-    ma50_slope_scale: 2.0             # MA50 % slope scaled by (slope+s)/(2*s) [2.0]
-    ma200_slope_scale: 0.5             # MA200 % slope; smaller scale since MA200 moves slower [0.5]
-    breakout_band_pct: 3.0             # below prior 20d high by this % → score 0 [3.0]
-    volume_spike_ratio: 2.0             # today_vol/avg_vol_20 saturating score at 1.0 [2.0]
-    near_52w_high_pct_band: 25.0             # distance below 52w high (%) → score 0 [25.0]
-    far_from_52w_low_pct_floor: 30.0             # % above 52w low saturating score at 1.0 [30.0]
-
-  # ── EXIT THRESHOLDS ───────────────────────────────────────────────────────
-  # Tunables loaded into scoring.ExitThresholds; passed to _score_exit().
-  exit_thresholds: # block: exit sub-score tunables
-    rsi_overbought_floor: 60.0          # RSI below this gives score 0 [60.0]
-    rsi_overbought_range: 10.0          # delta over floor saturating score at 1.0 [10.0]
-    multi_bar_decay_max: 3.0           # consecutive negative macd_hist bars → score 1.0 [3.0]
-    vol_expansion_ratio: 0.5           # (atr_today/atr_5d_avg − 1) saturating score at 1.0 [0.5]
-    vbp_near_atr_mult: 0.5             # VBP node within this ATR distance → score 1.0 [0.5]
-    vbp_far_atr_mult: 3.0             # VBP node at this ATR distance → score 0.0 [3.0]
-
-  # ── VBP (Volume-by-Price) ────────────────────────────────────────────────
-  # Used for exit placement; computed from OHLCV, no external data needed.
-  vbp: # block: VBP histogram parameters
-    lookback: 120                       # trailing bars for volume profile [120]
-    n_bins: 24                          # number of price bins [24]
-    volume_percentile: 70               # min percentile to qualify as "high volume" node [70]
-
-  # ── Chart settings  ──────────────────────────────────────────────
   chart: # block: chart rendering options
     signal_history: true                # render historical signal markers on charts
 
@@ -183,7 +120,7 @@ macro: # block: macro data configuration
 
 
 # ── BEHAVIORAL DATA LAYER ─────────────────────────────────────────
-# COT, NAAIM, AAII, breadth, sector rotation, Form 4, short interest.
+# COT, NAAIM, AAII, breadth, sector rotation.
 # Fetched once per pipeline run.  Stale data > 14 days treated as missing.
 
 behavioral: # block: behavioral data configuration

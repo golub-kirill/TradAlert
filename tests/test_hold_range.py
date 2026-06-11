@@ -2,7 +2,7 @@
 
 The displayed hold horizon is the 25th-75th percentile of ACTUAL backtest
 bars_held (not a hand-set config), computed once per scan and applied to every
-fired entry regardless of scoring. Display-only — no trade decision reads it.
+fired entry. Display-only — no trade decision reads it.
 """
 
 from __future__ import annotations

@@ -208,14 +208,9 @@ class SignalResult:
     market_regime      : Regime label at signal time, e.g. ``"BULL_NORMAL"``.
     ticker_trend       : "UPTREND" | "DOWNTREND" | "CHOP" | "N/A".
     reason             : Explanation string; always populated.
-    score              : Confidence score in [0, 100]. 0.0 until enriched.
-    score_components   : Sub-score dict ``{name: 0..1}``. Empty until enriched.
-    timeframe          : "daily".
     expected_hold_days : (low, high) trading-day range, display-only. The live path
                          (main.py) sets it from the reference backtest's actual
                          bars_held p25-p75; this (10, 15) default is the fallback.
-    watch_only         : True when triggered but ``score < min_score_to_alert``.
-    description        : Multi-line detail block built by SignalScorer.
     """
     passed: bool
     direction: Direction = "none"
@@ -227,13 +222,8 @@ class SignalResult:
     market_regime: str = ""
     ticker_trend: str = ""
     reason: str = ""
-    # ── enriched by SignalScorer ──────────────────────────────────────────────
-    score: float = field(default=0.0, repr=False)
-    score_components: dict[str, float] = field(default_factory=dict, repr=False)
-    timeframe: str = field(default="daily", repr=False)
+    # ── display-only context (set by main.py on the live path) ────────────────
     expected_hold_days: tuple[int, int] = field(default=(10, 15), repr=False)
-    watch_only: bool = field(default=False, repr=False)
-    description: str = field(default="", repr=False)
     # ── entry-gate trigger panel (populated only when signal(with_checks=True)) ──
     checks: list[GateCheck] = field(default_factory=list, repr=False)
 

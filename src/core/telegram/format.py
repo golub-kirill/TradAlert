@@ -258,18 +258,6 @@ def format_exit(tr: Any, *, entry_price: float | None = None, held_days: int | N
     return _card(header, lines) if lines else _cap(header)
 
 
-# ── watch-only (no chart, quiet) ─────────────────────────────────────────────────
-
-def format_watch_only(tr: Any, *, gate: float | int | None = None) -> str:
-    s, sc = tr.signal, tr.scan
-    side = "long" if s.direction in ("long", "exit_long") else "short"
-    score_bit = ""
-    if getattr(s, "score", 0):
-        score_bit = f" · score {float(s.score):.0f}" + (f"/{gate} gate" if gate is not None else "")
-    close_bit = f" · {_f2(sc.close)}" if sc.close is not None else ""
-    return _cap(f"👀 <b>{_esc(tr.ticker)}</b> {side} watch{score_bit}{close_bit} — not alerting")
-
-
 # ── daily header & stand-down ────────────────────────────────────────────────────
 
 def format_daily_header(run_date: Any, *, n_entries: int = 0, n_exits: int = 0,

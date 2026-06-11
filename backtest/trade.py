@@ -10,7 +10,7 @@ R rather than being discarded.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
@@ -44,10 +44,9 @@ class Trade:
                      Always reported, even on losers.
     market_regime  : Regime label at entry, e.g. 'BULL_NORMAL'.
     ticker_trend   : 'UPTREND' | 'DOWNTREND' | 'CHOP' at entry.
-    entry_score    : SignalScorer confidence score 0–100 at entry bar.
-                     0.0 when the backtester ran without a scorer.
-    entry_score_components : Sub-score breakdown dict (component → 0–1).
-                     Empty dict when scorer was not attached.
+    entry_score    : Always 0.0 for new trades. Kept (with its
+                     backtest_trades column) because historical journaled
+                     rows carry real values from the retired entry scorer.
     """
     ticker: str
     signal_type: str
@@ -64,7 +63,6 @@ class Trade:
     market_regime: str = ""
     ticker_trend: str = ""
     entry_score: float = 0.0
-    entry_score_components: dict[str, float] = field(default_factory=dict)
     # Portfolio-level size multiplier from macro/behavioral regime.
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.

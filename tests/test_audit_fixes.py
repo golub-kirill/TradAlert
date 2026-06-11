@@ -155,23 +155,6 @@ def test_scan_blocks_nan_indicators_instead_of_passing():
     assert "warmup" in res.reason.lower()
 
 
-# ── insider/short_interest weight guard (documented ConfigError) ──────────────
-
-def test_scorer_rejects_unvalidated_subscore_weight():
-    import pytest as _pytest
-    from core.scoring import SignalScorer
-    from exceptions import ConfigError
-    for key in ("insider_buying", "short_interest"):
-        with _pytest.raises(ConfigError):
-            SignalScorer({"scanner": {"weights": {key: 2}}}, {})
-
-
-def test_scorer_allows_zero_or_absent_subscore_weight():
-    from core.scoring import SignalScorer
-    SignalScorer({"scanner": {"weights": {"insider_buying": 0, "trend_up": 3}}}, {})
-    SignalScorer({"scanner": {"weights": {"trend_up": 3}}}, {})  # absent → fine
-
-
 # ── behavioral sentiment z-score uses a trailing 52-week window ───────────────
 
 def test_sentiment_zscore_uses_trailing_52w_not_full_series():

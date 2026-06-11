@@ -189,7 +189,6 @@ def test_portfolio_applies_slippage_and_commission_to_r():
     bt0 = PortfolioBacktester(
         engine=_OneLongPerTicker(),
         cfg=PortfolioConfig(max_open_risk=5.0, entry_slippage_pct=0.0, commission_r=0.0),
-        scorer=None,
     )
     t0 = bt0.run_prepped(_flat_prepped(), skipped={}).trades[0]
     assert t0.entry_price == pytest.approx(100.0)
@@ -199,7 +198,6 @@ def test_portfolio_applies_slippage_and_commission_to_r():
     bt1 = PortfolioBacktester(
         engine=_OneLongPerTicker(),
         cfg=PortfolioConfig(max_open_risk=5.0, entry_slippage_pct=0.01, commission_r=0.05),
-        scorer=None,
     )
     t1 = bt1.run_prepped(_flat_prepped(), skipped={}).trades[0]
     assert t1.entry_price == pytest.approx(101.0)  # 100 * (1 + 0.01)

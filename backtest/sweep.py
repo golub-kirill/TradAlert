@@ -30,7 +30,7 @@ Public API
     SweepEngine.run_ofat(grid)          -> SweepReport
     SweepEngine.run_random_joint(n, k)  -> SweepReport  (multi-knob samples)
 
-    PARAM_GRID                      : default OFAT spec (23 parameters)
+    PARAM_GRID                      : default OFAT spec (17 parameters)
     PORTFOLIO_GRID                  : portfolio-level sweep spec
 """
 
@@ -153,35 +153,6 @@ PARAM_GRID: list[ParamSpec] = [
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
 
-    # 52-week proximity
-    ParamSpec("scanner.weights.near_52w_high",
-              (0, 1, 2, 3, 4),
-              "Near 52w high weight", "phase1"),
-    ParamSpec("scanner.weights.far_from_52w_low",
-              (0, 1, 2, 3, 4),
-              "Far from 52w low weight", "phase1"),
-
-    # RP percentile
-    ParamSpec("scanner.weights.rp_percentile",
-              (0, 1, 2, 3, 4, 5),
-              "RP percentile weight", "phase2"),
-
-    # MA200 slope
-    ParamSpec("scanner.weights.ma200_slope",
-              (0, 1, 2),
-              "MA200 slope weight", "phase3"),
-
-    # VBP exit
-    ParamSpec("scanner.exit_weights.vbp_resistance",
-              (0, 1, 2, 3),
-              "VBP resistance weight", "phase4"),
-
-    # Global
-    ParamSpec("scanner.min_score_to_alert",
-              (55, 60, 65, 70, 75),
-              "Min score to alert", "global",
-              fmt="{:.0f}"),
-
     # Behavioral size-multiplier floor. The consumer key is
     # `size_mult_floor` (settings.yaml + behavioral classifier). The old
     # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
@@ -242,100 +213,6 @@ MEAN_REV_GRID: list[ParamSpec] = [
               (50, 55, 60, 65, 70, 75),
               "MR exit RSI floor", "mean_rev_exit"),
 ]
-
-# ── scoring system focused grid ───────────────────────────────────────────────
-# Used by --scoring-sweep to tune the SignalScorer: entry/exit thresholds
-# and sub-score weights that gate trade selection via min_score_to_alert.
-# All paths map to settings.yaml via _SETTINGS_ALIASES.
-
-SCORING_GRID: list[ParamSpec] = [
-    # ── Entry thresholds (shape the scoring curves) ───────────────────────
-    ParamSpec("scanner.entry_thresholds.rsi_healthy_center",
-              (45, 50, 52.5, 55, 60),
-              "RSI healthy center", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.rsi_healthy_half_w",
-              (8, 10, 12.5, 15, 20),
-              "RSI healthy half-width", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.ma50_slope_scale",
-              (1.0, 1.5, 2.0, 3.0, 4.0),
-              "MA50 slope scale", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.breakout_band_pct",
-              (1.5, 2.0, 3.0, 4.0, 5.0),
-              "Breakout band %", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.volume_spike_ratio",
-              (1.5, 2.0, 2.5, 3.0),
-              "Volume spike ratio", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.near_52w_high_pct_band",
-              (15, 20, 25, 30, 35),
-              "52w high band %", "scoring_entry", fmt="{:.0f}"),
-    ParamSpec("scanner.entry_thresholds.far_from_52w_low_pct_floor",
-              (20, 25, 30, 35, 40),
-              "52w low floor %", "scoring_entry", fmt="{:.0f}"),
-
-    # ── Entry weights (relative importance of sub-scores) ──────────────────
-    ParamSpec("scanner.weights.trend_up",
-              (1, 2, 3, 4, 5),
-              "Trend-up weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.ma50_slope",
-              (1, 2, 3, 4),
-              "MA50 slope weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.volume_spike",
-              (1, 2, 3, 4),
-              "Volume spike weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.rsi_healthy",
-              (1, 2, 3, 4),
-              "RSI healthy weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.breakout_20d",
-              (1, 2, 3, 4, 5),
-              "Breakout 20d weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.macd_bullish",
-              (1, 2, 3, 4, 5),
-              "MACD bullish weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.relative_strength",
-              (0, 1, 2, 3, 4),
-              "Relative strength weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.weekly_trend",
-              (0, 1, 2, 3, 4),
-              "Weekly trend weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.bb_zscore",
-              (0, 1, 2, 3, 4),
-              "BB Z-score weight", "scoring_weights", fmt="{:.0f}"),
-
-    # ── Exit thresholds ────────────────────────────────────────────────────
-    ParamSpec("scanner.exit_thresholds.rsi_overbought_floor",
-              (55, 60, 65, 70),
-              "RSI overbought floor", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.rsi_overbought_range",
-              (5, 8, 10, 15, 20),
-              "RSI overbought range", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.multi_bar_decay_max",
-              (2, 3, 4, 5),
-              "Multi-bar decay max", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.vol_expansion_ratio",
-              (0.3, 0.5, 0.8, 1.0, 1.5),
-              "Vol expansion ratio", "scoring_exit", fmt="{:.1f}"),
-
-    # ─ Exit weights ───────────────────────────────────────────────────────
-    ParamSpec("scanner.exit_weights.regime_flip",
-              (2, 3, 4, 5, 6),
-              "Regime flip weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.multi_bar_decay",
-              (1, 2, 3, 4, 5),
-              "Multi-bar decay weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.rsi_overbought",
-              (1, 2, 3, 4),
-              "RSI overbought weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.macd_cross_down",
-              (1, 2, 3, 4, 5),
-              "MACD cross-down weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.vol_expansion",
-              (1, 2, 3, 4),
-              "Vol expansion weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.rs_divergence",
-              (0, 1, 2, 3, 4),
-              "RS divergence weight", "scoring_exit_weights", fmt="{:.0f}"),
-]
-
 
 # ── result types ──────────────────────────────────────────────────────────────
 
@@ -508,11 +385,6 @@ class SweepEngine:
     base_port_cfg  : Baseline PortfolioConfig keyword arguments.
     n_workers      : Parallel worker processes. 0 = sequential.
                      Defaults to min(cpu_count, 6) for safety.
-    use_scoring    : When True, inject a SignalScorer (min_score_to_alert gate +
-                     score-ranked budget fill). When False (default), no scorer —
-                     entries are taken un-gated and the budget fills alphabetically.
-                     The score is non-predictive of R (corr -0.03), so OFF is the
-                     default; turn ON to study/tune the scoring layer.
     """
 
     def __init__(
@@ -521,11 +393,9 @@ class SweepEngine:
             base_cfg: dict,
             base_port_cfg: dict | None = None,
             n_workers: int | None = None,
-            use_scoring: bool = False,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
-        self._use_scoring = use_scoring
         self._base_port = base_port_cfg or {
             "max_open_risk": 5.0,
             "earnings_aware": False,
@@ -742,10 +612,10 @@ class SweepEngine:
     def _resolve_baseline(self, spec: ParamSpec) -> Any:
         """Extract the baseline value for a ParamSpec from the live configs.
 
-        Settings-routed specs (scanner.*, behavioral.* — see
-        ``_SETTINGS_ALIASES``) don't exist in filters.yaml, so they fall back
-        to settings.yaml; without that, their live baseline values would
-        enter the job pool as fake mutations and pad the trial count.
+        Settings-routed specs (behavioral.* — see ``_SETTINGS_ALIASES``)
+        don't exist in filters.yaml, so they fall back to settings.yaml;
+        without that, their live baseline values would enter the job pool
+        as fake mutations and pad the trial count.
         """
         if spec.dotted.startswith("portfolio."):
             key = spec.dotted[len("portfolio."):]
@@ -894,7 +764,6 @@ class SweepEngine:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
         from core.filter_engine import FilterEngine
-        from core.scoring import SignalScorer
         from backtest.portfolio_backtester import PortfolioBacktester, PortfolioConfig
 
         run_id = f"{group}/{param_name}={param_value}"
@@ -933,11 +802,8 @@ class SweepEngine:
             logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        # Settings are always loaded (behavioral classification needs them). The
-        # scorer (min_score_to_alert gate + score-ranked budget fill) is only wired
-        # when use_scoring is on — the score is non-predictive of R, so by default
-        # entries are un-gated and the budget fills alphabetically.
-        scorer = None
+        # Settings are always loaded — behavioral classification consumes them
+        # via run_prepped(settings=...).
         _settings = None
         try:
             import yaml as _yaml
@@ -946,25 +812,21 @@ class SweepEngine:
                 _settings = _yaml.safe_load(_f)
 
             # Mutate _settings for sweep params that live in settings.yaml
-            # (scanner weights, exit_weights, min_score_to_alert, behavioral
-            # params). When a mutations dict is given, EVERY entry is routed —
-            # param_name alone can't carry multi-knob jobs ("joint") or the
-            # walk-forward OOS replay ("wf_tuned"), whose settings-resident
-            # knobs would otherwise be silent no-ops.
+            # (behavioral params). When a mutations dict is given, EVERY entry
+            # is routed — param_name alone can't carry multi-knob jobs ("joint")
+            # or the walk-forward OOS replay ("wf_tuned"), whose
+            # settings-resident knobs would otherwise be silent no-ops.
             if not is_baseline:
                 if mutations:
                     for _m_name, _m_val in mutations.items():
                         _apply_settings_mutation(_settings, _m_name, _m_val)
                 else:
                     _apply_settings_mutation(_settings, param_name, param_value)
-
-            if self._use_scoring:
-                scorer = SignalScorer(_settings, cfg)
         except Exception as exc:
-            logger.debug("settings load / scorer init failed — running without "
-                         "score gate: %s", exc)
+            logger.debug("settings load failed — running without settings "
+                         "context: %s", exc)
 
-        bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
+        bt = PortfolioBacktester(engine, pcfg)
         result = bt.run_prepped(
             self._universe.prepped,
             self._universe.skipped,
@@ -1069,12 +931,6 @@ def _worker_run(
 class _SweepRunHelper:
     """Minimal stand-in for SweepEngine inside worker processes."""
 
-    # Workers never construct the SignalScorer: use_scoring is not shipped to
-    # the pool, so a --scoring sweep scores only the (sequential) baseline.
-    # Made explicit here — previously this fell out of a swallowed
-    # AttributeError inside _run_one's settings try-block.
-    _use_scoring = False
-
     def __init__(self, universe, base_cfg, base_port):
         self._universe = universe
         self._base_cfg = base_cfg
@@ -1126,47 +982,10 @@ def _get_nested(d: dict, dotted: str, default: Any = None) -> Any:
 
 
 # Mapping from filters.yaml dotted paths → settings.yaml dotted paths.
-# These params live in settings.yaml (read by SignalScorer) but were
-# historically specified as filters.yaml paths in the sweep grid.
+# These params live in settings.yaml but are specified as filters.yaml-style
+# dotted paths in the sweep grid.
 _SETTINGS_ALIASES: dict[str, str] = {
-    # Original PARAM_GRID aliases
-    "scanner.weights.near_52w_high": "scanner.weights.near_52w_high",
-    "scanner.weights.far_from_52w_low": "scanner.weights.far_from_52w_low",
-    "scanner.weights.rp_percentile": "scanner.weights.rp_percentile",
-    "scanner.weights.ma200_slope": "scanner.weights.ma200_slope",
-    "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
-    "scanner.min_score_to_alert": "scanner.min_score_to_alert",
     "behavioral.size_mult_floor": "behavioral.size_mult_floor",
-    # SCORING_GRID — entry thresholds
-    "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",
-    "scanner.entry_thresholds.rsi_healthy_half_w": "scanner.entry_thresholds.rsi_healthy_half_w",
-    "scanner.entry_thresholds.ma50_slope_scale": "scanner.entry_thresholds.ma50_slope_scale",
-    "scanner.entry_thresholds.breakout_band_pct": "scanner.entry_thresholds.breakout_band_pct",
-    "scanner.entry_thresholds.volume_spike_ratio": "scanner.entry_thresholds.volume_spike_ratio",
-    "scanner.entry_thresholds.near_52w_high_pct_band": "scanner.entry_thresholds.near_52w_high_pct_band",
-    "scanner.entry_thresholds.far_from_52w_low_pct_floor": "scanner.entry_thresholds.far_from_52w_low_pct_floor",
-    # SCORING_GRID — entry weights
-    "scanner.weights.trend_up": "scanner.weights.trend_up",
-    "scanner.weights.ma50_slope": "scanner.weights.ma50_slope",
-    "scanner.weights.volume_spike": "scanner.weights.volume_spike",
-    "scanner.weights.rsi_healthy": "scanner.weights.rsi_healthy",
-    "scanner.weights.breakout_20d": "scanner.weights.breakout_20d",
-    "scanner.weights.macd_bullish": "scanner.weights.macd_bullish",
-    "scanner.weights.relative_strength": "scanner.weights.relative_strength",
-    "scanner.weights.weekly_trend": "scanner.weights.weekly_trend",
-    "scanner.weights.bb_zscore": "scanner.weights.bb_zscore",
-    # SCORING_GRID — exit thresholds
-    "scanner.exit_thresholds.rsi_overbought_floor": "scanner.exit_thresholds.rsi_overbought_floor",
-    "scanner.exit_thresholds.rsi_overbought_range": "scanner.exit_thresholds.rsi_overbought_range",
-    "scanner.exit_thresholds.multi_bar_decay_max": "scanner.exit_thresholds.multi_bar_decay_max",
-    "scanner.exit_thresholds.vol_expansion_ratio": "scanner.exit_thresholds.vol_expansion_ratio",
-    # SCORING_GRID — exit weights
-    "scanner.exit_weights.regime_flip": "scanner.exit_weights.regime_flip",
-    "scanner.exit_weights.multi_bar_decay": "scanner.exit_weights.multi_bar_decay",
-    "scanner.exit_weights.rsi_overbought": "scanner.exit_weights.rsi_overbought",
-    "scanner.exit_weights.macd_cross_down": "scanner.exit_weights.macd_cross_down",
-    "scanner.exit_weights.vol_expansion": "scanner.exit_weights.vol_expansion",
-    "scanner.exit_weights.rs_divergence": "scanner.exit_weights.rs_divergence",
 }
 
 
@@ -1174,9 +993,9 @@ def _apply_settings_mutation(settings: dict, param_name: str, value: Any) -> Non
     """
     Mutate the settings.yaml dict for sweep params that live there.
 
-    The SignalScorer reads weights, min_score_to_alert, and behavioral params
-    from settings.yaml — NOT from filters.yaml. This function bridges the gap
-    so that OFAT sweep params correctly affect scoring behavior.
+    The behavioral classifier reads its params from settings.yaml — NOT from
+    filters.yaml. This function bridges the gap so that settings-resident
+    sweep params correctly reach the backtest.
     """
     settings_path = _SETTINGS_ALIASES.get(param_name)
     if settings_path is not None:

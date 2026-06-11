@@ -1,5 +1,5 @@
 """
-Contract tests for the six behavioral / macro fetchers.
+Contract tests for the behavioral / macro fetchers.
 
 All fetchers must:
   1. Return the documented shape even when network is unreachable.
@@ -49,31 +49,6 @@ def test_calendar_categories_case_insensitive():
     upper = get_calendar_events(categories={"FOMC"})
     lower = get_calendar_events(categories={"fomc"})
     assert len(upper) == len(lower)
-
-
-# ─── short_interest.py ───────────────────────────────────────────────────────
-
-
-def test_short_interest_fail_open(tmp_path: Path):
-    from core.fetchers.behavioral.short_interest import fetch_short_interest
-    out = fetch_short_interest("XYZ_BOGUS", data_dir=tmp_path)
-    assert isinstance(out, dict)
-    assert "short_percent_of_float" in out
-    # Either None (fetch failed) or a float (cached unexpectedly) — both OK.
-    val = out["short_percent_of_float"]
-    assert val is None or isinstance(val, (int, float))
-
-
-def test_short_interest_reads_cache(tmp_path: Path):
-    """Pre-populate cache; fetch should return it without network."""
-    from core.fetchers.behavioral.short_interest import fetch_short_interest
-    cache_path = tmp_path / "AAPL.json"
-    cache_path.write_text(json.dumps({
-        "short_percent_of_float": 0.043,
-        "fetched_at": "2026-05-27T00:00:00",
-    }))
-    out = fetch_short_interest("AAPL", data_dir=tmp_path)
-    assert out["short_percent_of_float"] == 0.043
 
 
 # ─── cot.py ──────────────────────────────────────────────────────────────────
@@ -143,45 +118,6 @@ def test_cot_normalise_no_exact_match_keeps_all():
     df = _normalise_tff_rows(rows, "E-MINI S&P 500")
     assert len(df) == 1
     assert df["lev_net"].iloc[0] == -1
-
-
-# ─── form4.py ────────────────────────────────────────────────────────────────
-
-
-def test_form4_fail_open_shape(tmp_path: Path):
-    from core.fetchers.behavioral.form4 import fetch_form4, _ZERO
-    out = fetch_form4("XYZ_BOGUS", data_dir=tmp_path)
-    assert isinstance(out, dict)
-    # All required scoring keys present.
-    for k in _ZERO:
-        assert k in out, f"missing required key {k}"
-    # Types match scoring expectations.
-    assert isinstance(out["buys_30d"], int)
-    assert isinstance(out["buys_90d"], int)
-    assert isinstance(out["sells_90d"], int)
-    assert isinstance(out["buy_value_30d"], (int, float))
-    assert isinstance(out["sell_value_90d"], (int, float))
-    assert isinstance(out["cluster_buy_30d"], bool)
-
-
-def test_form4_zero_dict_complete():
-    """The _ZERO fallback must satisfy SignalScorer._score_insider_buying."""
-    from core.fetchers.behavioral.form4 import _ZERO
-    required = {
-        "buys_30d", "buys_90d", "sells_90d",
-        "buy_value_30d", "sell_value_90d",
-        "distinct_insiders_30d", "cluster_buy_30d",
-    }
-    assert required.issubset(_ZERO.keys())
-
-
-def test_form4_summarise_empty():
-    """Empty transactions DataFrame → zero-filled summary."""
-    from core.fetchers.behavioral.form4 import _summarise_transactions, _ZERO
-    df = pd.DataFrame(columns=["Start Date", "Transaction"])
-    out = _summarise_transactions(df)
-    for k in _ZERO:
-        assert out[k] == _ZERO[k]
 
 
 # ─── aaii.py ─────────────────────────────────────────────────────────────────

@@ -7,8 +7,6 @@ Fetches behavioral / structural data feeds:
  AAII — AAII bull-bear survey
  Breadth — % S&P 500 above MA200
  Sector — (XLI+XLF)/(XLP+XLU) rotation ratio
- Form 4 — SEC EDGAR Form 4 insider transactions (per-ticker)
- Short Int — yfinance shortPercentOfFloat (per-ticker)
 
 Each fetcher follows the fail-open convention: stale data > 14 days is
 treated as missing; missing axes are dropped from the composite.
@@ -21,8 +19,6 @@ fetch_naaim -> pd.DataFrame
 fetch_aaii -> pd.DataFrame
 compute_sp500_breadth -> pd.DataFrame
 compute_sector_rotation -> pd.DataFrame
-fetch_form4(ticker) -> dict
-fetch_short_interest(ticker) -> dict
 """
 
 from __future__ import annotations
@@ -33,9 +29,7 @@ from pathlib import Path
 from core.fetchers.behavioral.aaii import fetch_aaii
 from core.fetchers.behavioral.breadth import compute_sp500_breadth, compute_sector_rotation
 from core.fetchers.behavioral.cot import fetch_cot, fetch_all_cot
-from core.fetchers.behavioral.form4 import fetch_form4
 from core.fetchers.behavioral.naaim import fetch_naaim
-from core.fetchers.behavioral.short_interest import fetch_short_interest
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +41,6 @@ __all__ = [
     "fetch_aaii",
     "compute_sp500_breadth",
     "compute_sector_rotation",
-    "fetch_form4",
-    "fetch_short_interest",
 ]
 
 
@@ -72,7 +64,6 @@ def fetch_all_behavioral(
     aaii — AAII DataFrame
     breadth — S&P 500 breadth DataFrame
     sector_rotation — sector ratio DataFrame
-    Per-ticker data (form4, short_interest) is fetched on demand.
 
     ``behavioral.data_dir`` and ``behavioral.stale_window_days``
     from settings.yaml are now read here and forwarded to every sub-fetcher

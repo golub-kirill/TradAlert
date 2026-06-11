@@ -6,7 +6,7 @@ held-long exits, portfolio-aware bar-replay, OFAT / walk-forward sweeps.
 ## Layout
 
 ```
-main.py                Live scan: fetch → indicators → scan → signal → score
+main.py                Live scan: fetch → indicators → scan → signal
 position_CLI.py        Manual position CRUD
 telegram_bot.py        Interactive Telegram daemon (owner-only commands + buttons)
 backtest/run_backtest  Backtester: baseline, sweep, walk-forward, robustness
@@ -14,13 +14,13 @@ backtest/repair_parquet Cross-platform parquet re-save utility
 
 config/
   filters.yaml         Scan + signal + regime + stop-loss + size-mult gate
-  settings.yaml        Scoring weights, thresholds, macro/behavioral, storage
+  settings.yaml        Macro/behavioral layers, risk budget, telegram, storage
   watchlist.yaml       Two-tier ticker universe (tier_a tradeable, tier_b RP-only)
   sector_map.yaml      Optional ticker → sector ETF mapping for sector_gate
   secrets.env          Local secrets (gitignored; see secrets.env.example)
 
-src/core/              Domain: filter_engine, scoring, ticker_store, types, paths, defaults
-src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/AAII/breadth/Form4/short)
+src/core/              Domain: filter_engine, ticker_store, types, paths, defaults
+src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/AAII/breadth)
 src/core/indicators/   ATR/RSI/MACD/Bollinger + VBP + chart renderer
 src/core/macro/        Macro regime classifier (risk_on_score, size_multiplier)
 src/core/behavioral/   Behavioral regime classifier (breadth, sentiment, positioning)
@@ -53,14 +53,13 @@ must exist (an empty `sector_map: { }` ships by default).
 ### `main.py` — live scanner
 
 ```bash
-python main.py [--force] [--allow-shorts] [--scoring]
+python main.py [--force] [--allow-shorts]
 ```
 
 | Flag             | Default | Description                                                                                                                                          |
 |------------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--force`        | False   | Bypass cache staleness check; re-fetch every ticker.                                                                                                 |
 | `--allow-shorts` | False   | Enable short-side entries. Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
-| `--scoring`      | False   | Enrich + score signals and apply the `min_score_to_alert` gate. **OFF by default** — the entry score is non-predictive of R (corr −0.03), so every engine-triggered fire is reported as actionable instead of being score-gated (ADR-003). |
 
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
@@ -114,7 +113,6 @@ Modes (mutually exclusive, choose at most one):
 | `--sweep`         | Full OFAT parameter grid (`backtest/sweep.py::PARAM_GRID`). |
 | `--sweep --quick` | Reduced grid (fewer values per parameter).                  |
 | `--mean-rev-tune` | Focused mean-reversion parameter sweep.                     |
-| `--scoring-sweep` | settings.yaml scoring weights + thresholds sweep.           |
 | `--walk-forward`  | Rolling IS / OOS validation (3y IS / 1y OOS by default).    |
 | `--robustness`    | Perturb each parameter ±10/20% and report E[R] sensitivity. |
 
@@ -144,7 +142,6 @@ bit-identically; turn on to A/B a refinement):
 | `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
 | `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
-| `--scoring`         | Enable the `SignalScorer` (`min_score_to_alert` gate + score-ranked budget fill). **OFF by default** — the entry score is non-predictive of R (corr −0.03) and ranking by it selected weaker trades; turning it off lifted Sharpe 0.42 → 0.66 in the ADR-003 A/B (both sides under the same, pre-correction conventions). `--scoring-sweep` forces it on. | `SweepEngine(use_scoring=)` |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
 > loads it at startup, and the `backtest_runs`/`backtest_trades` tables
@@ -264,7 +261,7 @@ Loaded by `python-dotenv` at startup.
 | `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
-| `SEC_USER_AGENT` | reserved                             | Not wired — `form4` uses yfinance, not direct EDGAR yet. For the planned Form 4 XML parser (see TODO). |
+| `SEC_USER_AGENT` | reserved                             | Not wired — reserved for a future SEC EDGAR integration.                                               |
 | `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
 | `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
 
@@ -278,7 +275,7 @@ Loaded by `python-dotenv` at startup.
 | `liquidity.min_dollar_volume_20d`                                                | 20-day avg dollar volume floor.                                                           |
 | `market_cap.min_market_cap`                                                      | Market cap floor (skipped when cap is None — ETFs / indices).                             |
 | `volatility.{min,max}_atr_pct`                                                   | ATR% band.                                                                                |
-| `trend.{ma_fast,ma_slow}`                                                        | MA periods (50/200). Used by ticker-trend + regime + scoring.                             |
+| `trend.{ma_fast,ma_slow}`                                                        | MA periods (50/200). Used by ticker-trend + regime.                                       |
 | `regime.{vix_symbol,vix_low,vix_high}`                                           | Volatility classifier.                                                                    |
 | `regime.{index_symbols,require_all_indices,ma_short,require_ma_short_alignment}` | Trend voting + secondary MA-short gate.                                                   |
 | `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout + manual stop-date calendar.                                            |
@@ -304,11 +301,6 @@ Loaded by `python-dotenv` at startup.
 | `storage.{cache_dir,log_level,staleness_hours,staleness_*}`                 | Parquet/JSON cache TTLs + log level.                                                                                                                                                                                                                              |
 | `fetcher.max_workers`                                                       | ThreadPool size for watchlist fetch.                                                                                                                                                                                                                              |
 | `risk.max_open_risk`                                                        | Aggregate open-risk cap the live scanner surfaces (budget consumed vs. cap, size_mult); alerter only, never auto-executes.                                                                                                                                          |
-| `scanner.min_score_to_alert`                                                | Threshold below which a passed signal is `watch_only`.                                                                                                                                                                                                            |
-| `scanner.weights`                                                           | Entry sub-score weights (trend_up, ma50_slope, ma200_slope, volume_spike, rsi_healthy, breakout_20d, near_52w_high, far_from_52w_low, macd_bullish, no_earnings_risk, relative_strength, weekly_trend, bb_zscore, rp_percentile, insider_buying, short_interest). |
-| `scanner.exit_weights`                                                      | Exit sub-score weights (regime_flip, multi_bar_decay, rsi_overbought, macd_cross_down, vol_expansion, rs_divergence, vbp_resistance).                                                                                                                             |
-| `scanner.{entry,exit}_thresholds`                                           | Sub-score tunables (RSI centre/half-width, slope scales, breakout band, VBP distances).                                                                                                                                                                           |
-| `scanner.vbp.{lookback,n_bins,volume_percentile}`                           | VBP histogram parameters.                                                                                                                                                                                                                                         |
 | `scanner.chart.signal_history`                                              | Render historical signal markers on charts.                                                                                                                                                                                                                       |
 | `macro.{enabled,fred_api_key_env,staleness_hours,series_dir,series_subset}` | Macro layer toggles + cache.                                                                                                                                                                                                                                      |
 | `macro.{fred_series,boc_series,yf_series}`                                  | Series IDs to fetch.                                                                                                                                                                                                                                              |
@@ -317,10 +309,6 @@ Loaded by `python-dotenv` at startup.
 | `behavioral.{enabled,data_dir,stale_window_days}`                           | Behavioral layer toggles + cache.                                                                                                                                                                                                                                 |
 | `behavioral.{size_mult_floor,size_mult_ceiling,breadth_divergence_penalty}` | behavioral_score → size_multiplier mapping.                                                                                                                                                                                                                       |
 | `behavioral.{behavioral_weights,axis_weights}`                              | Per-axis state→value mapping and weights.                                                                                                                                                                                                                         |
-
-`scanner.weights.insider_buying` and `scanner.weights.short_interest` must be
-`0` — the backing fetchers are placeholders; non-zero weight raises
-`ConfigError` at scorer construction (see TODO.md).
 
 ### `config/watchlist.yaml`
 
@@ -362,7 +350,6 @@ attaches: `atr`, `rsi`, `macd`, `macd_signal`, `macd_hist`, `bb_mid`,
 FilterEngine.scan(ticker, df, market_cap)         → ScanResult
 FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, held_long, regime)
                                                   → SignalResult
-SignalScorer.enrich(signal, df, regime, ...)       (sets was_enriched=True)
 ```
 
 Direction `long` for fresh entries; `exit_long` for held positions

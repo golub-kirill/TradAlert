@@ -13,7 +13,6 @@ Usage
     python backtest/run_backtest.py --tickers MSFT GOOGL TSLA  # subset
     python backtest/run_backtest.py --walk-forward          # IS/OOS validation
     python backtest/run_backtest.py --mean-rev-tune         # mean-rev sweep
-    python backtest/run_backtest.py --scoring-sweep         # scorer thresholds + weights
     python backtest/run_backtest.py --workers=8             # parrallel running
 """
 
@@ -66,7 +65,7 @@ def main() -> None:
         print_baseline, print_report, save_html, save_csv,
         print_walk_forward, print_mean_rev_tune, print_exit_quality,
     )
-    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID, SCORING_GRID
+    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID
     from backtest.equity_curve import build_curve, attribution_table
     from backtest.stats_utils import bootstrap_all, kelly_fraction, consecutive_loss_stats, monte_carlo_drawdown
     from backtest.walk_forward import WalkForwardEngine
@@ -231,18 +230,11 @@ def main() -> None:
         print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
               f"(size_mult units; default 5.0)")
 
-    # Scoring is OFF by default (the entry score is non-predictive of R and its
-    # score-ranked budget fill selects weaker trades). --scoring turns it back on;
-    # --scoring-sweep needs it on to tune the scorer.
-    use_scoring = bool(args.scoring or args.scoring_sweep)
-    if use_scoring:
-        print("  ▸ Scoring: ON (min_score_to_alert gate + score-ranked budget fill)")
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
         base_port_cfg=base_port,
         n_workers=max(args.workers, 0),
-        use_scoring=use_scoring,
     )
 
     def _progress(msg: str) -> None:
@@ -259,19 +251,6 @@ def main() -> None:
             print(f"  Saved: {sp}")
         if not args.no_html:
             hp = save_html(report, out_dir / "mean_rev_report.html")
-            print(f"  Saved: {hp}")
-
-    # ── scoring system focused sweep ───────────────────────────────────────
-    elif args.scoring_sweep:
-        print(f"\n  Scoring system sweep: {len(SCORING_GRID)} params\n")
-        report = engine.run_ofat(grid=SCORING_GRID, port_grid=[], progress=_progress)
-        print_report(report)
-        if not args.no_csv:
-            sp, tp = save_csv(report, out_dir)
-            print(f"  Saved: {sp}")
-            print(f"  Saved: {tp}")
-        if not args.no_html:
-            hp = save_html(report, out_dir / "scoring_report.html")
             print(f"  Saved: {hp}")
 
     # ── baseline only ──────────────────────────────────────────────────────
@@ -315,7 +294,6 @@ def main() -> None:
                 step_months=6,
                 re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
                 n_workers=_wf_workers,      # --workers now reaches the per-window sweep
-                use_scoring=use_scoring,    # default OFF — matches the scoring default
                 joint_samples=args.wf_joint,
                 joint_knobs=args.wf_joint_knobs,
                 joint_seed=args.wf_seed,
@@ -331,8 +309,7 @@ def main() -> None:
 
         # ── SQL journaling (ON by default — policy; --no-journal to skip) ──
         if not args.no_journal:
-            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni,
-                              use_scoring=use_scoring)
+            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni)
         else:
             print("  ▸ Journaling: OFF (--no-journal) — this run leaves no DB record")
 
@@ -437,7 +414,6 @@ def main() -> None:
                 report.baseline, report.baseline.trades,
                 base_cfg, start_date, end_date, uni,
                 notes=f"sweep baseline ({len(report.points)} variants run)",
-                use_scoring=use_scoring,
             )
 
         if not args.no_csv:
@@ -495,14 +471,6 @@ def _parse_args() -> argparse.Namespace:
                         "parameter) for a fast pass.")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
-    p.add_argument("--scoring", action="store_true",
-                   help="Enable the SignalScorer (min_score_to_alert gate + "
-                        "score-ranked budget fill). OFF by default — the entry "
-                        "score is non-predictive of R (corr -0.03) and its ranking "
-                        "selects weaker trades under the open-risk budget.")
-    p.add_argument("--scoring-sweep", action="store_true",
-                   help="SignalScorer thresholds + weights sweep (settings.yaml). "
-                        "Forces --scoring on.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
     p.add_argument("--wf-joint", type=int, default=0, metavar="N",
@@ -628,7 +596,6 @@ def _journal_baseline(
         end_date,
         uni,
         notes: str | None = None,
-        use_scoring: bool | None = None,
 ) -> None:
     """
     Write one baseline run + all its closed trades to MySQL.
@@ -649,9 +616,11 @@ def _journal_baseline(
             "start_date": str(start_date) if start_date else None,
             "end_date": str(end_date) if end_date else None,
             "universe": uni.summary(),
-            # Run provenance: the reconcilers prefer the latest scoring-OFF run as
-            # the expectancy reference (matches the live default) — see #9a.
-            "use_scoring": bool(use_scoring) if use_scoring is not None else None,
+            # Run provenance: backtest.db.reference_run selects the expectancy
+            # reference on `use_scoring is False`. Every run is scoring-OFF now,
+            # so write the constant — older scoring-ON rows stay distinguishable
+            # and are still skipped.
+            "use_scoring": False,
         }
 
         run_id = save_backtest_run(

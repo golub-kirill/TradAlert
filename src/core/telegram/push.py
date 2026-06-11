@@ -97,12 +97,12 @@ async def _send_notice(token, chat_id, parse_mode, text):
 # ── selection (pure) ─────────────────────────────────────────────────────────────
 
 def _select(results, cfg: TelegramConfig):
-    """Return [(TickerResult, kind)] for fired, non-watch-only, enabled, unmuted signals."""
+    """Return [(TickerResult, kind)] for fired, enabled, unmuted signals."""
     out = []
     muted = set(cfg.mute)
     for tr in results:
         s = getattr(tr, "signal", None)
-        if s is None or not s.passed or getattr(s, "watch_only", False):
+        if s is None or not s.passed:
             continue
         kind_pair = _DIRECTION_KIND.get(s.direction)
         if kind_pair is None:

@@ -159,7 +159,7 @@ def main() -> None:
             base_port["trail_activate_r"] = float(args.trail_activate_r)
 
     engine = SweepEngine(uni, base_cfg=base_cfg, base_port_cfg=base_port,
-                         n_workers=args.workers, use_scoring=False)
+                         n_workers=args.workers)
 
     grid = _build_grid(args.quick)
     port_grid = PORTFOLIO_GRID if not args.quick else _quick_portfolio_grid()
@@ -244,7 +244,7 @@ def main() -> None:
             exit_desc += f"+{base_port['breakeven_buffer_atr']:g}ATR"
     if base_port.get("trail_atr_mult") is not None:
         exit_desc += f" | trail {base_port['trail_atr_mult']:g}×ATR"
-    print(f"  Universe : {uni.n_tradeable} names | scoring OFF | "
+    print(f"  Universe : {uni.n_tradeable} names | "
           f"{base_port['max_hold_days']}d {base_port['max_hold_mode']} | "
           f"budget {base_port['max_open_risk']:g} | slip {base_port['entry_slippage_pct']:g}"
           + exit_desc)

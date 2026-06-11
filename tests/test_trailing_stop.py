@@ -95,7 +95,6 @@ def _run(trail_mult):
     bt = PortfolioBacktester(
         engine=_OneLongFar(),
         cfg=PortfolioConfig(max_open_risk=5.0, trail_atr_mult=trail_mult),
-        scorer=None,
     )
     return bt.run_prepped(_prepped_rise_fall(), skipped={}).trades
 

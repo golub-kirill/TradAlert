@@ -284,9 +284,6 @@ def _annotate_signal(ax, df, signal):
     if not (is_long or is_short or is_exit):
         return
 
-    score_val = getattr(signal, "score", 0.0)
-    score_str = "  -  score {:.0f}/100".format(score_val) if score_val > 0 else ""
-
     # Expand y-limits up-front so SL / TP and the callout fit inside the panel.
     if not is_exit and signal.stop_price and signal.target_price:
         sl, tp = signal.stop_price, signal.target_price
@@ -324,8 +321,8 @@ def _annotate_signal(ax, df, signal):
     type_str = "  " + sig_type if sig_type and sig_type != "none" else ""
 
     if is_exit:
-        label = "{} {}{}{}\n{}  -  close {:.2f}".format(
-            marker, label_dir, type_str, score_str, bar_date, last_close,
+        label = "{} {}{}\n{}  -  close {:.2f}".format(
+            marker, label_dir, type_str, bar_date, last_close,
         )
     else:
         rr = ""
@@ -335,11 +332,11 @@ def _annotate_signal(ax, df, signal):
             if risk > 0:
                 rr = "  -  RR {:.1f}".format(reward / risk)
         label = (
-            "{m} {d}{t}{s}\n"
+            "{m} {d}{t}\n"
             "{dt}  -  close {cl:.2f}{rr}\n"
             "SL {sl:.2f}   TP {tp:.2f}{h}"
         ).format(
-            m=marker, d=label_dir, t=type_str, s=score_str,
+            m=marker, d=label_dir, t=type_str,
             dt=bar_date, cl=last_close, rr=rr,
             sl=signal.stop_price, tp=signal.target_price, h=hold_str,
         )
@@ -441,12 +438,7 @@ def _annotate_historical_signals(ax, plot_df, full_df, historical_signals):
         bar_close = float(plot_df["close"].iloc[bar_idx])
 
         is_long = hs.direction == "long"
-        if is_long and not hs.watch_only:
-            color = _C_UP
-        elif hs.watch_only:
-            color = _C_AMBER
-        else:
-            color = _C_DOWN
+        color = _C_UP if is_long else _C_DOWN
 
         if is_long:
             y = bar_low - bar_close * 0.012
@@ -459,7 +451,7 @@ def _annotate_historical_signals(ax, plot_df, full_df, historical_signals):
             bar_idx, y, hs.marker_symbol,
             fontsize=14, color=color, fontweight="bold",
             ha="center", va=va,
-            alpha=0.65 if hs.watch_only else 0.95, zorder=10,
+            alpha=0.95, zorder=10,
         )
 
 
@@ -491,8 +483,8 @@ def _render_sidebar(fig, plot_df, full_df, ticker,
     When the signal carries entry-gate ``checks`` (the live path), render the
     direction-aware, factor-grouped *trigger panel* — the engine's proof of
     opinion — with graded ●●●○ marks for continuous factors and hard ✓/✗ for
-    binaries. Otherwise fall back to the legacy scorecard (exit signals, or
-    scoring-ON ``score_components``)."""
+    binaries. Otherwise fall back to the legacy scorecard (exit signals, or a
+    caller-supplied ``score_components`` dict)."""
     checks = list(getattr(signal, "checks", None) or [])
     if checks:
         _render_trigger_panel(fig, ticker, signal, checks)
@@ -844,16 +836,12 @@ def _render_trigger_panel(fig, ticker, signal, checks):
 def _header_badge(signal, passed_count, total_count):
     if signal and signal.passed:
         direction = signal.direction or ""
-        score = getattr(signal, "score", 0.0)
-        # Omit the score when it's 0 — i.e. scoring is OFF (signal un-enriched).
-        # Showing "LONG  0" would read as a 0/100 confidence, which is wrong.
-        sfx = "  {:.0f}".format(score) if score > 0 else ""
         if _is_long_direction(direction):
-            return ("▲ LONG" + sfx, _C_UP)
+            return ("▲ LONG", _C_UP)
         if _is_short_direction(direction):
-            return ("▼ SHORT" + sfx, _C_DOWN)
+            return ("▼ SHORT", _C_DOWN)
         if _is_exit_direction(direction):
-            return ("✕ EXIT" + sfx, _C_AMBER)
+            return ("✕ EXIT", _C_AMBER)
     if total_count:
         pct = passed_count / total_count
         if pct >= 0.75:

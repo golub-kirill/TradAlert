@@ -313,7 +313,6 @@ class WalkForwardEngine:
             re_tune: bool = False,
             grid: list[ParamSpec] | None = None,
             n_workers: int = 0,
-            use_scoring: bool = False,
             joint_samples: int = 0,
             joint_knobs: int = 3,
             joint_seed: int = 1337,
@@ -325,7 +324,6 @@ class WalkForwardEngine:
         self._oos_years = oos_years
         self._step_months = step_months
         self._re_tune = re_tune
-        self._use_scoring = use_scoring
         self._grid = grid if grid is not None else PARAM_GRID
         # Joint re-tune: >0 replaces the per-window OFAT sweep with N seeded
         # multi-knob samples (knobs mutated per sample = joint_knobs). The
@@ -348,7 +346,6 @@ class WalkForwardEngine:
             base_cfg=base_cfg,
             base_port_cfg=base_port_cfg,
             n_workers=0,
-            use_scoring=use_scoring,
         )
 
     # ── public ────────────────────────────────────────────────────────────────
@@ -493,7 +490,6 @@ class WalkForwardEngine:
                 base_cfg=copy.deepcopy(self._base_cfg),
                 base_port_cfg=dict(self._base_port_cfg),
                 n_workers=self._n_workers,
-                use_scoring=self._use_scoring,
             )
 
             # Override port params to restrict to IS window

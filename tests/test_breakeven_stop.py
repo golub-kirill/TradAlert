@@ -86,7 +86,6 @@ def _run(breakeven_trigger):
     bt = PortfolioBacktester(
         engine=_OneLongTight(),
         cfg=PortfolioConfig(max_open_risk=5.0, breakeven_trigger_r=breakeven_trigger),
-        scorer=None,
     )
     return bt.run_prepped(_prepped(), skipped={}).trades[0]
 
