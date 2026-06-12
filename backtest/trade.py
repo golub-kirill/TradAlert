@@ -207,11 +207,15 @@ class Trade:
         Gap-through entries (risk ≤ 0) are scored 0R *by design* — this is NOT a
         hidden left-tail loss. When the T+1 open gaps past the stop, the same-bar
         stop logic fills the exit at that same open, so exit ≈ entry and the only
-        realized cost is entry/exit slippage. Measured 2026-06-04: 7 of ~1098
-        trades gap through, ≈ −0.25R total — roughly 1% of the headline's bootstrap
-        SE (±~26R), i.e. immaterial. Booking the true slippage loss would require
-        threading the *intended* (signal-based) risk through the close path; not
-        worth the added surface area for 0.25R (see TODO).
+        realized cost is entry/exit slippage. Re-measured 2026-06-11 on the frozen
+        snapshot (213-universe headline run_id=15): 6 of 1622 trades gap through —
+        all on the 2016-06-24 Brexit gap — booked −0.005R each (commission only),
+        −0.03R total; the unbooked slippage cost stays well under 1% of the
+        headline's bootstrap SE (±~30R), i.e. immaterial. Booking the true
+        slippage loss would require threading the *intended* (signal-based) risk
+        through the close path; not worth the added surface area.
+        (``tests/test_gap_through.py`` locks the 0R accounting and the
+        immateriality bound.)
 
         Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
         the stop and the target, the backtester records the STOP fill (the
