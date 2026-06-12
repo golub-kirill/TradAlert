@@ -655,13 +655,20 @@ def _run_pipeline(
             # direction-aware factor read.
             _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
 
-            chart(
-                ticker, df, signal=signal,
-                output_dir=_ROOT / "data" / "screenshots",
-                historical_signals=hist_signals,
-                regime=regime,
-                rp_rank=ticker_rp,
-            )
+            # Chart is display support — a render failure (disk full, codec,
+            # OOM) must never kill the scan: everything after this loop
+            # (journaling, Telegram push) would be lost with it.
+            try:
+                chart(
+                    ticker, df, signal=signal,
+                    output_dir=_ROOT / "data" / "screenshots",
+                    historical_signals=hist_signals,
+                    regime=regime,
+                    rp_rank=ticker_rp,
+                )
+            except Exception as exc:
+                logger.warning("[%s] chart render failed (alert still sent) — %s",
+                               ticker, exc)
         else:
             logger.debug("[%s] no signal — %s", ticker, signal.reason)
 
