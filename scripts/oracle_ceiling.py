@@ -21,11 +21,18 @@ This is an upper bound by construction: the oracle sees realized R exactly and
 the count-K capacity proxy ignores multi-day budget occupancy knock-ons. If
 even this ceiling is small, no scorer can add meaningful R here.
 
+--snapshot uses a frozen data snapshot (paired-run methodology); --dump-dir
+writes the R1 research ledgers: candidates.parquet (every unconstrained-twin
+trade — the counterfactual outcome ledger features are trained on) and
+binddays.parquet (run A's per-day fills + matched capped candidates — the
+replay set for feature-ranked fill simulation, scripts/r1_rank_ic.py).
+
 Exploratory harness: no journal, no HTML, no CSV.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import time
@@ -47,7 +54,7 @@ from core.filter_engine import FilterEngine  # noqa: E402
 
 def _run(uni, base_cfg, settings, max_open_risk: float):
     exec_cfg = base_cfg.get("execution", {})
-    pcfg = PortfolioConfig(
+    pcfg_kwargs = dict(
         max_open_risk=max_open_risk,
         earnings_aware=True,
         entry_slippage_pct=exec_cfg.get("entry_slippage_pct", 0.002),
@@ -56,6 +63,14 @@ def _run(uni, base_cfg, settings, max_open_risk: float):
         max_hold_days=int(exec_cfg.get("max_hold_days", 25)),
         max_hold_mode=str(exec_cfg.get("max_hold_mode", "if_not_profit")),
     )
+    # Shipped breakeven default rides along, exactly like run_backtest /
+    # study_matrix — without it the measurement silently reverts to the
+    # pre-ADR-004 config (run_id=14).
+    if exec_cfg.get("breakeven_trigger_r"):
+        pcfg_kwargs["breakeven_trigger_r"] = float(exec_cfg["breakeven_trigger_r"])
+        if exec_cfg.get("breakeven_buffer_atr"):
+            pcfg_kwargs["breakeven_buffer_atr"] = float(exec_cfg["breakeven_buffer_atr"])
+    pcfg = PortfolioConfig(**pcfg_kwargs)
     engine = FilterEngine.from_dict(base_cfg)
     bt = PortfolioBacktester(engine, pcfg)
     t0 = time.time()
@@ -77,6 +92,14 @@ def _eff_r(t) -> float:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Oracle ceiling at the budget-fill seam")
+    ap.add_argument("--snapshot", default=None, metavar="DIR",
+                    help="frozen data snapshot (e.g. data/snapshot_2026-06-10); "
+                         "default: live caches")
+    ap.add_argument("--dump-dir", default=None, metavar="DIR",
+                    help="write candidates.parquet + binddays.parquet here (R1)")
+    args = ap.parse_args()
+
     with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
     with open(_ROOT / "config" / "settings.yaml", encoding="utf-8") as f:
@@ -86,15 +109,28 @@ def main() -> None:
     tickers = [t for t in wl.get("tier_a", wl.get("tickers", []))
                if isinstance(t, str)]
 
+    if args.snapshot:
+        data_root = Path(args.snapshot)
+        if not data_root.is_absolute():
+            data_root = _ROOT / data_root
+        load_dirs = dict(cache_dir=data_root / "prices",
+                         earnings_dir=data_root / "earnings_history",
+                         macro_dir=data_root / "macro",
+                         behavioral_dir=data_root / "behavioral")
+    else:
+        load_dirs = dict(cache_dir=_ROOT / "data" / "prices",
+                         earnings_dir=_ROOT / "data" / "earnings_history")
+
     from datetime import date
     print(f"  Loading universe ({len(tickers)} tickers)…", flush=True)
+    if args.snapshot:
+        print(f"  Snapshot: {load_dirs['cache_dir'].parent}", flush=True)
     uni = load_universe(
         tickers,
         ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
         earnings_aware=True,
-        cache_dir=_ROOT / "data" / "prices",
-        earnings_dir=_ROOT / "data" / "earnings_history",
         start_date=date(2000, 1, 1),
+        **load_dirs,
     )
     print(f"  {uni.summary()}", flush=True)
 
@@ -104,11 +140,11 @@ def main() -> None:
     # Counterfactual outcomes: every would-be entry in the unconstrained run.
     cf = {(t.ticker, t.entry_date): _eff_r(t) for t in res_b.trades}
 
-    fills_by_day: dict = defaultdict(list)
+    fills_by_day: dict = defaultdict(list)          # day -> [(ticker, eff_r)]
     for t in res_a.trades:
-        fills_by_day[t.entry_date].append(_eff_r(t))
+        fills_by_day[t.entry_date].append((t.ticker, _eff_r(t)))
 
-    capped_by_day: dict = defaultdict(list)
+    capped_by_day: dict = defaultdict(list)         # day -> [(ticker, cf eff_r)]
     n_mult0 = n_unmatched = n_matched = 0
     for c in res_a.capped_signals:
         if float(getattr(c.signal, "size_mult", 1.0) or 0.0) <= 0:
@@ -116,7 +152,7 @@ def main() -> None:
             continue
         key = (c.ticker, c.date)
         if key in cf:
-            capped_by_day[c.date].append(cf[key])
+            capped_by_day[c.date].append((c.ticker, cf[key]))
             n_matched += 1
         else:
             n_unmatched += 1      # path-divergence: no counterfactual; skipped
@@ -128,9 +164,10 @@ def main() -> None:
         k = len(fills)
         if k == 0:
             continue              # dd-gate / nothing filled: oracle fills nothing too
-        candidates = sorted(fills + capped, reverse=True)
+        fill_vals = [v for _, v in fills]
+        candidates = sorted(fill_vals + [v for _, v in capped], reverse=True)
         oracle = sum(candidates[:k])
-        actual = sum(fills)
+        actual = sum(fill_vals)
         total_actual += actual
         total_oracle += oracle
         bind_days.append((day, oracle - actual, k, len(capped)))
@@ -161,6 +198,42 @@ def main() -> None:
     print("  Top bind days (date, oracle-gain, fills, capped):")
     for day, gain, k, ncap in top:
         print(f"    {day}  {gain:+6.2f}R  K={k}  capped={ncap}")
+
+    if args.dump_dir:
+        import pandas as pd
+        out = Path(args.dump_dir)
+        if not out.is_absolute():
+            out = _ROOT / out
+        out.mkdir(parents=True, exist_ok=True)
+        cand = pd.DataFrame([{
+            "ticker": t.ticker,
+            "entry_date": t.entry_date,
+            "exit_date": t.exit_date,
+            "exit_reason": t.exit_reason,
+            "signal_type": t.signal_type,
+            "direction": t.direction,
+            "entry_price": float(t.entry_price),
+            "initial_stop": float(t.initial_stop),
+            "size_mult": float(t.size_mult or 1.0),
+            "market_regime": t.market_regime,
+            "ticker_trend": t.ticker_trend,
+            "r_multiple": float(t.r_multiple or 0.0),
+            "eff_r": _eff_r(t),
+        } for t in res_b.trades])
+        cand.to_parquet(out / "candidates.parquet", index=False)
+
+        rows = []
+        for day, capped in capped_by_day.items():
+            fills = fills_by_day.get(day, [])
+            if not fills:
+                continue          # mirrors the ceiling loop: no fill, no choice
+            rows += [{"date": day, "ticker": tk, "source": "fill", "eff_r": v}
+                     for tk, v in fills]
+            rows += [{"date": day, "ticker": tk, "source": "capped", "eff_r": v}
+                     for tk, v in capped]
+        bind = pd.DataFrame(rows)
+        bind.to_parquet(out / "binddays.parquet", index=False)
+        print(f"\n  Dumped {len(cand)} candidates + {len(bind)} bind-day rows → {out}")
 
 
 if __name__ == "__main__":
