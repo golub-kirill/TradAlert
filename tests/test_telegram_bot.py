@@ -295,3 +295,10 @@ def test_mask_filter_masks_bot_token_and_hex():
                              "fred key=abcdef0123456789abcdef0123456789 ok", None, None)
     f.filter(rec2)
     assert "<API-KEY-MASKED>" in rec2.getMessage()
+
+    # Non-hex lowercase alnum keys (rotated / third-party) are masked too
+    rec3 = logging.LogRecord("x", logging.INFO, __file__, 1,
+                             "key=zq7xk2m9pw4nv8rt3yb6hd1fg5js0caz end", None, None)
+    f.filter(rec3)
+    assert "<API-KEY-MASKED>" in rec3.getMessage()
+    assert "zq7xk2m9" not in rec3.getMessage()

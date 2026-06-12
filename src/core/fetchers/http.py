@@ -163,7 +163,10 @@ def _safe_url(url: str) -> str:
 
 # ── Log filter that masks secrets (API keys, bot tokens) ────────────────────
 
-_HEX_KEY_PATTERN = re.compile(r"\b[a-f0-9]{32}\b")
+# Lowercase alnum, not just hex: FRED keys are 32-char lowercase hex today, but
+# a rotated or third-party 32-char key need not be — the wider class costs no
+# real-world false positives (no natural log token is 32 lowercase alnum chars).
+_HEX_KEY_PATTERN = re.compile(r"\b[a-z0-9]{32}\b")
 # Telegram bot token: numeric bot id, a colon, then a ~35-char base64ish secret
 # (e.g. 123456789:AAFakeTokenValue...). Mask it so a leaked token can't be read
 # off a log line — the daemon's polling URL and PTB debug output embed it. No
