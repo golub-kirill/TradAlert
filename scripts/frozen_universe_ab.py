@@ -89,10 +89,21 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Frozen-universe survivorship A/B")
     ap.add_argument("--as-of", nargs="+", default=None, metavar="YYYY-MM-DD",
                     help="As-of date(s); default: survivorship_audit.as_of_dates in watchlist.yaml")
+    ap.add_argument("--sleeve", choices=["all", "to", "us"], default="all",
+                    help="restrict the audit to one venue sleeve (.TO vs US) — "
+                         "per-sleeve selection discount (B3 follow-up)")
+    ap.add_argument("--snapshot", default=None, metavar="DIR",
+                    help="frozen data snapshot (e.g. data/snapshot_2026-06-10); "
+                         "default: live caches")
     args = ap.parse_args()
 
     base_cfg, tier_a, audit = _load_cfg()
     pruned = [t for t in (audit.get("pruned_losers") or []) if isinstance(t, str)]
+    if args.sleeve != "all":
+        is_to = lambda t: t.endswith(".TO")  # noqa: E731
+        keep = is_to if args.sleeve == "to" else (lambda t: not is_to(t))
+        tier_a = [t for t in tier_a if keep(t)]
+        pruned = [t for t in pruned if keep(t)]
     as_of_strs = args.as_of or audit.get("as_of_dates") or ["2010-01-01"]
     as_of_dates = [datetime.strptime(s, "%Y-%m-%d").date() for s in as_of_strs]
 
@@ -110,16 +121,30 @@ def main() -> None:
     from backtest.loader import load_universe
     candidates = list(dict.fromkeys(tier_a + pruned))  # union, order-preserving
 
-    print(f"\n  Survivorship A/B  ·  cap={base_port['max_hold_days']}d {base_port['max_hold_mode']}"
+    if args.snapshot:
+        snap = Path(args.snapshot)
+        if not snap.is_absolute():
+            snap = _ROOT / snap
+        load_dirs = dict(cache_dir=snap / "prices",
+                         earnings_dir=snap / "earnings_history",
+                         macro_dir=snap / "macro",
+                         behavioral_dir=snap / "behavioral")
+    else:
+        load_dirs = dict(cache_dir=_ROOT / "data" / "prices",
+                         earnings_dir=_ROOT / "data" / "earnings_history")
+
+    print(f"\n  Survivorship A/B  ·  sleeve={args.sleeve}  ·  "
+          f"cap={base_port['max_hold_days']}d {base_port['max_hold_mode']}"
           f"  ·  as-of: {', '.join(as_of_strs)}")
+    if args.snapshot:
+        print(f"  Snapshot: {load_dirs['cache_dir'].parent}")
     print(f"  Loading {len(candidates)} candidate tickers (tier_a + pruned)…", flush=True)
     t0 = time.time()
     uni = load_universe(
         candidates,
         ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
         earnings_aware=True,
-        cache_dir=_ROOT / "data" / "prices",
-        earnings_dir=_ROOT / "data" / "earnings_history",
+        **load_dirs,
     )
     print(f"  {uni.summary()}  ({time.time() - t0:.1f}s)")
 
