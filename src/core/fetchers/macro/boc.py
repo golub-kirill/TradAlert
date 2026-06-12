@@ -156,10 +156,22 @@ def _parse_boc_observations(observations: list[dict], series_id: str) -> pd.Data
     df = df.sort_index()
     return df
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
+    """Load cached parquet (fail-open) when a fetch fails, but WARN with the cache
+    age when it is past the staleness window so an unbounded-stale cache can't
+    masquerade as a fresh series (audit F2 — same pattern as fred/yf_macro)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_hours * 3600:
+                logger.warning(
+                    "[boc] serving STALE cache for %s — %.1f h old (> %g h window); "
+                    "upstream fetch failed, value may be outdated.",
+                    parquet_path.stem, age / 3600.0, staleness_hours,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[boc] cached parquet read failed at %s: %s", parquet_path, exc)
     return pd.DataFrame(index=pd.DatetimeIndex([]), columns=["value"])

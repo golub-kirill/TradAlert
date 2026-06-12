@@ -13,6 +13,7 @@ import time
 import pandas as pd
 
 from core.fetchers import cache_meta
+from core.fetchers.macro.boc import _load_cached_or_empty as boc_load
 from core.fetchers.macro.fred import _load_cached_or_empty as fred_load
 from core.fetchers.macro.yf_macro import _load_cached_or_empty as yf_load
 
@@ -54,3 +55,19 @@ def test_fred_warns_when_serving_stale_cache(tmp_path, caplog):
         df = fred_load(p, staleness_hours=24)
     assert len(df) == 2
     assert "STALE cache" in caplog.text
+
+
+def test_boc_warns_when_serving_stale_cache(tmp_path, caplog):
+    p = _aged_parquet(tmp_path / "V39079.parquet", hours_old=100)
+    with caplog.at_level("WARNING"):
+        df = boc_load(p, staleness_hours=24)
+    assert len(df) == 2
+    assert "STALE cache" in caplog.text
+
+
+def test_boc_quiet_when_cache_fresh(tmp_path, caplog):
+    p = _aged_parquet(tmp_path / "V39079.parquet", hours_old=1)
+    with caplog.at_level("WARNING"):
+        df = boc_load(p, staleness_hours=24)
+    assert len(df) == 2
+    assert "STALE cache" not in caplog.text
