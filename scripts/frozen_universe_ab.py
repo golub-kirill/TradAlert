@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import time
 from dataclasses import replace
@@ -75,6 +76,16 @@ def _run_subset(uni, base_cfg, base_port, tickers, start, end) -> dict:
     return _metrics(eng.baseline().trades)
 
 
+def _ab_job(d, last, tickers, base_cfg, base_port) -> dict:
+    """ProcessPool worker: one subset backtest on the per-worker cached universe
+    (shipped once per worker via backtest.sweep's _worker_init/_pack_universe)."""
+    import backtest.sweep as _sweep
+    uni = _sweep._WORKER_UNIVERSE
+    if uni is None:
+        raise RuntimeError("worker universe not initialised (initargs missing)")
+    return _run_subset(uni, base_cfg, base_port, tickers, d, last)
+
+
 def _f(v, d=2):
     return "∞" if (isinstance(v, float) and not math.isfinite(v)) else f"{v:.{d}f}"
 
@@ -95,6 +106,10 @@ def main() -> None:
     ap.add_argument("--snapshot", default=None, metavar="DIR",
                     help="frozen data snapshot (e.g. data/snapshot_2026-06-10); "
                          "default: live caches")
+    ap.add_argument("--workers", type=int,
+                    default=min(6, max(1, (os.cpu_count() or 4) - 2)),
+                    help="A/B subset backtests run in parallel across this many "
+                         "processes (the 2×as-of jobs are independent); 1 = sequential")
     args = ap.parse_args()
 
     base_cfg, tier_a, audit = _load_cfg()
@@ -161,17 +176,40 @@ def main() -> None:
         print(f"  ⚠ pruned losers WITHOUT cached data (excluded — run "
               f"scripts/fetch_prices.py {' '.join(missing_pruned)}): {missing_pruned}")
 
-    rows = []
+    specs = []
     for D in as_of_dates:
         A = [t for t in tier_a if t in uni.prepped]                      # hindsight (current)
         B = [t for t in candidates if t in uni.prepped and incept[t] <= D]  # frozen as-of D
         lookahead = sorted(t for t in A if incept[t] > D)               # in A, born after D
         readd = sorted(t for t in pruned if t in uni.prepped and incept[t] <= D)
+        specs.append((D, A, B, lookahead, readd))
+
+    # The 2×as-of subset backtests are independent — fan them out across a
+    # process pool (universe shipped once per worker, sweep's pack/init).
+    results: dict = {}
+    if args.workers > 1 and len(specs) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        from backtest.sweep import _pack_universe, _worker_init
+        jobs = [(D, leg, names) for D, A, B, _, _ in specs
+                for leg, names in (("A", A), ("B", B))]
+        n_workers = min(args.workers, len(jobs))
+        print(f"\n  Running {len(jobs)} subset backtests across "
+              f"{n_workers} workers…", flush=True)
+        packed = _pack_universe(uni)
+        with ProcessPoolExecutor(max_workers=n_workers, initializer=_worker_init,
+                                 initargs=(str(_ROOT), packed)) as pool:
+            futs = {(D, leg): pool.submit(_ab_job, D, last, names,
+                                          base_cfg, base_port)
+                    for D, leg, names in jobs}
+            results = {k: f.result() for k, f in futs.items()}
+
+    rows = []
+    for D, A, B, lookahead, readd in specs:
         print(f"\n  ── as-of {D}  ·  test window {D} → {last} ──")
         print(f"     A hindsight: {len(A)} names | B frozen: {len(B)} names "
               f"| look-ahead inclusions: {len(lookahead)} | pruned re-added: {len(readd)}")
-        rA = _run_subset(uni, base_cfg, base_port, A, D, last)
-        rB = _run_subset(uni, base_cfg, base_port, B, D, last)
+        rA = results.get((D, "A")) or _run_subset(uni, base_cfg, base_port, A, D, last)
+        rB = results.get((D, "B")) or _run_subset(uni, base_cfg, base_port, B, D, last)
         rows.append((D, rA, rB, lookahead, readd))
         print(f"     A  {rA['n']:4d}t  TotalR {rA['total']:+7.1f}  Sharpe {_f(rA['sharpe'])}  maxDD {rA['max_dd']:.1f}")
         print(f"     B  {rB['n']:4d}t  TotalR {rB['total']:+7.1f}  Sharpe {_f(rB['sharpe'])}  maxDD {rB['max_dd']:.1f}")
