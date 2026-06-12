@@ -205,7 +205,9 @@ python scripts/reconcile_fills.py    # real meter: realized R on actual fills in
 cap — a *delayed backtest*, so it only judges signal fidelity. `reconcile_fills.py`
 scores **closed `positions`** (logged via `position_CLI.py`): realized
 R = `(exit-entry)/(entry-stop)` (long) using the initial recorded stop as the
-risk unit, bucketed by direction and compared to `backtest_trades`. Open
+risk unit, bucketed by direction and compared to `backtest_trades.r_multiple`
+— the same per-unit convention, gross of borrow and unscaled by size_mult,
+so the comparison isolates entry/exit quality from the sizing layer. Open
 positions are listed as carried risk but not scored; closed positions without a
 recorded stop can't be scored (no risk unit).
 
