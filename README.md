@@ -19,7 +19,7 @@ config/
   sector_map.yaml      Optional ticker → sector ETF mapping for sector_gate
   secrets.env          Local secrets (gitignored; see secrets.env.example)
 
-src/core/              Domain: filter_engine, ticker_store, types, paths, defaults
+src/core/              Domain: filter_engine, regime (MarketRegime + classifier), ticker_store, types, paths, defaults
 src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/AAII/breadth)
 src/core/indicators/   ATR/RSI/MACD/Bollinger + VBP + chart renderer
 src/core/macro/        Macro regime classifier (risk_on_score, size_multiplier)
