@@ -99,6 +99,11 @@ def main() -> None:
 
     base_cfg, tier_a, audit = _load_cfg()
     pruned = [t for t in (audit.get("pruned_losers") or []) if isinstance(t, str)]
+    # The sleeve scopes the A/B name sets ONLY. The load list stays the full
+    # union: the loader segregates the market-context symbols (SPY/QQQ/^VIX)
+    # out of whatever list it is given, and a .TO-only list would drop them —
+    # no index data → regime defaults to CHOP → every entry blocked.
+    load_list = list(dict.fromkeys(tier_a + pruned))
     if args.sleeve != "all":
         is_to = lambda t: t.endswith(".TO")  # noqa: E731
         keep = is_to if args.sleeve == "to" else (lambda t: not is_to(t))
@@ -138,10 +143,11 @@ def main() -> None:
           f"  ·  as-of: {', '.join(as_of_strs)}")
     if args.snapshot:
         print(f"  Snapshot: {load_dirs['cache_dir'].parent}")
-    print(f"  Loading {len(candidates)} candidate tickers (tier_a + pruned)…", flush=True)
+    print(f"  Loading {len(load_list)} tickers (full union — the sleeve scopes "
+          f"A/B only; {len(candidates)} in-sleeve)…", flush=True)
     t0 = time.time()
     uni = load_universe(
-        candidates,
+        load_list,
         ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
         earnings_aware=True,
         **load_dirs,
