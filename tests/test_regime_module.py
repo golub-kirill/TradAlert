@@ -110,6 +110,13 @@ def test_regime_module_does_not_import_the_engine():
     assert "filter_engine" not in body
 
 
+def test_types_module_is_a_leaf():
+    import core.types as types_mod
+    src = Path(types_mod.__file__).read_text(encoding="utf-8")
+    body = src.split('"""', 2)[2]          # skip the module docstring
+    assert "filter_engine" not in body
+
+
 def test_reexports_are_the_same_objects():
     import core.filter_engine as fe
     assert fe.MarketRegime is MarketRegime

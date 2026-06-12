@@ -12,7 +12,6 @@ The engine is stateless; construct once, call per ticker per bar.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -27,6 +26,9 @@ from core.defaults import DEFAULTS
 # importable without the engine).
 from core.regime import (  # noqa: F401
     MarketRegime, TrendState, VolState, classify_market_regime,
+)
+from core.types import (  # noqa: F401
+    Direction, GateCheck, ScanResult, SignalResult, SignalType,
 )
 from exceptions import ConfigError, InsufficientDataError
 
@@ -60,115 +62,11 @@ def _type_name(expected: type | tuple[type, ...]) -> str:
 # ── type aliases ──────────────────────────────────────────────────────────────
 
 TickerTrend = Literal["UPTREND", "DOWNTREND", "CHOP"]
-Direction = Literal["long", "short", "exit_long", "exit_short", "none"]
-SignalType = Literal["momentum", "mean_reversion", "regime", "time_stop", "none"]
 
 
 # ── result types ──────────────────────────────────────────────────────────────
-# MarketRegime lives in core.regime (re-exported above).
-
-@dataclass
-class ScanResult:
-    """
-    Output of FilterEngine.scan().
-
-    Attributes
-    ----------
-    passed       : True when all scan filters cleared.
-    reason       : Explanation string; always populated.
-    close        : Last-bar close price. None when scan raised before compute.
-    atr          : ATR(14) on the last bar.
-    atr_pct      : atr / close × 100.
-    dv20         : 20-day average dollar volume.
-    market_cap   : Market cap in dollars; None when not supplied.
-    rsi          : RSI(14) on the last bar.
-    macd         : MACD line on the last bar.
-    macd_signal  : MACD signal line on the last bar.
-    macd_hist    : MACD histogram on the last bar.
-    """
-    passed: bool
-    reason: str = ""
-
-    # ── last-bar snapshot (populated inside scan()) ──────────────────────────
-    close: float | None = field(default=None, repr=False)
-    atr: float | None = field(default=None, repr=False)
-    atr_pct: float | None = field(default=None, repr=False)
-    dv20: float | None = field(default=None, repr=False)
-    market_cap: float | None = field(default=None, repr=False)
-    rsi: float | None = field(default=None, repr=False)
-    macd: float | None = field(default=None, repr=False)
-    macd_signal: float | None = field(default=None, repr=False)
-    macd_hist: float | None = field(default=None, repr=False)
-
-
-@dataclass
-class GateCheck:
-    """
-    One factor row in the entry-gate "trigger panel".
-
-    A direction-aware, *post-decision* description of a single entry factor —
-    the engine's "proof of opinion". Rendered factor-grouped on the chart
-    sidebar and folded into the Telegram factor line from the same source, so
-    the two surfaces can never disagree with the real decision.
-
-    Building these never affects a decision (they are derived only after a
-    signal has fired, behind ``signal(with_checks=True)``), so the backtest and
-    sweep paths leave ``checks`` empty and replay bit-identically.
-
-    Attributes
-    ----------
-    group    : Factor group for layout — "TREND" | "MOMENTUM" | "LOCATION" |
-               "VOLATILITY" | "RISK" | "CONTEXT".
-    name     : Short row label, e.g. "RSI", "MACD Δ", "R:R".
-    passed   : Binary pass/fail; drives ✓/✗ and the per-group summary mark.
-    detail   : Value text shown beside the mark, e.g. "62.3", "2.50×".
-    strength : Optional grade in [0, 1] for continuous factors → rendered as a
-               ●●●○ bar. None marks a hard binary (rendered ✓/✗).
-    """
-    group: str
-    name: str
-    passed: bool
-    detail: str = ""
-    strength: float | None = None
-
-
-@dataclass
-class SignalResult:
-    """
-    Output of FilterEngine.signal().
-
-    Attributes
-    ----------
-    passed             : True when a signal fired and all gates cleared.
-    direction          : "long" | "exit_long" | "none".
-    signal_type        : "momentum" | "mean_reversion" | "regime" | "none".
-                         "regime" pairs only with ``direction="exit_long"``.
-    stop_price         : ``close − ATR × atr_multiplier`` on entry. 0.0 on exit.
-    target_price       : ``close + risk × min_rr`` on entry. 0.0 on exit.
-    min_rr             : Minimum risk:reward ratio from config. 0.0 on exit.
-    size_mult          : Position-size multiplier ∈ [0, 1] from macro/behavioral
-                         regime. 1.0 = full size, 0.5 = half size, 0.0 = block.
-    market_regime      : Regime label at signal time, e.g. ``"BULL_NORMAL"``.
-    ticker_trend       : "UPTREND" | "DOWNTREND" | "CHOP" | "N/A".
-    reason             : Explanation string; always populated.
-    expected_hold_days : (low, high) trading-day range, display-only. The live path
-                         (main.py) sets it from the reference backtest's actual
-                         bars_held p25-p75; this (10, 15) default is the fallback.
-    """
-    passed: bool
-    direction: Direction = "none"
-    signal_type: SignalType = "none"
-    stop_price: float = 0.0
-    target_price: float = 0.0
-    min_rr: float = 0.0
-    size_mult: float = 1.0
-    market_regime: str = ""
-    ticker_trend: str = ""
-    reason: str = ""
-    # ── display-only context (set by main.py on the live path) ────────────────
-    expected_hold_days: tuple[int, int] = field(default=(10, 15), repr=False)
-    # ── entry-gate trigger panel (populated only when signal(with_checks=True)) ──
-    checks: list[GateCheck] = field(default_factory=list, repr=False)
+# MarketRegime lives in core.regime; ScanResult/GateCheck/SignalResult and the
+# Direction/SignalType literals live in core.types (all re-exported above).
 
 
 # ── engine ────────────────────────────────────────────────────────────────────
