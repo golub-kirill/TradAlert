@@ -91,6 +91,16 @@ def _eff_r(t) -> float:
     return float(t.r_multiple or 0.0) * float(t.size_mult or 1.0)
 
 
+def _run_packed(base_cfg, settings, max_open_risk: float):
+    """ProcessPool worker: one full run on the per-worker cached universe
+    (shipped once via backtest.sweep's _worker_init/_pack_universe)."""
+    import backtest.sweep as _sweep
+    uni = _sweep._WORKER_UNIVERSE
+    if uni is None:
+        raise RuntimeError("worker universe not initialised (initargs missing)")
+    return _run(uni, base_cfg, settings, max_open_risk)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Oracle ceiling at the budget-fill seam")
     ap.add_argument("--snapshot", default=None, metavar="DIR",
@@ -98,6 +108,9 @@ def main() -> None:
                          "default: live caches")
     ap.add_argument("--dump-dir", default=None, metavar="DIR",
                     help="write candidates.parquet + binddays.parquet here (R1)")
+    ap.add_argument("--workers", type=int, default=2,
+                    help="run the budget-5 and unconstrained twins in parallel "
+                         "(2, the default) or sequentially (1)")
     args = ap.parse_args()
 
     with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
@@ -134,8 +147,19 @@ def main() -> None:
     )
     print(f"  {uni.summary()}", flush=True)
 
-    res_a = _run(uni, base_cfg, settings, max_open_risk=5.0)
-    res_b = _run(uni, base_cfg, settings, max_open_risk=10_000.0)
+    if args.workers > 1:
+        # The two runs are independent — fan them out (universe shipped once
+        # per worker via sweep's pack/init; per-run prints interleave).
+        from concurrent.futures import ProcessPoolExecutor
+        from backtest.sweep import _pack_universe, _worker_init
+        with ProcessPoolExecutor(max_workers=2, initializer=_worker_init,
+                                 initargs=(str(_ROOT), _pack_universe(uni))) as pool:
+            fut_a = pool.submit(_run_packed, base_cfg, settings, 5.0)
+            fut_b = pool.submit(_run_packed, base_cfg, settings, 10_000.0)
+            res_a, res_b = fut_a.result(), fut_b.result()
+    else:
+        res_a = _run(uni, base_cfg, settings, max_open_risk=5.0)
+        res_b = _run(uni, base_cfg, settings, max_open_risk=10_000.0)
 
     # Counterfactual outcomes: every would-be entry in the unconstrained run.
     cf = {(t.ticker, t.entry_date): _eff_r(t) for t in res_b.trades}
