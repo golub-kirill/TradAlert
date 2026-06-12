@@ -113,16 +113,20 @@ def _cfg_commission_r() -> float:
 def _load_expectancy(conn, bt_run_id):
     """Return (ref_row, exp) where exp maps side -> (E[R], n) plus '__ALL__'.
     ref_row is the backtest_runs row used as the reference, or None."""
-    from backtest.db import reference_run, trade_r_column
+    from backtest.db import reference_run
     cur = conn.cursor(dictionary=True)
-    # Provenance-aware reference (latest scoring-OFF run, matching live) and
-    # effective_r aggregation (matches backtest_runs.total_r once sizing is active).
+    # Provenance-aware reference (latest scoring-OFF run, matching live).
     ref = reference_run(cur, bt_run_id)
     if ref is None:
         cur.close()
         return None, {"__ALL__": (0.0, 0)}
     rid = ref["id"]
-    rcol = trade_r_column(cur)
+    # Like-for-like R units (audit D2): the live side above scores per-unit R
+    # from fill prices — gross of borrow, unscaled by size_mult. effective_r is
+    # (r_multiple − borrow_drag) × size_mult, so comparing against it mixes the
+    # sizing/borrow layers into an entry/exit-quality check. r_multiple is the
+    # same per-unit gross convention as the live scoring.
+    rcol = "r_multiple"
     cur.execute(f"SELECT direction, AVG({rcol}) e, COUNT(*) n "
                 "FROM backtest_trades WHERE run_id = %s GROUP BY direction", (rid,))
     exp = {row["direction"]: (float(row["e"]), int(row["n"]))
