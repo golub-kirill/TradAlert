@@ -16,7 +16,7 @@ import pytest
 from backtest.trade import Trade
 
 _DUMP = (Path(__file__).resolve().parents[1]
-         / "data" / "backtest_out" / "studies" / "b3" / "full_0.002.parquet")
+         / "docs" / "backtest_out" / "studies" / "b3" / "full_0.002.parquet")
 
 
 def _long(entry: float, stop: float) -> Trade:

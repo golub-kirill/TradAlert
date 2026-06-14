@@ -168,7 +168,7 @@ def _load_close(prices_dir: Path, ticker: str) -> pd.Series | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="R1 rank-IC + feature-ranked replay")
-    ap.add_argument("--dump-dir", default="data/backtest_out/r1")
+    ap.add_argument("--dump-dir", default="docs/backtest_out/r1")
     ap.add_argument("--snapshot", default="data/snapshot_2026-06-10")
     args = ap.parse_args()
 
