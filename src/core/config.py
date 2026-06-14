@@ -68,6 +68,27 @@ def _opt_num(cfg: dict, dotted: str):
     return v
 
 
+def _leg_or_none(cfg: dict, base: str, *, rsi_min: bool, rsi_max: bool,
+                 delta: bool, max_bars_default: str | None) -> "SignalLeg | None":
+    """Parse an OPTIONAL signal leg (e.g. ``signals.momentum.short_entry``).
+
+    Returns None when the block is absent or empty — mirroring the engine's
+    ``cfg = ....get("short_entry"); if not cfg: return False`` guard, so an
+    absent block keeps that trigger disabled. When present, the flagged fields
+    are required (the engine indexes them directly today)."""
+    block = _node(cfg, base, None)
+    if not block:
+        return None
+    return SignalLeg(
+        rsi_min=_num(cfg, f"{base}.rsi_min") if rsi_min else None,
+        rsi_max=_num(cfg, f"{base}.rsi_max") if rsi_max else None,
+        min_hist_delta_atr=_num(cfg, f"{base}.min_hist_delta_atr") if delta else None,
+        max_bars_since_cross=(_int(cfg, f"{base}.max_bars_since_cross",
+                                   DEFAULTS.get_or(max_bars_default, 3))
+                              if max_bars_default else None),
+    )
+
+
 # ── scan-gate blocks (beachhead — all required, see _REQUIRED_CONFIG_KEYS) ─────
 
 @dataclass(frozen=True)
@@ -139,6 +160,27 @@ class StopLossCfg:
 
 
 @dataclass(frozen=True)
+class MomentumCfg:
+    long: SignalLeg
+    short: SignalLeg            # held-long fade EXIT (legacy name)
+    short_entry: SignalLeg | None
+
+
+@dataclass(frozen=True)
+class MeanReversionCfg:
+    long: SignalLeg
+    short: SignalLeg            # held-long overbought EXIT
+    short_entry: SignalLeg | None
+
+
+@dataclass(frozen=True)
+class SignalsCfg:
+    momentum: MomentumCfg
+    mean_reversion: MeanReversionCfg
+    stop_loss: StopLossCfg
+
+
+@dataclass(frozen=True)
 class EngineConfig:
     """Typed view of filters.yaml. ``raw`` retains the source dict for blocks
     not yet migrated off ``FilterEngine._cfg``."""
@@ -149,7 +191,7 @@ class EngineConfig:
     trend: TrendCfg
     regime: RegimeCfg
     execution: ExecutionCfg
-    stop_loss: StopLossCfg
+    signals: SignalsCfg
     raw: dict = field(repr=False, default_factory=dict)
 
 
@@ -196,9 +238,36 @@ def parse(cfg: dict) -> EngineConfig:
             max_hold_mode=_node(cfg, "execution.max_hold_mode", "hard"),
             breakeven_trigger_r=_opt_num(cfg, "execution.breakeven_trigger_r"),
             breakeven_buffer_atr=_opt_num(cfg, "execution.breakeven_buffer_atr")),
-        stop_loss=StopLossCfg(
-            atr_multiplier=_num(cfg, "signals.stop_loss.atr_multiplier"),
-            min_rr=_num(cfg, "signals.stop_loss.min_rr"),
-            min_rr_short=_opt_num(cfg, "signals.stop_loss.min_rr_short")),
+        signals=SignalsCfg(
+            momentum=MomentumCfg(
+                long=SignalLeg(
+                    rsi_min=_num(cfg, "signals.momentum.long.rsi_min"),
+                    rsi_max=_num(cfg, "signals.momentum.long.rsi_max"),
+                    min_hist_delta_atr=_num(cfg, "signals.momentum.long.min_hist_delta_atr"),
+                    max_bars_since_cross=_int(
+                        cfg, "signals.momentum.long.max_bars_since_cross",
+                        D("filters.signals.momentum.long.max_bars_since_cross", 3))),
+                short=SignalLeg(
+                    rsi_min=_num(cfg, "signals.momentum.short.rsi_min"),
+                    rsi_max=_num(cfg, "signals.momentum.short.rsi_max"),
+                    min_hist_delta_atr=_num(cfg, "signals.momentum.short.min_hist_delta_atr")),
+                short_entry=_leg_or_none(
+                    cfg, "signals.momentum.short_entry",
+                    rsi_min=True, rsi_max=True, delta=True,
+                    max_bars_default="filters.signals.momentum.short_entry.max_bars_since_cross")),
+            mean_reversion=MeanReversionCfg(
+                long=SignalLeg(
+                    rsi_max=_num(cfg, "signals.mean_reversion.long.rsi_max"),
+                    min_hist_delta_atr=_num(cfg, "signals.mean_reversion.long.min_hist_delta_atr")),
+                short=SignalLeg(
+                    rsi_min=_num(cfg, "signals.mean_reversion.short.rsi_min"),
+                    min_hist_delta_atr=_num(cfg, "signals.mean_reversion.short.min_hist_delta_atr")),
+                short_entry=_leg_or_none(
+                    cfg, "signals.mean_reversion.short_entry",
+                    rsi_min=True, rsi_max=False, delta=True, max_bars_default=None)),
+            stop_loss=StopLossCfg(
+                atr_multiplier=_num(cfg, "signals.stop_loss.atr_multiplier"),
+                min_rr=_num(cfg, "signals.stop_loss.min_rr"),
+                min_rr_short=_opt_num(cfg, "signals.stop_loss.min_rr_short"))),
         raw=cfg,
     )

@@ -464,15 +464,15 @@ class FilterEngine:
                 )
 
         # 6. R:R sanity — branch on direction.
-        atr_mult = self._cfg["signals"]["stop_loss"]["atr_multiplier"]
-        min_rr = self._cfg["signals"]["stop_loss"]["min_rr"]
+        atr_mult = self.cfg.signals.stop_loss.atr_multiplier
+        min_rr = self.cfg.signals.stop_loss.min_rr
         is_long_dir = (direction == "long")
         # Shorts have a bounded upside (price floor of $0), so
         # they can warrant a tighter reward ceiling. ``min_rr_short`` lets
         # the short side demand a different R:R. Absent → falls back to
         # ``min_rr`` so longs and pre-v2 configs are unchanged.
-        if not is_long_dir:
-            min_rr = self._cfg["signals"]["stop_loss"].get("min_rr_short", min_rr)
+        if not is_long_dir and self.cfg.signals.stop_loss.min_rr_short is not None:
+            min_rr = self.cfg.signals.stop_loss.min_rr_short
         stop_dist = row["atr"] * atr_mult
         if is_long_dir:
             stop_price = row["close"] - stop_dist
@@ -933,17 +933,16 @@ class FilterEngine:
     # ── private — entry triggers ─────────────────────────────────────────────
 
     def _momentum_long(self, row: Series, prev: Series, df: pd.DataFrame) -> bool:
-        cfg = self._cfg["signals"]["momentum"]["long"]
-        max_bars = cfg.get("max_bars_since_cross",
-                           DEFAULTS.get("filters.signals.momentum.long.max_bars_since_cross"))
+        cfg = self.cfg.signals.momentum.long
+        max_bars = cfg.max_bars_since_cross
 
         if row["macd_hist"] <= 0:
             return False
-        if not (cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]):
+        if not (cfg.rsi_min <= row["rsi"] <= cfg.rsi_max):
             return False
 
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        threshold = cfg.min_hist_delta_atr * row["atr"]
         if delta < threshold:
             return False
 
@@ -962,10 +961,10 @@ class FilterEngine:
         Fires when ``RSI < signals.mean_reversion.long.rsi_max`` AND
         ``macd_hist[row] - macd_hist[prev] >= min_hist_delta_atr * row["atr"]``.
         """
-        cfg = self._cfg["signals"]["mean_reversion"]["long"]
+        cfg = self.cfg.signals.mean_reversion.long
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
-        return row["rsi"] < cfg["rsi_max"] and delta >= threshold
+        threshold = cfg.min_hist_delta_atr * row["atr"]
+        return row["rsi"] < cfg.rsi_max and delta >= threshold
 
     def _momentum_short_entry(self, row: Series, prev: Series,
                               df: pd.DataFrame) -> bool:
@@ -981,19 +980,18 @@ class FilterEngine:
 
         Config block: ``signals.momentum.short_entry``.
         """
-        cfg = self._cfg["signals"]["momentum"].get("short_entry")
-        if not cfg:
+        cfg = self.cfg.signals.momentum.short_entry
+        if cfg is None:
             return False
-        max_bars = cfg.get("max_bars_since_cross",
-                           DEFAULTS.get("filters.signals.momentum.short_entry.max_bars_since_cross"))
+        max_bars = cfg.max_bars_since_cross
 
         if row["macd_hist"] >= 0:
             return False
-        if not (cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]):
+        if not (cfg.rsi_min <= row["rsi"] <= cfg.rsi_max):
             return False
 
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        threshold = cfg.min_hist_delta_atr * row["atr"]
         # Symmetric to _momentum_long's ``delta < threshold``: short
         # requires ``delta <= -threshold`` (strong downward histogram move).
         if delta > -threshold:
@@ -1019,12 +1017,12 @@ class FilterEngine:
         is NOT what we want here. The new ``mean_reversion.short_entry``
         block is the fresh-short trigger.
         """
-        cfg = self._cfg["signals"]["mean_reversion"].get("short_entry")
-        if not cfg:
+        cfg = self.cfg.signals.mean_reversion.short_entry
+        if cfg is None:
             return False
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
-        return row["rsi"] > cfg["rsi_min"] and delta <= -threshold
+        threshold = cfg.min_hist_delta_atr * row["atr"]
+        return row["rsi"] > cfg.rsi_min and delta <= -threshold
 
     # ── private — exit triggers ──────────────────────────────────────────────
 
@@ -1041,12 +1039,12 @@ class FilterEngine:
 
         Config keys live under ``signals.momentum.short``.
         """
-        cfg = self._cfg["signals"]["momentum"]["short"]
+        cfg = self.cfg.signals.momentum.short
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        threshold = cfg.min_hist_delta_atr * row["atr"]
         return (
                 prev["macd_hist"] > 0 > row["macd_hist"]
-                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
+                and cfg.rsi_min <= row["rsi"] <= cfg.rsi_max
                 and delta <= -threshold
         )
 
@@ -1057,10 +1055,10 @@ class FilterEngine:
         Fires when ``RSI > signals.mean_reversion.short.rsi_min`` AND
         ``macd_hist[row] - macd_hist[prev] <= -min_hist_delta_atr * row["atr"]``.
         """
-        cfg = self._cfg["signals"]["mean_reversion"]["short"]
+        cfg = self.cfg.signals.mean_reversion.short
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
-        return row["rsi"] > cfg["rsi_min"] and delta <= -threshold
+        threshold = cfg.min_hist_delta_atr * row["atr"]
+        return row["rsi"] > cfg.rsi_min and delta <= -threshold
 
     def _momentum_pop_exit(self, row: Series, prev: Series) -> bool:
         """
@@ -1074,12 +1072,12 @@ class FilterEngine:
         Re-uses the ``momentum.long`` config block — the trigger that
         would *open* a long is exactly what closes a short.
         """
-        cfg = self._cfg["signals"]["momentum"]["long"]
+        cfg = self.cfg.signals.momentum.long
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
+        threshold = cfg.min_hist_delta_atr * row["atr"]
         return (
                 prev["macd_hist"] < 0 < row["macd_hist"]
-                and cfg["rsi_min"] <= row["rsi"] <= cfg["rsi_max"]
+                and cfg.rsi_min <= row["rsi"] <= cfg.rsi_max
                 and delta >= threshold
         )
 
@@ -1092,10 +1090,10 @@ class FilterEngine:
         Re-uses the ``mean_reversion.long`` config block for the same
         reason as ``_momentum_pop_exit``.
         """
-        cfg = self._cfg["signals"]["mean_reversion"]["long"]
+        cfg = self.cfg.signals.mean_reversion.long
         delta = row["macd_hist"] - prev["macd_hist"]
-        threshold = cfg["min_hist_delta_atr"] * row["atr"]
-        return row["rsi"] < cfg["rsi_max"] and delta >= threshold
+        threshold = cfg.min_hist_delta_atr * row["atr"]
+        return row["rsi"] < cfg.rsi_max and delta >= threshold
 
     def _signal_exit_short(
             self,

@@ -24,7 +24,17 @@ def _min_cfg() -> dict:
         "volatility": {"min_atr_pct": 1.0, "max_atr_pct": 8.0},
         "trend": {"ma_fast": 50, "ma_slow": 200},
         "regime": {"ma_short": 20},
-        "signals": {"stop_loss": {"atr_multiplier": 2.5, "min_rr": 2.5}},
+        "signals": {
+            "stop_loss": {"atr_multiplier": 2.5, "min_rr": 2.5},
+            "momentum": {
+                "long": {"rsi_min": 50, "rsi_max": 70, "min_hist_delta_atr": 0.08},
+                "short": {"rsi_min": 30, "rsi_max": 65, "min_hist_delta_atr": 0.18},
+            },
+            "mean_reversion": {
+                "long": {"rsi_max": 30, "min_hist_delta_atr": 0.18},
+                "short": {"rsi_min": 65, "min_hist_delta_atr": 0.05},
+            },
+        },
     }
 
 
@@ -36,7 +46,7 @@ def test_required_values_parsed():
     assert cfg.market_cap.min_market_cap == 300_000_000
     assert (cfg.volatility.min_atr_pct, cfg.volatility.max_atr_pct) == (1.0, 8.0)
     assert (cfg.trend.ma_fast, cfg.trend.ma_slow) == (50, 200)
-    assert (cfg.stop_loss.atr_multiplier, cfg.stop_loss.min_rr) == (2.5, 2.5)
+    assert (cfg.signals.stop_loss.atr_multiplier, cfg.signals.stop_loss.min_rr) == (2.5, 2.5)
 
 
 def test_optional_defaults_from_registry():
@@ -48,7 +58,7 @@ def test_optional_defaults_from_registry():
     assert cfg.execution.max_hold_days is None        # absent → off
     assert cfg.execution.max_hold_mode == "hard"
     assert cfg.execution.breakeven_trigger_r is None
-    assert cfg.stop_loss.min_rr_short is None
+    assert cfg.signals.stop_loss.min_rr_short is None
     assert cfg.raw is not None                         # source dict retained
 
 
@@ -90,6 +100,29 @@ def test_parses_real_filters_yaml():
     # sanity against the shipped values
     assert cfg.trend.ma_slow == 200
     assert cfg.execution.breakeven_trigger_r == 1.0    # ADR-004 default ON
+
+
+def test_signal_legs_parsed():
+    cfg = parse(_min_cfg())
+    assert cfg.signals.momentum.long.rsi_min == 50
+    assert cfg.signals.momentum.long.rsi_max == 70
+    assert cfg.signals.momentum.long.max_bars_since_cross == 3   # DEFAULTS fallback
+    assert cfg.signals.momentum.short.min_hist_delta_atr == 0.18
+    assert cfg.signals.mean_reversion.long.rsi_max == 30
+    assert cfg.signals.mean_reversion.short.rsi_min == 65
+    # short_entry blocks absent → None (keeps those triggers disabled)
+    assert cfg.signals.momentum.short_entry is None
+    assert cfg.signals.mean_reversion.short_entry is None
+
+
+def test_short_entry_leg_present():
+    raw = _min_cfg()
+    raw["signals"]["momentum"]["short_entry"] = {
+        "rsi_min": 30, "rsi_max": 50, "min_hist_delta_atr": 0.08}
+    cfg = parse(raw)
+    assert cfg.signals.momentum.short_entry is not None
+    assert cfg.signals.momentum.short_entry.rsi_max == 50
+    assert cfg.signals.momentum.short_entry.max_bars_since_cross == 3
 
 
 def test_config_module_is_a_leaf():
