@@ -455,226 +455,247 @@ def _run_pipeline(
         if ticker in _CONTEXT_ONLY:
             logger.debug("[%s] skipping — market context only", ticker)
             continue
-
-        logger.debug("Processing %s", ticker)
-        held_position = positions.get(ticker)
-        held_long = held_position is not None and held_position.side == "long"
-
-        # ── 1. load cache ─────────────────────────────────────────────────────
-        try:
-            df = cache_load(ticker)
-        except Exception as exc:
-            logger.warning("[%s] cache load failed — %s", ticker, exc)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=ScanResult(passed=False, reason="cache load failed"),
-                error=str(exc),
-            ))
-            continue
-
-        # ── 2. attach indicators ──────────────────────────────────────────────
-        try:
-            df = _attach_indicators(df)
-        except Exception as exc:
-            logger.warning("[%s] indicator computation failed — %s", ticker, exc)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=ScanResult(passed=False, reason="indicator error"),
-                error=str(exc),
-            ))
-            continue
-
-        # ── 3. row-count guard (matches engine scan()/signal() = trend.ma_slow) ──
-        min_rows = engine._cfg["trend"]["ma_slow"]
-        if len(df) < min_rows:
-            reason = f"only {len(df)} rows — need {min_rows} for scan"
-            logger.warning("[%s] skipping — %s", ticker, reason)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=ScanResult(passed=False, reason=reason),
-            ))
-            continue
-
-        # ── 4. warmup guard ───────────────────────────────────────────────────
-        if not _indicators_ready(df):
-            reason = "indicators still in warmup (NaN on last bar)"
-            logger.warning("[%s] skipping — %s", ticker, reason)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=ScanResult(passed=False, reason=reason),
-            ))
-            continue
-
-        # ── 5. market-cap fetch (fail-open) ───────────────────────────────────
-        # None skips the gate rather than blocking; equity gate only applies when
-        # a value is returned.
-        market_cap = None
-        try:
-            market_cap = get_market_cap(ticker)
-        except Exception as exc:
-            logger.warning("[%s] market-cap fetch failed (continuing) — %s",
-                           ticker, exc)
-
-        # ── 6. scan ───────────────────────────────────────────────────────────
-        try:
-            scan = engine.scan(ticker, df, market_cap=market_cap)
-        except Exception as exc:
-            logger.warning("[%s] scan raised — %s", ticker, exc)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=ScanResult(passed=False, reason="scan exception"),
-                error=str(exc),
-            ))
-            continue
-
-        # Held positions always proceed to signal evaluation regardless of
-        # scan outcome — we need to know whether to exit even if liquidity
-        # or ATR ranges drifted out of the scan window.
-        if not scan.passed and not held_long:
-            logger.debug("[%s] scan filtered — %s", ticker, scan.reason)
-            results.append(TickerResult(ticker=ticker, scan=scan))
-            continue
-
-        logger.debug("[%s] %s%s", ticker,
-                     "HELD " if held_long else "",
-                     "scan PASSED" if scan.passed else "scan filtered (held → proceed)")
-
-        # ── 7. signal ─────────────────────────────────────────────────────────
-        # Earnings buffer only applies to entries; exits skip the fetch.
-        earnings_date = None
-        if not held_long:
-            try:
-                earnings_date = get_next_earnings(ticker)
-            except Exception as exc:
-                logger.warning("[%s] earnings fetch failed (continuing) — %s",
-                               ticker, exc)
-
-        try:
-            # Compute and enrich regime BEFORE signal() so behavioral gate applies
-            regime = engine.market_regime(market_dfs, vix_df)
-            if macro_state is not None or behavioral_state is not None:
-                from dataclasses import replace
-                regime = replace(
-                    regime,
-                    macro=macro_state,
-                    behavioral=behavioral_state,
-                )
-
-            signal = engine.signal(
-                ticker, df,
-                market_dfs=market_dfs,
-                vix_df=vix_df,
-                earnings_date=earnings_date,
-                held_long=held_long,
-                regime=regime,
-                with_checks=True,
-            )
-        except InsufficientDataError as exc:
-            logger.info("[%s] signal skipped — %s", ticker, exc)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=scan,
-                signal=SignalResult(
-                    passed=False,
-                    reason=f"insufficient data: {exc.detail}",
-                ),
-            ))
-            continue
-        except Exception as exc:
-            logger.warning("[%s] signal raised — %s", ticker, exc)
-            results.append(TickerResult(
-                ticker=ticker,
-                scan=scan,
-                error=str(exc),
-            ))
-            continue
-
-        # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
-        # Keep the live feed in step with the backtester's swing-horizon cap
-        # (ADR-001): force an exit on a held long that has reached the cap and —
-        # in if_not_profit mode — is not in profit. Shares core.exits with the
-        # backtester so live and backtest never diverge. Engine exits take
-        # precedence (we only override a non-exit signal).
-        if held_long and held_position is not None and signal.direction != "exit_long":
-            _exec_cfg = engine._cfg.get("execution", {})
-            _mh_days = _exec_cfg.get("max_hold_days")
-            if _mh_days is not None:
-                _mh_mode = str(_exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
-                _entry_pos = int(df.index.searchsorted(pd.Timestamp(held_position.entry_date)))
-                if max_hold_exit_due(
-                        bars_held=(len(df) - 1) - _entry_pos,
-                        current_close=float(df["close"].iloc[-1]),
-                        entry_price=held_position.entry_price, side="long",
-                        max_hold_days=int(_mh_days), mode=_mh_mode):
-                    logger.info("[%s] max-hold time-stop exit (%d bars, %s)",
-                                ticker, int(_mh_days), _mh_mode)
-                    signal = SignalResult(
-                        passed=True, direction="exit_long", signal_type="time_stop",
-                        market_regime=signal.market_regime,
-                        ticker_trend=signal.ticker_trend,
-                        reason=f"max-hold {int(_mh_days)} bars reached "
-                               f"({_mh_mode}) — time-stop exit",
-                    )
-
-        # ── 7c. live breakeven stop ───────────────────────────────────────────
-        # Mirror of the backtester's _apply_dynamic_stop breakeven rule
-        # (core.exits.breakeven_stop_level, ADR-004): once a held long's best
-        # excursion reaches the trigger, raise positions.stop_price to entry.
-        # Skipped when the position is exiting this scan anyway. Fail-open.
-        if held_long and held_position is not None and signal.direction != "exit_long":
-            _maybe_raise_stop_to_breakeven(
-                ticker, df, held_position,
-                engine._cfg.get("execution", {}), settings,
-            )
-
-        # ── 8. chart fired signals ────────────────────────────────────────────
-        if signal.passed:
-            # Data-driven expected-hold range for the chart/Telegram caption.
-            # Entries only — exits don't display a hold horizon.
-            if signal.direction in ("long", "short"):
-                signal.expected_hold_days = expected_hold
-
-            # Collect historical signals for chart overlay
-            hist_signals = []
-            if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
-                                                                                             False):
-                try:
-                    hist_signals = collect_signal_history(
-                        ticker, df, engine,
-                        market_dfs=market_dfs, vix_df=vix_df,
-                        lookback=90,
-                    )
-                except Exception as exc:
-                    logger.debug("[%s] signal history collection failed: %s", ticker, exc)
-
-            # Extract RP rank for scorecard
-            ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
-
-            # Trigger panel: fold live-only context (RP rank, open-risk budget)
-            # into the engine's gate checks so the chart renders one unified,
-            # direction-aware factor read.
-            _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
-
-            # Chart is display support — a render failure (disk full, codec,
-            # OOM) must never kill the scan: everything after this loop
-            # (journaling, Telegram push) would be lost with it.
-            try:
-                chart(
-                    ticker, df, signal=signal,
-                    output_dir=_ROOT / "data" / "screenshots",
-                    historical_signals=hist_signals,
-                    regime=regime,
-                    rp_rank=ticker_rp,
-                )
-            except Exception as exc:
-                logger.warning("[%s] chart render failed (alert still sent) — %s",
-                               ticker, exc)
-        else:
-            logger.debug("[%s] no signal — %s", ticker, signal.reason)
-
-        results.append(TickerResult(ticker=ticker, scan=scan, signal=signal))
+        results.append(_process_ticker(
+            ticker, engine,
+            positions=positions, market_dfs=market_dfs, vix_df=vix_df,
+            max_open_risk=max_open_risk, expected_hold=expected_hold,
+            settings=settings, macro_state=macro_state,
+            behavioral_state=behavioral_state, rp_ranks=rp_ranks,
+        ))
 
     return results
+
+
+def _process_ticker(
+        ticker: str,
+        engine: FilterEngine,
+        *,
+        positions: dict,
+        market_dfs: dict | None,
+        vix_df,
+        max_open_risk: float,
+        expected_hold: tuple[int, int],
+        settings: dict,
+        macro_state: object | None,
+        behavioral_state: object | None,
+        rp_ranks: dict[str, float] | None,
+) -> TickerResult:
+    """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
+
+    Returns the ticker's TickerResult. Shared market context (market_dfs/vix_df),
+    open positions, and the open-risk budget are loaded once per scan by
+    _run_pipeline and passed in. Per-ticker steps and their fail-open contract are
+    identical to the original inline loop body.
+    """
+    logger = logging.getLogger(__name__)
+    held_position = positions.get(ticker)
+    held_long = held_position is not None and held_position.side == "long"
+
+    # ── 1. load cache ─────────────────────────────────────────────────────
+    try:
+        df = cache_load(ticker)
+    except Exception as exc:
+        logger.warning("[%s] cache load failed — %s", ticker, exc)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason="cache load failed"),
+            error=str(exc),
+        )
+
+    # ── 2. attach indicators ──────────────────────────────────────────────
+    try:
+        df = _attach_indicators(df)
+    except Exception as exc:
+        logger.warning("[%s] indicator computation failed — %s", ticker, exc)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason="indicator error"),
+            error=str(exc),
+        )
+
+    # ── 3. row-count guard (matches engine scan()/signal() = trend.ma_slow) ──
+    min_rows = engine._cfg["trend"]["ma_slow"]
+    if len(df) < min_rows:
+        reason = f"only {len(df)} rows — need {min_rows} for scan"
+        logger.warning("[%s] skipping — %s", ticker, reason)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason=reason),
+        )
+
+    # ── 4. warmup guard ───────────────────────────────────────────────────
+    if not _indicators_ready(df):
+        reason = "indicators still in warmup (NaN on last bar)"
+        logger.warning("[%s] skipping — %s", ticker, reason)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason=reason),
+        )
+
+    # ── 5. market-cap fetch (fail-open) ───────────────────────────────────
+    # None skips the gate rather than blocking; equity gate only applies when
+    # a value is returned.
+    market_cap = None
+    try:
+        market_cap = get_market_cap(ticker)
+    except Exception as exc:
+        logger.warning("[%s] market-cap fetch failed (continuing) — %s",
+                       ticker, exc)
+
+    # ── 6. scan ───────────────────────────────────────────────────────────
+    try:
+        scan = engine.scan(ticker, df, market_cap=market_cap)
+    except Exception as exc:
+        logger.warning("[%s] scan raised — %s", ticker, exc)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason="scan exception"),
+            error=str(exc),
+        )
+
+    # Held positions always proceed to signal evaluation regardless of
+    # scan outcome — we need to know whether to exit even if liquidity
+    # or ATR ranges drifted out of the scan window.
+    if not scan.passed and not held_long:
+        logger.debug("[%s] scan filtered — %s", ticker, scan.reason)
+        return TickerResult(ticker=ticker, scan=scan)
+
+    logger.debug("[%s] %s%s", ticker,
+                 "HELD " if held_long else "",
+                 "scan PASSED" if scan.passed else "scan filtered (held → proceed)")
+
+    # ── 7. signal ─────────────────────────────────────────────────────────
+    # Earnings buffer only applies to entries; exits skip the fetch.
+    earnings_date = None
+    if not held_long:
+        try:
+            earnings_date = get_next_earnings(ticker)
+        except Exception as exc:
+            logger.warning("[%s] earnings fetch failed (continuing) — %s",
+                           ticker, exc)
+
+    try:
+        # Compute and enrich regime BEFORE signal() so behavioral gate applies
+        regime = engine.market_regime(market_dfs, vix_df)
+        if macro_state is not None or behavioral_state is not None:
+            from dataclasses import replace
+            regime = replace(
+                regime,
+                macro=macro_state,
+                behavioral=behavioral_state,
+            )
+
+        signal = engine.signal(
+            ticker, df,
+            market_dfs=market_dfs,
+            vix_df=vix_df,
+            earnings_date=earnings_date,
+            held_long=held_long,
+            regime=regime,
+            with_checks=True,
+        )
+    except InsufficientDataError as exc:
+        logger.info("[%s] signal skipped — %s", ticker, exc)
+        return TickerResult(
+            ticker=ticker,
+            scan=scan,
+            signal=SignalResult(
+                passed=False,
+                reason=f"insufficient data: {exc.detail}",
+            ),
+        )
+    except Exception as exc:
+        logger.warning("[%s] signal raised — %s", ticker, exc)
+        return TickerResult(
+            ticker=ticker,
+            scan=scan,
+            error=str(exc),
+        )
+
+    # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
+    # Keep the live feed in step with the backtester's swing-horizon cap
+    # (ADR-001): force an exit on a held long that has reached the cap and —
+    # in if_not_profit mode — is not in profit. Shares core.exits with the
+    # backtester so live and backtest never diverge. Engine exits take
+    # precedence (we only override a non-exit signal).
+    if held_long and held_position is not None and signal.direction != "exit_long":
+        _exec_cfg = engine._cfg.get("execution", {})
+        _mh_days = _exec_cfg.get("max_hold_days")
+        if _mh_days is not None:
+            _mh_mode = str(_exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+            _entry_pos = int(df.index.searchsorted(pd.Timestamp(held_position.entry_date)))
+            if max_hold_exit_due(
+                    bars_held=(len(df) - 1) - _entry_pos,
+                    current_close=float(df["close"].iloc[-1]),
+                    entry_price=held_position.entry_price, side="long",
+                    max_hold_days=int(_mh_days), mode=_mh_mode):
+                logger.info("[%s] max-hold time-stop exit (%d bars, %s)",
+                            ticker, int(_mh_days), _mh_mode)
+                signal = SignalResult(
+                    passed=True, direction="exit_long", signal_type="time_stop",
+                    market_regime=signal.market_regime,
+                    ticker_trend=signal.ticker_trend,
+                    reason=f"max-hold {int(_mh_days)} bars reached "
+                           f"({_mh_mode}) — time-stop exit",
+                )
+
+    # ── 7c. live breakeven stop ───────────────────────────────────────────
+    # Mirror of the backtester's _apply_dynamic_stop breakeven rule
+    # (core.exits.breakeven_stop_level, ADR-004): once a held long's best
+    # excursion reaches the trigger, raise positions.stop_price to entry.
+    # Skipped when the position is exiting this scan anyway. Fail-open.
+    if held_long and held_position is not None and signal.direction != "exit_long":
+        _maybe_raise_stop_to_breakeven(
+            ticker, df, held_position,
+            engine._cfg.get("execution", {}), settings,
+        )
+
+    # ── 8. chart fired signals ────────────────────────────────────────────
+    if signal.passed:
+        # Data-driven expected-hold range for the chart/Telegram caption.
+        # Entries only — exits don't display a hold horizon.
+        if signal.direction in ("long", "short"):
+            signal.expected_hold_days = expected_hold
+
+        # Collect historical signals for chart overlay
+        hist_signals = []
+        if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
+                                                                                         False):
+            try:
+                hist_signals = collect_signal_history(
+                    ticker, df, engine,
+                    market_dfs=market_dfs, vix_df=vix_df,
+                    lookback=90,
+                )
+            except Exception as exc:
+                logger.debug("[%s] signal history collection failed: %s", ticker, exc)
+
+        # Extract RP rank for scorecard
+        ticker_rp = rp_ranks.get(ticker) if rp_ranks else None
+
+        # Trigger panel: fold live-only context (RP rank, open-risk budget)
+        # into the engine's gate checks so the chart renders one unified,
+        # direction-aware factor read.
+        _append_live_context_checks(signal, ticker_rp, len(positions), max_open_risk)
+
+        # Chart is display support — a render failure (disk full, codec,
+        # OOM) must never kill the scan: the rest of the scan (journaling,
+        # Telegram push) would be lost with it.
+        try:
+            chart(
+                ticker, df, signal=signal,
+                output_dir=_ROOT / "data" / "screenshots",
+                historical_signals=hist_signals,
+                regime=regime,
+                rp_rank=ticker_rp,
+            )
+        except Exception as exc:
+            logger.warning("[%s] chart render failed (alert still sent) — %s",
+                           ticker, exc)
+    else:
+        logger.debug("[%s] no signal — %s", ticker, signal.reason)
+
+    return TickerResult(ticker=ticker, scan=scan, signal=signal)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
