@@ -20,6 +20,7 @@ import pandas as pd
 import yaml
 from pandas import Series
 
+from core.config import EngineConfig, parse as parse_config
 from core.defaults import DEFAULTS
 # Re-exported for the many callers that import these from here; the regime
 # state + classifier live in the leaf module core.regime (unit-testable,
@@ -115,6 +116,7 @@ class FilterEngine:
         with open(config_path, encoding="utf-8") as f:
             self._cfg = yaml.safe_load(f)
         self._validate_config()
+        self.cfg: EngineConfig = parse_config(self._cfg)
         self._today = today or date.today()
         self._stop_dates = self._build_stop_dates_index()
         self._sector_map = self._load_sector_map()
@@ -225,7 +227,7 @@ class FilterEngine:
         InsufficientDataError   When ``len(df) < trend.ma_slow``.
         KeyError                When a required indicator column is missing.
         """
-        min_rows = self._cfg["trend"]["ma_slow"]
+        min_rows = self.cfg.trend.ma_slow
         if len(df) < min_rows:
             raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
 
@@ -262,25 +264,25 @@ class FilterEngine:
             )
 
         # 1. price floor
-        min_price = self._cfg["price"]["min_price"]
+        min_price = self.cfg.price.min_price
         if row["close"] < min_price:
             return _snapshot(f"price {row['close']:.2f} < min {min_price}", False)
 
         # 2. 20-day average dollar volume
-        min_dv = self._cfg["liquidity"]["min_dollar_volume_20d"]
+        min_dv = self.cfg.liquidity.min_dollar_volume_20d
         if dv20 < min_dv:
             return _snapshot(f"avg dollar vol {dv20:,.0f} < min {min_dv:,.0f}", False)
 
         # 3. market cap floor (skipped for ETFs/indices)
         if market_cap is not None:
-            min_mc = self._cfg["market_cap"]["min_market_cap"]
+            min_mc = self.cfg.market_cap.min_market_cap
             if market_cap < min_mc:
                 return _snapshot(f"market cap {market_cap:,.0f} < min {min_mc:,.0f}", False)
 
         # 4. ATR as a percentage of price
         atr_pct = row["atr"] / row["close"] * 100
-        min_atr = self._cfg["volatility"]["min_atr_pct"]
-        max_atr = self._cfg["volatility"]["max_atr_pct"]
+        min_atr = self.cfg.volatility.min_atr_pct
+        max_atr = self.cfg.volatility.max_atr_pct
         if atr_pct < min_atr:
             return _snapshot(f"ATR% {atr_pct:.2f} < min {min_atr}", False)
         if atr_pct > max_atr:
@@ -707,8 +709,8 @@ class FilterEngine:
             add("VOLATILITY", "BB z", abs(bbz) < 2.0, f"{bbz:+.2f}")
         if close is not None and atr is not None and close > 0:
             atr_pct = atr / close * 100
-            min_atr = self._cfg["volatility"]["min_atr_pct"]
-            max_atr = self._cfg["volatility"]["max_atr_pct"]
+            min_atr = self.cfg.volatility.min_atr_pct
+            max_atr = self.cfg.volatility.max_atr_pct
             add("VOLATILITY", "ATR%", min_atr <= atr_pct <= max_atr, f"{atr_pct:.1f}%")
 
         # ── RISK ─────────────────────────────────────────────────────────────
@@ -833,8 +835,8 @@ class FilterEngine:
             DOWNTREND close < MA_fast < MA_slow
             CHOP      anything else
         """
-        fast = self._cfg["trend"]["ma_fast"]
-        slow = self._cfg["trend"]["ma_slow"]
+        fast = self.cfg.trend.ma_fast
+        slow = self.cfg.trend.ma_slow
         # Fast path: read precomputed MA columns (attach_indicators uses the
         # same 50/200 periods the engine configures) — O(1) vs O(n) per bar.
         if "ma_fast" in df.columns and "ma_slow" in df.columns and len(df) >= slow:
@@ -856,9 +858,9 @@ class FilterEngine:
         if market_dfs is None or sector not in market_dfs:
             return True, ""
         sector_df = market_dfs[sector]
-        if len(sector_df) < self._cfg["trend"]["ma_fast"]:
+        if len(sector_df) < self.cfg.trend.ma_fast:
             return True, ""
-        fast = self._cfg["trend"]["ma_fast"]
+        fast = self.cfg.trend.ma_fast
         ma = sector_df["close"].iloc[-fast:].mean()
         last = sector_df["close"].iloc[-1]
         if last < ma:
@@ -1175,7 +1177,7 @@ class FilterEngine:
         ------
         InsufficientDataError
         """
-        min_rows = max(2, self._cfg["trend"]["ma_slow"])
+        min_rows = max(2, self.cfg.trend.ma_slow)
         if len(df) < min_rows:
             raise InsufficientDataError(got=len(df), need=min_rows, ticker=ticker)
 
@@ -1247,8 +1249,8 @@ class FilterEngine:
         Format: ``"UPTREND | vol×2.1 | RSI 54 | MACD↑ | 20d✓"``.
         ``20d✓`` is appended only when ``close`` exceeds the prior 20-bar high.
         """
-        fast = self._cfg["trend"]["ma_fast"]
-        slow = self._cfg["trend"]["ma_slow"]
+        fast = self.cfg.trend.ma_fast
+        slow = self.cfg.trend.ma_slow
 
         last = float(row["close"])
         trend = self._classify_trend(df["close"], fast, slow)
@@ -1338,6 +1340,7 @@ class FilterEngine:
         obj._cfg = copy.deepcopy(cfg)
         obj._today = today or date.today()
         obj._validate_config()
+        obj.cfg = parse_config(obj._cfg)
         obj._stop_dates = obj._build_stop_dates_index()
         obj._sector_map = obj._load_sector_map()
         return obj
