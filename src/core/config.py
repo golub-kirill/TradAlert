@@ -146,8 +146,9 @@ class ExecutionCfg:
 @dataclass(frozen=True)
 class EventsCfg:
     earnings_buffer_days: int
-    # events.stop_dates stays in `raw`: FilterEngine._build_stop_dates_index
-    # validates + indexes it at construction (not migrated yet).
+    # Raw [{id, date, description}] list; FilterEngine._build_stop_dates_index
+    # validates + indexes it at construction.
+    stop_dates: list
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,12 @@ class ExitsCfg:
 
 
 @dataclass(frozen=True)
+class BorrowCfg:
+    annual_rate_default: float
+    per_ticker: dict
+
+
+@dataclass(frozen=True)
 class MomentumCfg:
     long: SignalLeg
     short: SignalLeg            # held-long fade EXIT (legacy name)
@@ -219,6 +226,8 @@ class SignalsCfg:
     exits: ExitsCfg
     hard_to_borrow_list: list
     require_trigger_bar_up: bool
+    allow_shorts: bool
+    borrow: BorrowCfg
 
 
 @dataclass(frozen=True)
@@ -282,7 +291,8 @@ def parse(cfg: dict) -> EngineConfig:
             breakeven_buffer_atr=_opt_num(cfg, "execution.breakeven_buffer_atr")),
         events=EventsCfg(
             earnings_buffer_days=_int(cfg, "events.earnings_buffer_days",
-                                      D("filters.events.earnings_buffer_days", 5))),
+                                      D("filters.events.earnings_buffer_days", 5)),
+            stop_dates=_node(cfg, "events.stop_dates", []) or []),
         signals=SignalsCfg(
             momentum=MomentumCfg(
                 long=SignalLeg(
@@ -336,6 +346,10 @@ def parse(cfg: dict) -> EngineConfig:
                 short_cover_pop=_bool(cfg, "signals.exits.short_cover_pop", True),
                 short_cover_oversold=_bool(cfg, "signals.exits.short_cover_oversold", True)),
             hard_to_borrow_list=_node(cfg, "signals.hard_to_borrow_list", []) or [],
-            require_trigger_bar_up=_bool(cfg, "signals.require_trigger_bar_up", False)),
+            require_trigger_bar_up=_bool(cfg, "signals.require_trigger_bar_up", False),
+            allow_shorts=_bool(cfg, "signals.allow_shorts", False),
+            borrow=BorrowCfg(
+                annual_rate_default=_num(cfg, "signals.borrow.annual_rate_default", 0.0),
+                per_ticker=_node(cfg, "signals.borrow.per_ticker", {}) or {})),
         raw=cfg,
     )

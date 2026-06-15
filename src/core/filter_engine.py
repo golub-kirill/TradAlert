@@ -20,7 +20,7 @@ import pandas as pd
 import yaml
 from pandas import Series
 
-from core.config import EngineConfig, parse as parse_config
+from core.config import EngineConfig, SignalLeg, parse as parse_config
 from core.defaults import DEFAULTS
 # Re-exported for the many callers that import these from here; the regime
 # state + classifier live in the leaf module core.regime (unit-testable,
@@ -159,7 +159,7 @@ class FilterEngine:
             When a stop-date entry is not a dict or lacks ``date``, ``id``, or
             ``description``.
         """
-        raw = self._cfg.get("events", {}).get("stop_dates", []) or []
+        raw = self.cfg.events.stop_dates
         index: dict[str, dict] = {}
         for i, entry in enumerate(raw):
             if not isinstance(entry, dict):
@@ -609,15 +609,18 @@ class FilterEngine:
                 (close > wk) if is_long else (close < wk), f"{wk:.2f}")
 
         # ── MOMENTUM ─────────────────────────────────────────────────────────
-        sig = self._cfg["signals"]
         if signal_type == "momentum":
-            tcfg = sig["momentum"]["long"] if is_long else (sig["momentum"].get("short_entry") or {})
+            tcfg = (self.cfg.signals.momentum.long if is_long
+                    else self.cfg.signals.momentum.short_entry)
         else:
-            tcfg = sig["mean_reversion"]["long"] if is_long else (sig["mean_reversion"].get("short_entry") or {})
+            tcfg = (self.cfg.signals.mean_reversion.long if is_long
+                    else self.cfg.signals.mean_reversion.short_entry)
+        if tcfg is None:           # absent short_entry → all-None leg (matches the old `or {}`)
+            tcfg = SignalLeg()
 
         if rsi is not None:
-            rsi_min = tcfg.get("rsi_min")
-            rsi_max = tcfg.get("rsi_max")
+            rsi_min = tcfg.rsi_min
+            rsi_max = tcfg.rsi_max
             if rsi_min is not None and rsi_max is not None:
                 in_band = rsi_min <= rsi <= rsi_max
                 strength = clamp01((rsi - rsi_min) / (rsi_max - rsi_min)) if rsi_max > rsi_min else None
@@ -634,15 +637,15 @@ class FilterEngine:
                 (hist > 0) if is_long else (hist < 0), f"{hist:+.3f}")
         if hist is not None and prev_hist is not None and atr is not None:
             delta = hist - prev_hist
-            thr = float(tcfg.get("min_hist_delta_atr", 0.0)) * atr
+            thr = float(tcfg.min_hist_delta_atr or 0.0) * atr
             passed = (delta >= thr) if is_long else (delta <= -thr)
             strength = clamp01(sgn * delta / thr) if thr > 0 else None
             add("MOMENTUM", "MACD Δ", passed, f"{delta:+.3f}/{thr:.3f}", strength)
 
         if signal_type == "momentum" and "macd_hist" in df.columns:
-            max_bars = int(tcfg.get(
-                "max_bars_since_cross",
-                DEFAULTS.get("filters.signals.momentum.long.max_bars_since_cross")))
+            max_bars = int(tcfg.max_bars_since_cross
+                           if tcfg.max_bars_since_cross is not None
+                           else DEFAULTS.get("filters.signals.momentum.long.max_bars_since_cross"))
             h = df["macd_hist"].iloc[-(max_bars + 3):]
             bars_ago = None
             for i in range(len(h) - 2, -1, -1):
@@ -728,7 +731,7 @@ class FilterEngine:
         if not is_long:
             # A fired short already cleared the hard-to-borrow gate, so it is
             # borrowable; surface the borrow drag that will be charged.
-            rate = float(sig.get("borrow", {}).get("annual_rate_default", 0.0)) * 100
+            rate = float(self.cfg.signals.borrow.annual_rate_default) * 100
             add("RISK", "Borrow", True, f"{rate:.1f}%/yr")
 
         # ── CONTEXT (engine portion; main.py adds RP / budget / health) ──────
@@ -892,11 +895,8 @@ class FilterEngine:
         # where VIX was below vix_low but climbing into a tariff scare.
         # Mean-reversion entries are NOT gated — they often want falling
         # markets / chop and have their own ATR-relative gates.
-        rcfg = self._cfg.get("regime", {})
-        slope_block = bool(rcfg.get("vix_slope_block", False))
-
-        scfg_top = self._cfg.get("signals", {})
-        allow_shorts = bool(scfg_top.get("allow_shorts", False))
+        slope_block = bool(self.cfg.regime.vix_slope_block)
+        allow_shorts = bool(self.cfg.signals.allow_shorts)
 
         if regime.allows_longs:
             if ticker_trend == "UPTREND" and self._momentum_long(row, prev, df):

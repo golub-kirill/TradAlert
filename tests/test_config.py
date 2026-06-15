@@ -100,6 +100,8 @@ def test_parses_real_filters_yaml():
     # sanity against the shipped values
     assert cfg.trend.ma_slow == 200
     assert cfg.execution.breakeven_trigger_r == 1.0    # ADR-004 default ON
+    assert cfg.signals.borrow.annual_rate_default == 0.03
+    assert len(cfg.events.stop_dates) == 2             # shipped blackout calendar
 
 
 def test_signal_legs_parsed():
@@ -138,7 +140,10 @@ def test_toggles_and_events_defaults():
     assert s.exits.regime_flip_short and s.exits.short_cover_pop and s.exits.short_cover_oversold
     assert s.hard_to_borrow_list == []
     assert s.require_trigger_bar_up is False
+    assert s.allow_shorts is False
+    assert s.borrow.annual_rate_default == 0.0
     assert cfg.events.earnings_buffer_days == 5
+    assert cfg.events.stop_dates == []
 
 
 def test_toggle_present_values_win():
