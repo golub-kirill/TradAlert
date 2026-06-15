@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
-from core.defaults import DEFAULTS
+if TYPE_CHECKING:
+    from core.config import EngineConfig
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ class MarketRegime:
 
 
 def classify_market_regime(
-        cfg: dict,
+        cfg: "EngineConfig",
         market_dfs: dict[str, pd.DataFrame] | None,
         vix_df: pd.DataFrame | None,
 ) -> MarketRegime:
@@ -114,15 +115,15 @@ def classify_market_regime(
     -------
     MarketRegime
     """
-    rcfg = cfg.get("regime", {})
+    rcfg = cfg.regime
 
     # ── volatility ───────────────────────────────────────────────────────
     volatility: VolState
     vix_rising = False
     if vix_df is not None and not vix_df.empty:
         vix_close = float(vix_df["close"].iloc[-1])
-        vix_low = rcfg.get("vix_low", DEFAULTS.get("filters.regime.vix_low"))
-        vix_high = rcfg.get("vix_high", DEFAULTS.get("filters.regime.vix_high"))
+        vix_low = rcfg.vix_low
+        vix_high = rcfg.vix_high
         if vix_close < vix_low:
             volatility = "LOW"
         elif vix_close > vix_high:
@@ -134,7 +135,7 @@ def classify_market_regime(
         # Compare today's VIX close to the close ``lookback`` bars ago.
         # Set unconditionally; the entry gate decides whether to act on
         # it via ``regime.vix_slope_block``. Defensive on short series.
-        lookback = int(rcfg.get("vix_slope_lookback_days", 5))
+        lookback = int(rcfg.vix_slope_lookback_days)
         if len(vix_df) > lookback:
             vix_ref = float(vix_df["close"].iloc[-1 - lookback])
             vix_rising = vix_close > vix_ref
@@ -152,9 +153,9 @@ def classify_market_regime(
         )
         return MarketRegime(trend="CHOP", volatility=volatility, vix_rising=vix_rising)
 
-    symbols = rcfg.get("index_symbols", ["SPY", "QQQ"])
-    require_all = rcfg.get("require_all_indices", True)
-    ma_period = cfg["trend"]["ma_fast"]
+    symbols = rcfg.index_symbols
+    require_all = rcfg.require_all_indices
+    ma_period = cfg.trend.ma_fast
 
     votes_up = 0
     votes_dn = 0
@@ -190,9 +191,9 @@ def classify_market_regime(
 
     # Secondary short-term MA alignment gate
     if trend == "BULL":
-        ma_short_ok = rcfg.get("require_ma_short_alignment", False)
+        ma_short_ok = rcfg.require_ma_short_alignment
         if ma_short_ok:
-            ma_short = rcfg.get("ma_short", DEFAULTS.get("filters.regime.ma_short"))
+            ma_short = rcfg.ma_short
             for sym in symbols:
                 idx_df = market_dfs.get(sym)
                 if idx_df is None or len(idx_df) < ma_short:

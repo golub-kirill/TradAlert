@@ -825,7 +825,7 @@ class FilterEngine:
     ) -> MarketRegime:
         """Delegate to the pure classifier in ``core.regime``
         (``classify_market_regime``) with this engine's config."""
-        return classify_market_regime(self._cfg, market_dfs, vix_df)
+        return classify_market_regime(self.cfg, market_dfs, vix_df)
 
     # ── private — ticker trend classifier ────────────────────────────────────
 

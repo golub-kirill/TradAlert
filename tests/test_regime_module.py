@@ -5,12 +5,14 @@ delegation parity, and the dependency direction (core.regime must never
 import the engine back — that arrow is the point of the extraction).
 """
 
+import copy
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import core.regime as regime_mod
+from core.config import EngineConfig, parse as parse_config
 from core.regime import MarketRegime, classify_market_regime
 
 
@@ -18,8 +20,32 @@ def _df(closes) -> pd.DataFrame:
     return pd.DataFrame({"close": [float(c) for c in closes]})
 
 
-def _cfg(**regime_keys) -> dict:
-    return {"trend": {"ma_fast": 3}, "regime": regime_keys}
+# Smallest full config parse() accepts; the classifier only reads trend.ma_fast
+# (=3 here) and the regime block, which the tests override per-case.
+_BASE_CFG = {
+    "price": {"min_price": 5.0},
+    "liquidity": {"min_dollar_volume_20d": 1},
+    "market_cap": {"min_market_cap": 1},
+    "volatility": {"min_atr_pct": 1.0, "max_atr_pct": 8.0},
+    "trend": {"ma_fast": 3, "ma_slow": 5},
+    "signals": {
+        "stop_loss": {"atr_multiplier": 2.5, "min_rr": 2.5},
+        "momentum": {
+            "long": {"rsi_min": 50, "rsi_max": 70, "min_hist_delta_atr": 0.08},
+            "short": {"rsi_min": 30, "rsi_max": 65, "min_hist_delta_atr": 0.18},
+        },
+        "mean_reversion": {
+            "long": {"rsi_max": 30, "min_hist_delta_atr": 0.18},
+            "short": {"rsi_min": 65, "min_hist_delta_atr": 0.05},
+        },
+    },
+}
+
+
+def _cfg(**regime_keys) -> EngineConfig:
+    raw = copy.deepcopy(_BASE_CFG)
+    raw["regime"] = {"ma_short": 20, **regime_keys}
+    return parse_config(raw)
 
 
 def _indices(spy, qqq) -> dict:
@@ -98,10 +124,10 @@ def test_engine_delegation_parity():
     from core.filter_engine import FilterEngine
     cfg_path = Path(__file__).resolve().parent.parent / "config" / "filters.yaml"
     eng = FilterEngine.from_dict(yaml.safe_load(cfg_path.read_text(encoding="utf-8")))
-    n = eng._cfg["trend"]["ma_fast"] + 1
+    n = eng.cfg.trend.ma_fast + 1
     dfs = _indices([100.0] * (n - 1) + [110.0], [100.0] * (n - 1) + [110.0])
     vix = _df([18, 17, 16, 19])
-    assert eng.market_regime(dfs, vix) == classify_market_regime(eng._cfg, dfs, vix)
+    assert eng.market_regime(dfs, vix) == classify_market_regime(eng.cfg, dfs, vix)
 
 
 def test_regime_module_does_not_import_the_engine():
