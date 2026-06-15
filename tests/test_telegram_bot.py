@@ -302,3 +302,24 @@ def test_mask_filter_masks_bot_token_and_hex():
     f.filter(rec3)
     assert "<API-KEY-MASKED>" in rec3.getMessage()
     assert "zq7xk2m9" not in rec3.getMessage()
+
+
+def test_basic_metrics_reads_typed_execution_config(monkeypatch):
+    """Regression: _basic_metrics must read engine.cfg.execution (the typed config),
+    not the dropped engine._cfg dict. The max-hold metrics populate without raising."""
+    import pandas as pd
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(cfg=SimpleNamespace(
+        execution=SimpleNamespace(max_hold_days=25, max_hold_mode="if_not_profit")))
+    monkeypatch.setattr(tb, "_get_engine", lambda: stub)
+
+    idx = pd.date_range("2025-01-01", periods=10, freq="B")
+    df = pd.DataFrame({"close": [100.0] * 10}, index=idx)
+    pos = SimpleNamespace(side="long", entry_price=100.0, stop_price=95.0,
+                          entry_date=idx[0].date(), ticker="TEST.1")
+
+    m = tb._basic_metrics(pos, df)
+    assert m["max_hold"] == 25
+    assert m["mode"] == "if_not_profit"
+    assert m["time_stop_left"] == 25 - m["days_held"]

@@ -253,11 +253,11 @@ def _basic_metrics(pos, df) -> dict:
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)
         m["days_held"] = bars_held
-        exec_cfg = _get_engine()._cfg.get("execution", {})
-        mh = exec_cfg.get("max_hold_days")
+        exec_cfg = _get_engine().cfg.execution
+        mh = exec_cfg.max_hold_days
         if mh is not None:
             m["max_hold"] = int(mh)
-            m["mode"] = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+            m["mode"] = str(exec_cfg.max_hold_mode).replace("-", "_")
             m["time_stop_left"] = int(mh) - bars_held
     except Exception as exc:
         logger.debug("[metrics] time-stop calc failed for %s — %s", pos.ticker, exc)
@@ -278,10 +278,10 @@ def _engine_verdict(pos, df) -> str:
     )
     if sig.passed and sig.direction in ("exit_long", "exit_short"):
         return f"EXIT now — {sig.reason or sig.signal_type}"
-    exec_cfg = engine._cfg.get("execution", {})
-    mh = exec_cfg.get("max_hold_days")
+    exec_cfg = engine.cfg.execution
+    mh = exec_cfg.max_hold_days
     if mh is not None:
-        mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+        mode = str(exec_cfg.max_hold_mode).replace("-", "_")
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)
         if max_hold_exit_due(
