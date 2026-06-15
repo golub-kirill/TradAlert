@@ -48,6 +48,7 @@ from datetime import date
 from typing import Any, Callable
 
 import pandas as pd
+import yaml
 
 from backtest.loader import UniverseData
 from backtest.stats import Stats, compute_stats, group_by
@@ -758,13 +759,16 @@ class SweepEngine:
             is_baseline: bool,
             mutations: dict | None = None,
     ) -> SweepPoint:
-        """Hot-path: construct engine, run backtest, collect stats."""
+        """Hot-path: construct engine + portfolio config, run the backtest,
+        collect stats. Decomposed into module-level helpers (so the worker
+        stand-in shares them) — config-load and the per-job settings prep no
+        longer touch disk on every job (settings.yaml is cached per process)."""
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
         from core.filter_engine import FilterEngine
-        from backtest.portfolio_backtester import PortfolioBacktester, PortfolioConfig
+        from backtest.portfolio_backtester import PortfolioBacktester
 
         run_id = f"{group}/{param_name}={param_value}"
         t0 = time.time()
@@ -775,56 +779,11 @@ class SweepEngine:
             logger.warning("FilterEngine.from_dict failed [%s]: %s", run_id, exc)
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        _PORT_FIELDS = {
-            "max_open_risk", "start_date", "end_date", "earnings_aware",
-            "close_open_at_eod", "entry_slippage_pct", "commission_r",
-            "max_hold_days", "max_hold_mode",
-            "trail_atr_mult", "trail_activate_r",
-            "breakeven_trigger_r", "breakeven_buffer_atr",
-        }
-        pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
-
-        # Per-worker chronic-loser tracker. The config dict is passed
-        # through base_port; each worker builds a fresh TickerHealth so
-        # sweep points don't share streak state.
-        chronic_cfg = port_params.get("chronic_loser_cfg")
-        if chronic_cfg:
-            try:
-                from core.ticker_health import TickerHealth
-                pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
-            except Exception as exc:
-                logger.warning("TickerHealth.from_config failed [%s]: %s",
-                               run_id, exc)
-
-        try:
-            pcfg = PortfolioConfig(**pcfg_kwargs)
-        except Exception as exc:
-            logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
+        pcfg = _build_port_config(port_params, run_id)
+        if pcfg is None:
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        # Settings are always loaded — behavioral classification consumes them
-        # via run_prepped(settings=...).
-        _settings = None
-        try:
-            import yaml as _yaml
-            _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-            with open(_settings_path, encoding="utf-8") as _f:
-                _settings = _yaml.safe_load(_f)
-
-            # Mutate _settings for sweep params that live in settings.yaml
-            # (behavioral params). When a mutations dict is given, EVERY entry
-            # is routed — param_name alone can't carry multi-knob jobs ("joint")
-            # or the walk-forward OOS replay ("wf_tuned"), whose
-            # settings-resident knobs would otherwise be silent no-ops.
-            if not is_baseline:
-                if mutations:
-                    for _m_name, _m_val in mutations.items():
-                        _apply_settings_mutation(_settings, _m_name, _m_val)
-                else:
-                    _apply_settings_mutation(_settings, param_name, param_value)
-        except Exception as exc:
-            logger.debug("settings load failed — running without settings "
-                         "context: %s", exc)
+        settings = _job_settings(param_name, param_value, is_baseline, mutations)
 
         bt = PortfolioBacktester(engine, pcfg)
         result = bt.run_prepped(
@@ -835,40 +794,121 @@ class SweepEngine:
             macro_series=self._universe.macro_series,
             behavioral_data=self._universe.behavioral_data,
             spy_df=self._universe.spy_df,
-            settings=_settings,
+            settings=settings,
+        )
+        return _collect_point(
+            result.trades, run_id, param_name, param_value, param_label,
+            group, is_baseline, len(self._universe.prepped), t0,
         )
 
-        trades = result.trades
-        stats = compute_stats(trades)
-        by_sig = group_by(trades, "signal_type")
-        by_reg = group_by(trades, "market_regime")
-        by_exit = group_by(trades, "exit_reason")
-        by_year = group_by(trades, lambda t: str(t.entry_date.year)
-        if t.entry_date else "<none>")
 
-        elapsed = time.time() - t0
-        logger.info(
-            "  %-40s  %3d trades  E[R]=%+.3f  WR=%.0f%%  %.1fs",
-            run_id, stats.trades_count, stats.expectancy_r,
-            stats.win_rate * 100, elapsed,
-        )
+# ── sweep-job helpers (module-level so the worker stand-in reuses them) ───────
 
-        return SweepPoint(
-            run_id=run_id,
-            param_name=param_name,
-            param_value=param_value,
-            param_label=param_label,
-            group=group,
-            is_baseline=is_baseline,
-            stats=stats,
-            by_signal=by_sig,
-            by_regime=by_reg,
-            by_exit=by_exit,
-            by_year=by_year,
-            n_tickers=len(self._universe.prepped),
-            elapsed_s=elapsed,
-            trades=trades,
-        )
+_PORT_FIELDS = frozenset({
+    "max_open_risk", "start_date", "end_date", "earnings_aware",
+    "close_open_at_eod", "entry_slippage_pct", "commission_r",
+    "max_hold_days", "max_hold_mode",
+    "trail_atr_mult", "trail_activate_r",
+    "breakeven_trigger_r", "breakeven_buffer_atr",
+})
+
+# config/settings.yaml is read ONCE per process and reused: each job deep-copies
+# this base and applies its own mutations, instead of re-reading the file on every
+# job. _UNLOADED distinguishes "not yet read" from a cached read that yielded None
+# (missing/unreadable file → fail-open, same as the old per-job behavior).
+_SETTINGS_UNLOADED = object()
+_BASE_SETTINGS = _SETTINGS_UNLOADED
+
+
+def _base_settings():
+    """Parsed config/settings.yaml, cached per process. None when unreadable."""
+    global _BASE_SETTINGS
+    if _BASE_SETTINGS is _SETTINGS_UNLOADED:
+        path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
+        try:
+            with open(path, encoding="utf-8") as f:
+                _BASE_SETTINGS = yaml.safe_load(f)
+        except Exception as exc:
+            logger.debug("settings load failed — running without settings "
+                         "context: %s", exc)
+            _BASE_SETTINGS = None
+    return _BASE_SETTINGS
+
+
+def _job_settings(param_name: str, param_value: Any, is_baseline: bool,
+                  mutations: dict | None):
+    """Per-job settings: a deep copy of the cached base with this job's
+    settings-resident mutations applied (behavioral params). None when the base
+    is unreadable; baseline jobs get the base unmutated.
+
+    When a ``mutations`` dict is given EVERY entry is routed — ``param_name``
+    alone can't carry multi-knob jobs ("joint") or the walk-forward OOS replay
+    ("wf_tuned"), whose settings-resident knobs would otherwise be silent no-ops.
+    """
+    base = _base_settings()
+    if base is None:
+        return None
+    settings = copy.deepcopy(base)
+    if not is_baseline:
+        try:
+            if mutations:
+                for m_name, m_val in mutations.items():
+                    _apply_settings_mutation(settings, m_name, m_val)
+            else:
+                _apply_settings_mutation(settings, param_name, param_value)
+        except Exception as exc:
+            logger.debug("settings mutation failed [%s=%s]: %s",
+                         param_name, param_value, exc)
+    return settings
+
+
+def _build_port_config(port_params: dict, run_id: str):
+    """Build the PortfolioConfig for one sweep job: filter port_params to the
+    allowlisted fields and attach a fresh per-job chronic-loser tracker (so
+    sweep points don't share streak state). Returns None on construction failure."""
+    from backtest.portfolio_backtester import PortfolioConfig
+    pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
+    chronic_cfg = port_params.get("chronic_loser_cfg")
+    if chronic_cfg:
+        try:
+            from core.ticker_health import TickerHealth
+            pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
+        except Exception as exc:
+            logger.warning("TickerHealth.from_config failed [%s]: %s", run_id, exc)
+    try:
+        return PortfolioConfig(**pcfg_kwargs)
+    except Exception as exc:
+        logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
+        return None
+
+
+def _collect_point(trades, run_id, param_name, param_value, param_label,
+                   group, is_baseline, n_tickers, t0) -> SweepPoint:
+    """Compute stats + group breakdowns and assemble the SweepPoint for one job."""
+    stats = compute_stats(trades)
+    elapsed = time.time() - t0
+    logger.info(
+        "  %-40s  %3d trades  E[R]=%+.3f  WR=%.0f%%  %.1fs",
+        run_id, stats.trades_count, stats.expectancy_r,
+        stats.win_rate * 100, elapsed,
+    )
+    return SweepPoint(
+        run_id=run_id,
+        param_name=param_name,
+        param_value=param_value,
+        param_label=param_label,
+        group=group,
+        is_baseline=is_baseline,
+        stats=stats,
+        by_signal=group_by(trades, "signal_type"),
+        by_regime=group_by(trades, "market_regime"),
+        by_exit=group_by(trades, "exit_reason"),
+        by_year=group_by(trades, lambda t: str(t.entry_date.year)
+                         if t.entry_date else "<none>"),
+        n_tickers=n_tickers,
+        elapsed_s=elapsed,
+        trades=trades,
+    )
 
 
 # ── worker helpers (module-level so ProcessPoolExecutor can pickle them) ──────
