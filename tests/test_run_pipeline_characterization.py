@@ -50,10 +50,10 @@ class _StubEngine:
 
     def __init__(self):
         self._today = None
-        self._cfg = {
-            "trend": {"ma_slow": MA_SLOW},
-            "execution": {"max_hold_days": 25, "max_hold_mode": "if_not_profit"},
-        }
+        self.cfg = SimpleNamespace(
+            trend=SimpleNamespace(ma_slow=MA_SLOW),
+            execution=SimpleNamespace(max_hold_days=25, max_hold_mode="if_not_profit"),
+        )
 
     def scan(self, ticker, df, market_cap=None):
         if ticker == "SCANRAISE":
@@ -171,7 +171,9 @@ def test_run_pipeline_empty_when_only_context():
     import main as _m
 
     class _E:
-        _cfg = {"trend": {"ma_slow": MA_SLOW}, "execution": {}}
+        cfg = SimpleNamespace(
+            trend=SimpleNamespace(ma_slow=MA_SLOW),
+            execution=SimpleNamespace(max_hold_days=None, max_hold_mode="hard"))
 
     saved = (_m._load_market_context, _m.load_open_positions, _m._expected_hold_range)
     _m._load_market_context = lambda tickers: (None, None)

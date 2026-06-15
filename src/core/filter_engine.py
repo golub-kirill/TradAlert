@@ -114,18 +114,18 @@ class FilterEngine:
             today: date | None = None,
     ):
         with open(config_path, encoding="utf-8") as f:
-            self._cfg = yaml.safe_load(f)
-        self._validate_config()
-        self.cfg: EngineConfig = parse_config(self._cfg)
+            raw = yaml.safe_load(f)
+        self._validate_config(raw)
+        self.cfg: EngineConfig = parse_config(raw)
         self._today = today or date.today()
         self._stop_dates = self._build_stop_dates_index()
         self._sector_map = self._load_sector_map()
 
     # ── private — config validation ──────────────────────────────────────────
 
-    def _validate_config(self) -> None:
+    def _validate_config(self, cfg: dict) -> None:
         """
-        Walk ``_REQUIRED_CONFIG_KEYS`` and validate presence + type.
+        Walk ``_REQUIRED_CONFIG_KEYS`` and validate presence + type on ``cfg``.
 
         Raises
         ------
@@ -133,7 +133,7 @@ class FilterEngine:
             On the first missing dotted key or type mismatch encountered.
         """
         for dotted, expected in self._REQUIRED_CONFIG_KEYS:
-            node = self._cfg
+            node = cfg
             for part in dotted.split("."):
                 if not isinstance(node, dict) or part not in node:
                     raise ConfigError(dotted, reason="missing")
@@ -1329,10 +1329,10 @@ class FilterEngine:
         """
         import copy
         obj = object.__new__(cls)
-        obj._cfg = copy.deepcopy(cfg)
+        raw = copy.deepcopy(cfg)
         obj._today = today or date.today()
-        obj._validate_config()
-        obj.cfg = parse_config(obj._cfg)
+        obj._validate_config(raw)
+        obj.cfg = parse_config(raw)
         obj._stop_dates = obj._build_stop_dates_index()
         obj._sector_map = obj._load_sector_map()
         return obj

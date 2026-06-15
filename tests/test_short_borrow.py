@@ -70,8 +70,8 @@ def test_borrow_drag_zero_when_open():
 class _ShortEngine:
     def __init__(self, rate: float) -> None:
         self._today = None
-        self._cfg = {"signals": {"borrow": {"annual_rate_default": rate,
-                                            "per_ticker": {}}}}
+        self.cfg = SimpleNamespace(signals=SimpleNamespace(
+            borrow=SimpleNamespace(annual_rate_default=rate, per_ticker={})))
         self.entered = False
         self.exited = False
 

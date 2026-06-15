@@ -303,7 +303,7 @@ class BarReplayBacktester:
             logger.warning("[%s] %s", ticker, result.skipped_reason)
             return result
 
-        ma_slow = self._engine._cfg["trend"]["ma_slow"]
+        ma_slow = self._engine.cfg.trend.ma_slow
 
         # Drop leading rows where any indicator column is NaN — engine.signal
         # cannot evaluate gates on bars with NaN macd_hist / rsi.

@@ -283,7 +283,7 @@ def _expected_hold_range(engine) -> tuple[int, int]:
     cap-anchored default (``execution.max_hold_days``) when the DB/backtest is
     unavailable. Display-only — no trade decision reads it.
     """
-    cap = int((engine._cfg.get("execution", {}) or {}).get("max_hold_days", 25) or 25)
+    cap = int(engine.cfg.execution.max_hold_days or 25)
     try:
         from backtest.db import expected_hold_range
         return expected_hold_range(cap=cap)
@@ -305,7 +305,7 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
     any error logs a warning and never blocks the scan.
     """
     logger = logging.getLogger(__name__)
-    trigger = exec_cfg.get("breakeven_trigger_r")
+    trigger = exec_cfg.breakeven_trigger_r
     if not trigger or position is None or position.side != "long":
         return None
     try:
@@ -324,7 +324,7 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
             return None
         # Entry bar inclusive — matches the backtester's update_excursion.
         mfe_r = (float(df["high"].iloc[entry_pos:].max()) - entry) / risk
-        buffer = exec_cfg.get("breakeven_buffer_atr")
+        buffer = exec_cfg.breakeven_buffer_atr
         atr = None
         if buffer:
             _atr = df["atr"].iloc[-1] if "atr" in df.columns else None
@@ -514,7 +514,7 @@ def _process_ticker(
         )
 
     # ── 3. row-count guard (matches engine scan()/signal() = trend.ma_slow) ──
-    min_rows = engine._cfg["trend"]["ma_slow"]
+    min_rows = engine.cfg.trend.ma_slow
     if len(df) < min_rows:
         reason = f"only {len(df)} rows — need {min_rows} for scan"
         logger.warning("[%s] skipping — %s", ticker, reason)
@@ -619,10 +619,10 @@ def _process_ticker(
     # backtester so live and backtest never diverge. Engine exits take
     # precedence (we only override a non-exit signal).
     if held_long and held_position is not None and signal.direction != "exit_long":
-        _exec_cfg = engine._cfg.get("execution", {})
-        _mh_days = _exec_cfg.get("max_hold_days")
+        _exec = engine.cfg.execution
+        _mh_days = _exec.max_hold_days
         if _mh_days is not None:
-            _mh_mode = str(_exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+            _mh_mode = str(_exec.max_hold_mode).replace("-", "_")
             _entry_pos = int(df.index.searchsorted(pd.Timestamp(held_position.entry_date)))
             if max_hold_exit_due(
                     bars_held=(len(df) - 1) - _entry_pos,
@@ -647,7 +647,7 @@ def _process_ticker(
     if held_long and held_position is not None and signal.direction != "exit_long":
         _maybe_raise_stop_to_breakeven(
             ticker, df, held_position,
-            engine._cfg.get("execution", {}), settings,
+            engine.cfg.execution, settings,
         )
 
     # ── 8. chart fired signals ────────────────────────────────────────────

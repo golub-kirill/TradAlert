@@ -17,7 +17,7 @@ import pytest
 
 from main import _maybe_raise_stop_to_breakeven
 
-EXEC_CFG = {"breakeven_trigger_r": 1.0}
+EXEC_CFG = SimpleNamespace(breakeven_trigger_r=1.0, breakeven_buffer_atr=None)
 
 
 def _df(highs, start="2026-01-05"):
@@ -85,9 +85,12 @@ def test_legacy_row_falls_back_to_stop_price_denominator(calls):
 
 def test_disabled_when_trigger_absent_or_zero(calls):
     df = _df([101, 110])
-    assert _maybe_raise_stop_to_breakeven("TEST.1", df, _pos(), {}, {}) is None
     assert _maybe_raise_stop_to_breakeven(
-        "TEST.1", df, _pos(), {"breakeven_trigger_r": 0}, {}) is None
+        "TEST.1", df, _pos(),
+        SimpleNamespace(breakeven_trigger_r=None, breakeven_buffer_atr=None), {}) is None
+    assert _maybe_raise_stop_to_breakeven(
+        "TEST.1", df, _pos(),
+        SimpleNamespace(breakeven_trigger_r=0, breakeven_buffer_atr=None), {}) is None
     assert calls["update"] == []
 
 

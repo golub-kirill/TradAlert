@@ -279,15 +279,17 @@ class PortfolioBacktester:
         Reads ``signals.borrow.{per_ticker, annual_rate_default}`` off the
         engine config. Defaults to 0.0 — so the long-only baseline and any
         config without a ``borrow`` block are unchanged. ``getattr`` guards
-        stub engines that have no ``_cfg``.
+        stub engines that have no typed ``cfg``.
         """
         if direction != "short":
             return 0.0
-        cfg = getattr(self._engine, "_cfg", {}) or {}
-        b = (cfg.get("signals", {}) or {}).get("borrow", {}) or {}
-        per = b.get("per_ticker", {}) or {}
+        cfg = getattr(self._engine, "cfg", None)
+        if cfg is None:
+            return 0.0
+        b = cfg.signals.borrow
+        per = b.per_ticker or {}
         try:
-            return float(per.get(ticker, b.get("annual_rate_default", 0.0)) or 0.0)
+            return float(per.get(ticker, b.annual_rate_default) or 0.0)
         except (TypeError, ValueError):
             return 0.0
 

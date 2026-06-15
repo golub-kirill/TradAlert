@@ -60,7 +60,8 @@ class _OneShotLong:
 
     def __init__(self, stop_off: float = 50.0, target_off: float = 200.0) -> None:
         self._today = None
-        self._cfg = {"trend": {"ma_slow": 200}}  # min-rows guard read by the backtester
+        # min-rows guard read by the backtester (self._engine.cfg.trend.ma_slow)
+        self.cfg = SimpleNamespace(trend=SimpleNamespace(ma_slow=200))
         self._stop_off = stop_off
         self._target_off = target_off
         self.fire_ts = None
