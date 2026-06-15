@@ -144,6 +144,13 @@ class ExecutionCfg:
 
 
 @dataclass(frozen=True)
+class EventsCfg:
+    earnings_buffer_days: int
+    # events.stop_dates stays in `raw`: FilterEngine._build_stop_dates_index
+    # validates + indexes it at construction (not migrated yet).
+
+
+@dataclass(frozen=True)
 class SignalLeg:
     """One entry/exit trigger leg. Fields absent for a given leg stay None."""
     rsi_min: float | None = None
@@ -157,6 +164,34 @@ class StopLossCfg:
     atr_multiplier: float
     min_rr: float
     min_rr_short: float | None
+
+
+@dataclass(frozen=True)
+class GapRiskCfg:
+    enabled: bool
+    max_prev_bar_range_atr: float
+
+
+@dataclass(frozen=True)
+class SectorGateCfg:
+    enabled: bool
+    sector_map_path: str
+
+
+@dataclass(frozen=True)
+class SizeMultGateCfg:
+    enabled: bool
+    min: float
+
+
+@dataclass(frozen=True)
+class ExitsCfg:
+    regime_flip: bool
+    momentum_fade: bool
+    mean_rev: bool
+    regime_flip_short: bool
+    short_cover_pop: bool
+    short_cover_oversold: bool
 
 
 @dataclass(frozen=True)
@@ -178,6 +213,12 @@ class SignalsCfg:
     momentum: MomentumCfg
     mean_reversion: MeanReversionCfg
     stop_loss: StopLossCfg
+    gap_risk: GapRiskCfg
+    sector_gate: SectorGateCfg
+    size_mult_gate: SizeMultGateCfg
+    exits: ExitsCfg
+    hard_to_borrow_list: list
+    require_trigger_bar_up: bool
 
 
 @dataclass(frozen=True)
@@ -191,6 +232,7 @@ class EngineConfig:
     trend: TrendCfg
     regime: RegimeCfg
     execution: ExecutionCfg
+    events: EventsCfg
     signals: SignalsCfg
     raw: dict = field(repr=False, default_factory=dict)
 
@@ -238,6 +280,9 @@ def parse(cfg: dict) -> EngineConfig:
             max_hold_mode=_node(cfg, "execution.max_hold_mode", "hard"),
             breakeven_trigger_r=_opt_num(cfg, "execution.breakeven_trigger_r"),
             breakeven_buffer_atr=_opt_num(cfg, "execution.breakeven_buffer_atr")),
+        events=EventsCfg(
+            earnings_buffer_days=_int(cfg, "events.earnings_buffer_days",
+                                      D("filters.events.earnings_buffer_days", 5))),
         signals=SignalsCfg(
             momentum=MomentumCfg(
                 long=SignalLeg(
@@ -268,6 +313,29 @@ def parse(cfg: dict) -> EngineConfig:
             stop_loss=StopLossCfg(
                 atr_multiplier=_num(cfg, "signals.stop_loss.atr_multiplier"),
                 min_rr=_num(cfg, "signals.stop_loss.min_rr"),
-                min_rr_short=_opt_num(cfg, "signals.stop_loss.min_rr_short"))),
+                min_rr_short=_opt_num(cfg, "signals.stop_loss.min_rr_short")),
+            gap_risk=GapRiskCfg(
+                enabled=_bool(cfg, "signals.gap_risk.enabled",
+                              D("filters.signals.gap_risk.enabled", False)),
+                max_prev_bar_range_atr=_num(
+                    cfg, "signals.gap_risk.max_prev_bar_range_atr",
+                    D("filters.signals.gap_risk.max_prev_bar_range_atr", 3.0))),
+            sector_gate=SectorGateCfg(
+                enabled=_bool(cfg, "signals.sector_gate.enabled", False),
+                sector_map_path=_node(cfg, "signals.sector_gate.sector_map_path",
+                                      "config/sector_map.yaml")),
+            size_mult_gate=SizeMultGateCfg(
+                enabled=_bool(cfg, "signals.size_mult_gate.enabled", False),
+                min=_num(cfg, "signals.size_mult_gate.min",
+                         D("filters.signals.size_mult_gate.min", 0.25))),
+            exits=ExitsCfg(
+                regime_flip=_bool(cfg, "signals.exits.regime_flip", True),
+                momentum_fade=_bool(cfg, "signals.exits.momentum_fade", True),
+                mean_rev=_bool(cfg, "signals.exits.mean_rev", True),
+                regime_flip_short=_bool(cfg, "signals.exits.regime_flip_short", True),
+                short_cover_pop=_bool(cfg, "signals.exits.short_cover_pop", True),
+                short_cover_oversold=_bool(cfg, "signals.exits.short_cover_oversold", True)),
+            hard_to_borrow_list=_node(cfg, "signals.hard_to_borrow_list", []) or [],
+            require_trigger_bar_up=_bool(cfg, "signals.require_trigger_bar_up", False)),
         raw=cfg,
     )

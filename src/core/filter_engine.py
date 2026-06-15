@@ -177,10 +177,10 @@ class FilterEngine:
         return index
 
     def _load_sector_map(self) -> dict[str, str | None]:
-        sg = self._cfg.get("signals", {}).get("sector_gate", {})
-        if not sg.get("enabled", False):
+        sg = self.cfg.signals.sector_gate
+        if not sg.enabled:
             return {}
-        map_path = sg.get("sector_map_path", "config/sector_map.yaml")
+        map_path = sg.sector_map_path
         path = Path(map_path)
         if not path.exists():
             logger.warning("sector map not found at %s — sector gate disabled", path)
@@ -407,10 +407,9 @@ class FilterEngine:
         prev = df.iloc[-2]
 
         # 4b. gap risk filter
-        gr = self._cfg.get("signals", {}).get("gap_risk", {})
-        if gr.get("enabled", False):
-            max_range = gr.get("max_prev_bar_range_atr",
-                                DEFAULTS.get("filters.signals.gap_risk.max_prev_bar_range_atr"))
+        gr = self.cfg.signals.gap_risk
+        if gr.enabled:
+            max_range = gr.max_prev_bar_range_atr
             prev_range = prev["high"] - prev["low"]
             if prev_range > max_range * prev["atr"]:
                 return self._fail_result(
@@ -419,8 +418,8 @@ class FilterEngine:
                 )
 
         # 4c. sector-relative strength gate
-        sg = self._cfg.get("signals", {}).get("sector_gate", {})
-        if sg.get("enabled", False):
+        sg = self.cfg.signals.sector_gate
+        if sg.enabled:
             ok, reason = self._sector_strength_ok(ticker, market_dfs)
             if not ok:
                 return self._fail_result(reason, regime, ticker_trend)
@@ -438,8 +437,7 @@ class FilterEngine:
         # availability. Symbols listed in ``signals.hard_to_borrow_list``
         # cannot be shorted. No effect on longs or when the list is absent.
         if direction == "short":
-            htb = self._cfg.get("signals", {}).get("hard_to_borrow_list", []) or []
-            if ticker in set(htb):
+            if ticker in set(self.cfg.signals.hard_to_borrow_list):
                 return self._fail_result(
                     f"{ticker} on hard-to-borrow list; short entry blocked",
                     regime, ticker_trend,
@@ -450,7 +448,7 @@ class FilterEngine:
         # bars (-12.9R, 26% of all stop damage). All fired on red bars
         # (close < open). Require trigger-bar close ≥ open before queuing
         # the T+1 entry. Cheap gate, no cost when off.
-        if self._cfg.get("signals", {}).get("require_trigger_bar_up", False):
+        if self.cfg.signals.require_trigger_bar_up:
             try:
                 tr_close = float(row["close"])
                 tr_open = float(row["open"])
@@ -496,9 +494,9 @@ class FilterEngine:
         # so it is >= 0.25 == the gate `min`, and the strict `< min` never fires.
         # To actually gate, lower an axis floor below `min` or raise `min` above
         # 0.25 — both BLOCK entries and move the headline, so re-validate first.
-        smg = self._cfg.get("signals", {}).get("size_mult_gate", {})
-        if smg.get("enabled", False):
-            min_mult = float(smg.get("min", DEFAULTS.get("filters.signals.size_mult_gate.min")))
+        smg = self.cfg.signals.size_mult_gate
+        if smg.enabled:
+            min_mult = float(smg.min)
             if regime.size_multiplier < min_mult:
                 return self._fail_result(
                     f"size_mult {regime.size_multiplier:.2f} < gate min {min_mult:.2f}",
@@ -775,10 +773,10 @@ class FilterEngine:
         row = df.iloc[-1]
         prev = df.iloc[-2]
 
-        exit_cfg = self._cfg.get("signals", {}).get("exits", {})
+        exit_cfg = self.cfg.signals.exits
 
         # 1. regime flip — any non-BULL regime triggers exit on a held long
-        if exit_cfg.get("regime_flip", True) and regime.trend != "BULL":
+        if exit_cfg.regime_flip and regime.trend != "BULL":
             return self._exit_result(
                 "regime",
                 f"regime flipped to {regime.trend} — exit held long",
@@ -786,7 +784,7 @@ class FilterEngine:
             )
 
         # 2. momentum fade — see _momentum_fade_exit
-        if exit_cfg.get("momentum_fade", True) and self._momentum_fade_exit(row, prev):
+        if exit_cfg.momentum_fade and self._momentum_fade_exit(row, prev):
             return self._exit_result(
                 "momentum",
                 "momentum fade — exit held long",
@@ -794,7 +792,7 @@ class FilterEngine:
             )
 
         # 3. mean-reversion exit: overbought + macd_hist turning down
-        if exit_cfg.get("mean_rev", True) and self._mean_rev_exit(row, prev):
+        if exit_cfg.mean_rev and self._mean_rev_exit(row, prev):
             return self._exit_result(
                 "mean_reversion",
                 "overbought + momentum down — exit held long",
@@ -1116,21 +1114,21 @@ class FilterEngine:
         ticker_trend = self._ticker_trend(df)
         row = df.iloc[-1]
         prev = df.iloc[-2]
-        exit_cfg = self._cfg.get("signals", {}).get("exits", {})
+        exit_cfg = self.cfg.signals.exits
 
-        if exit_cfg.get("regime_flip_short", True) and regime.trend != "BEAR":
+        if exit_cfg.regime_flip_short and regime.trend != "BEAR":
             return self._exit_short_result(
                 "regime",
                 f"regime flipped to {regime.trend} — cover held short",
                 regime, ticker_trend,
             )
-        if exit_cfg.get("short_cover_pop", True) and self._momentum_pop_exit(row, prev):
+        if exit_cfg.short_cover_pop and self._momentum_pop_exit(row, prev):
             return self._exit_short_result(
                 "momentum",
                 "momentum pop — cover held short",
                 regime, ticker_trend,
             )
-        if exit_cfg.get("short_cover_oversold", True) and self._mean_rev_short_cover(row, prev):
+        if exit_cfg.short_cover_oversold and self._mean_rev_short_cover(row, prev):
             return self._exit_short_result(
                 "mean_reversion",
                 "oversold + momentum up — cover held short",
@@ -1294,11 +1292,7 @@ class FilterEngine:
 
     def _earnings_buffer_days(self) -> int:
         """Return ``events.earnings_buffer_days``, falling back to the class default."""
-        return int(
-            self._cfg.get("events", {}).get(
-                "earnings_buffer_days", self._EARNINGS_BUFFER_DAYS_DEFAULT
-            )
-        )
+        return int(self.cfg.events.earnings_buffer_days)
 
     @staticmethod
     def _rr_ok(entry: float, stop: float, min_rr: float, is_long: bool) -> bool:

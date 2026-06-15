@@ -125,6 +125,37 @@ def test_short_entry_leg_present():
     assert cfg.signals.momentum.short_entry.max_bars_since_cross == 3
 
 
+def test_toggles_and_events_defaults():
+    cfg = parse(_min_cfg())
+    s = cfg.signals
+    assert s.gap_risk.enabled is False
+    assert s.gap_risk.max_prev_bar_range_atr == 3.0
+    assert s.sector_gate.enabled is False
+    assert s.sector_gate.sector_map_path == "config/sector_map.yaml"
+    assert s.size_mult_gate.min == 0.25
+    # exit toggles all default True
+    assert s.exits.regime_flip and s.exits.momentum_fade and s.exits.mean_rev
+    assert s.exits.regime_flip_short and s.exits.short_cover_pop and s.exits.short_cover_oversold
+    assert s.hard_to_borrow_list == []
+    assert s.require_trigger_bar_up is False
+    assert cfg.events.earnings_buffer_days == 5
+
+
+def test_toggle_present_values_win():
+    raw = _min_cfg()
+    raw["signals"]["gap_risk"] = {"enabled": True, "max_prev_bar_range_atr": 2.0}
+    raw["signals"]["exits"] = {"regime_flip": False}   # others fall back to True
+    raw["signals"]["hard_to_borrow_list"] = ["GME"]
+    raw["events"] = {"earnings_buffer_days": 7}
+    cfg = parse(raw)
+    assert cfg.signals.gap_risk.enabled is True
+    assert cfg.signals.gap_risk.max_prev_bar_range_atr == 2.0
+    assert cfg.signals.exits.regime_flip is False
+    assert cfg.signals.exits.momentum_fade is True
+    assert cfg.signals.hard_to_borrow_list == ["GME"]
+    assert cfg.events.earnings_buffer_days == 7
+
+
 def test_config_module_is_a_leaf():
     import core.config as config_mod
     src = Path(config_mod.__file__).read_text(encoding="utf-8")
