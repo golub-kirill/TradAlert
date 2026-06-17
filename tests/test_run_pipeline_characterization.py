@@ -9,7 +9,7 @@ pass over a curated ticker list exercises every branch.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -62,16 +62,16 @@ class _StubEngine:
             return ScanResult(passed=False, reason="filtered")
         return ScanResult(passed=True, reason="ok")
 
-    def market_regime(self, market_dfs, vix_df):
+    def market_regime(self, market_dfs, vix_df, empty_vote_trend="BULL"):
         return MarketRegime(trend="BULL", volatility="NORMAL")
 
     def signal(self, ticker, df, *, market_dfs=None, vix_df=None, earnings_date=None,
-               held_long=False, regime=None, with_checks=False):
+               held_long=False, held_short=False, regime=None, with_checks=False):
         if ticker == "INSUFF":
             raise InsufficientDataError(got=42, need=100)
         if ticker == "SIGRAISE":
             raise RuntimeError("signal boom")
-        if held_long:
+        if held_long or held_short:
             return SignalResult(passed=False, reason="hold")
         return SignalResult(passed=True, direction="long", signal_type="momentum",
                             stop_price=95.0, target_price=120.0,
@@ -100,7 +100,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(main, "get_market_cap", lambda t: 1e9)
     monkeypatch.setattr(main, "get_next_earnings", lambda t: None)
     monkeypatch.setattr(main, "_load_market_context",
-                        lambda tickers: ({"SPY": _df("ok"), "QQQ": _df("ok")}, _df("ok")))
+                        lambda tickers, now=None: ({"SPY": _df("ok"), "QQQ": _df("ok")}, _df("ok")))
     monkeypatch.setattr(main, "load_open_positions",
                         lambda: {"HELD": SimpleNamespace(
                             id=1, side="long", entry_price=100.0,
@@ -115,13 +115,19 @@ def pipeline(monkeypatch):
                         lambda **k: calls["maxhold"].append(k) or False)
     monkeypatch.setattr(main, "_maybe_raise_stop_to_breakeven",
                         lambda ticker, *a, **k: calls["breakeven"].append(ticker))
+    # Freshness guard: no network — refetch is a no-op (can't freshen), live price absent.
+    monkeypatch.setattr(main, "get_or_fetch", lambda *a, **k: None)
+    monkeypatch.setattr(main, "get_live_price", lambda *a, **k: None)
     return calls
 
 
 def test_run_pipeline_branches(pipeline):
     tickers = ["^VIX", "BADCACHE", "BADIND", "FEWROWS", "WARMUP", "SCANRAISE",
                "FILTERED", "INSUFF", "SIGRAISE", "ENTRY", "HELD"]
-    results = main._run_pipeline(tickers, _StubEngine(), settings={})
+    # Inject `now` = post-close of the fixtures' last bar (2025-01-16) so the freshness guard
+    # reads the 12-row fixtures as fresh (LIVE) rather than stale vs the real wall clock.
+    now = datetime(2025, 1, 16, 22, 0, tzinfo=timezone.utc)
+    results = main._run_pipeline(tickers, _StubEngine(), settings={}, now=now)
     by = {r.ticker: r for r in results}
 
     # ^VIX is context-only → no result; every other ticker yields exactly one.
@@ -176,7 +182,7 @@ def test_run_pipeline_empty_when_only_context():
             execution=SimpleNamespace(max_hold_days=None, max_hold_mode="hard"))
 
     saved = (_m._load_market_context, _m.load_open_positions, _m._expected_hold_range)
-    _m._load_market_context = lambda tickers: (None, None)
+    _m._load_market_context = lambda tickers, now=None: (None, None)
     _m.load_open_positions = lambda: {}
     _m._expected_hold_range = lambda engine: (5, 25)
     try:

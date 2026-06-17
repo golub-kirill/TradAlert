@@ -23,16 +23,16 @@ from core.fetchers import info_fetcher, live_price
 # ── behavioral missing-axes key mismatch (#2) ─────────────────────────────────
 
 def test_behavioral_confidence_reflects_present_axis_count():
-    """One axis present → confidence 1/4. Before the fix the short-name mismatch
-    (and positioning logging two entries) drove this to 0.0."""
+    """One of three axes present → confidence 1/3 (sentiment axis purged).
+    Before the original fix the short-name mismatch drove this to 0.0."""
     idx = pd.date_range("2020-01-01", periods=30, freq="D")
     breadth = pd.DataFrame({"pct_above_ma200": [80.0] * 30}, index=idx)
     spy = pd.DataFrame({"open": 95.0, "high": 100.0, "low": 90.0, "close": 95.0}, index=idx)
 
     st = classify_behavioral_state({"breadth": breadth}, settings={}, spy_df=spy, as_of=None)
 
-    assert st.confidence == 0.25
-    assert set(st.missing_axes) == {"sector_cycle", "positioning_state", "sentiment_state"}
+    assert st.confidence == 0.3333
+    assert set(st.missing_axes) == {"sector_cycle", "positioning_state"}
 
 
 def test_behavioral_all_missing_confidence_non_negative():
@@ -40,7 +40,7 @@ def test_behavioral_all_missing_confidence_non_negative():
     st = classify_behavioral_state({}, settings={}, spy_df=None, as_of=None)
     assert st.confidence == 0.0
     assert set(st.missing_axes) == {
-        "breadth_state", "sector_cycle", "positioning_state", "sentiment_state"}
+        "breadth_state", "sector_cycle", "positioning_state"}
 
 
 def test_behavioral_partial_positioning_not_marked_missing():

@@ -812,9 +812,15 @@ class FilterEngine:
             self,
             market_dfs: dict[str, pd.DataFrame] | None,
             vix_df: pd.DataFrame | None,
+            empty_vote_trend: TrendState = "BULL",
     ) -> MarketRegime:
-        """Public wrapper around ``_market_regime`` for standalone callers."""
-        return self._market_regime(market_dfs, vix_df)
+        """Public wrapper around ``_market_regime`` for standalone callers.
+
+        ``empty_vote_trend`` is forwarded to the classifier — the live scanner
+        passes ``CHOP`` so unreadable index frames fail safe; the default
+        ``BULL`` keeps the backtest byte-identical (see ``classify_market_regime``).
+        """
+        return self._market_regime(market_dfs, vix_df, empty_vote_trend)
 
     # ── private — regime classifier ──────────────────────────────────────────
 
@@ -822,10 +828,11 @@ class FilterEngine:
             self,
             market_dfs: dict[str, pd.DataFrame] | None,
             vix_df: pd.DataFrame | None,
+            empty_vote_trend: TrendState = "BULL",
     ) -> MarketRegime:
         """Delegate to the pure classifier in ``core.regime``
         (``classify_market_regime``) with this engine's config."""
-        return classify_market_regime(self.cfg, market_dfs, vix_df)
+        return classify_market_regime(self.cfg, market_dfs, vix_df, empty_vote_trend)
 
     # ── private — ticker trend classifier ────────────────────────────────────
 

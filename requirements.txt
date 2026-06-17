@@ -8,6 +8,9 @@ pandas
 numpy
 pyarrow
 
+# Exchange trading-day calendars (live data-freshness guards: partial-bar drop, staleness)
+pandas_market_calendars
+
 # Market data
 yfinance
 

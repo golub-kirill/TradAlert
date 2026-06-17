@@ -94,6 +94,7 @@ def classify_market_regime(
         cfg: "EngineConfig",
         market_dfs: dict[str, pd.DataFrame] | None,
         vix_df: pd.DataFrame | None,
+        empty_vote_trend: TrendState = "BULL",
 ) -> MarketRegime:
     """
     Classify the broad market on trend and volatility.
@@ -105,7 +106,16 @@ def classify_market_regime(
         ``regime.index_symbols`` (default ``[SPY, QQQ]``) vs each
         ``MA(trend.ma_fast)``. With ``require_all_indices=true``: BULL
         iff all > MA, BEAR iff all < MA, else CHOP. Otherwise majority
-        vote. Empty/missing ``market_dfs`` → trend defaults to BULL.
+        vote. Missing/empty ``market_dfs`` → CHOP (blocks new entries).
+
+    ``empty_vote_trend``
+        Trend to return when index frames are PRESENT but no symbol has
+        enough bars to vote (``total_votes == 0``). Defaults to ``BULL``,
+        which is a benign warm-up artifact in the backtester (the first
+        sessions have too few index bars sliced in) — keeping it BULL holds
+        the backtest byte-identical. The LIVE scanner passes ``CHOP`` so a
+        cache wipe / partial rebuild fails safe (blocks entries) instead of
+        opening longs on an unreadable regime.
 
     Volatility
         VIX close vs ``regime.vix_low`` / ``regime.vix_high``. None
@@ -173,7 +183,16 @@ def classify_market_regime(
     total_votes = votes_up + votes_dn
     trend: TrendState
     if total_votes == 0:
-        trend = "BULL"
+        # Index frames are present but unreadable (no symbol has ma_period bars).
+        # Live passes CHOP to fail safe; the backtester keeps the BULL default
+        # (warm-up artifact only — see empty_vote_trend in the docstring).
+        trend = empty_vote_trend
+        if empty_vote_trend != "BULL":
+            logger.error(
+                "market_regime: index frames present but too short (< %d bars) "
+                "— defaulting to %s to block new entries.",
+                ma_period, empty_vote_trend,
+            )
     elif require_all:
         if votes_up == total_votes:
             trend = "BULL"

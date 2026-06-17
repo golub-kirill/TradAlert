@@ -114,6 +114,20 @@ def get_calendar_events(
         events = [e for e in events if e.category.upper() in whitelist]
 
     events.sort(key=lambda e: e.date)
+
+    # Loudly flag an exhausted calendar: the hard-coded fallback ends 2026-12-31,
+    # so from 2027 onward (absent a config/macro_calendar.yaml refresh) every
+    # event is in the past and the entry-side event-risk gate silently goes dark.
+    today = date.today()
+    if not events:
+        logger.warning("[calendar] no macro events available — the event-risk "
+                       "gate is DARK; add config/macro_calendar.yaml.")
+    elif max(e.date for e in events) < today:
+        logger.warning(
+            "[calendar] all %d macro events are in the past (latest %s) — the "
+            "event-risk gate is DARK; refresh config/macro_calendar.yaml or "
+            "extend the hard-coded list.", len(events), max(e.date for e in events))
+
     return events
 
 

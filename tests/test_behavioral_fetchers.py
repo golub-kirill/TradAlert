@@ -120,34 +120,6 @@ def test_cot_normalise_no_exact_match_keeps_all():
     assert df["lev_net"].iloc[0] == -1
 
 
-# ─── aaii.py ─────────────────────────────────────────────────────────────────
-
-
-def test_aaii_fail_open(tmp_path: Path):
-    from core.fetchers.behavioral.aaii import fetch_aaii
-    df = fetch_aaii(data_dir=tmp_path)
-    # No network in sandbox → empty DataFrame, never raises.
-    assert isinstance(df, pd.DataFrame)
-
-
-def test_aaii_reads_cache(tmp_path: Path):
-    """Pre-populate parquet + meta; fetch returns cached data."""
-    from core.fetchers.behavioral.aaii import fetch_aaii
-    # Build a minimal cache.
-    cached = pd.DataFrame(
-        {"bullish": [0.4, 0.42], "bearish": [0.3, 0.28], "spread": [0.1, 0.14]},
-        index=pd.to_datetime(["2026-05-20", "2026-05-27"]),
-    )
-    cached.index.name = "date"
-    parquet = tmp_path / "aaii.parquet"
-    meta = tmp_path / "aaii.meta.json"
-    cached.to_parquet(parquet)
-    meta.write_text(json.dumps({"fetched_at": "2026-05-27T00:00:00"}))
-    df = fetch_aaii(data_dir=tmp_path)
-    assert not df.empty
-    assert "spread" in df.columns
-
-
 # ─── naaim.py ────────────────────────────────────────────────────────────────
 
 
@@ -171,6 +143,32 @@ def test_naaim_reads_cache(tmp_path: Path):
     df = fetch_naaim(data_dir=tmp_path)
     assert not df.empty
     assert "exposure" in df.columns
+
+
+class _Resp:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+def test_naaim_rejects_out_of_range_scrape(monkeypatch):
+    # A 3-digit number lifted off the page (e.g. an unrelated "999") must be
+    # rejected, not cached as an exposure reading (audit M2).
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Exposure Index: 999"))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value is None
+
+
+def test_naaim_accepts_in_range_scrape(monkeypatch):
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Exposure Index: 87.5"))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value == 87.5
 
 
 if __name__ == "__main__":

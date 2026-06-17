@@ -13,6 +13,7 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +31,13 @@ if str(_SRC) not in sys.path:
 # Load secrets.env before any module that reads os.environ.
 load_dotenv(Path(__file__).parent / "config" / "secrets.env")
 
-from persistence.cache import load as cache_load  # noqa: E402
+from persistence.cache import load as cache_load, get_or_fetch  # noqa: E402
 from core.indicators.chart import chart  # noqa: E402
+from core.freshness import (  # noqa: E402
+    drop_unclosed_bar, exchange_for, overnight_gap, sessions_behind,
+)
+from core.fetchers.live_price import get_live_price  # noqa: E402
+from core.fetchers.yf_fetchOne import fetch as _fetch_one  # noqa: E402
 from persistence.db import save_scan_run, save_scan_results  # noqa: E402
 from core.filter_engine import FilterEngine, GateCheck, ScanResult, SignalResult  # noqa: E402
 from core.types import TickerResult  # noqa: E402
@@ -166,6 +172,13 @@ def main() -> None:
             behavioral_data = fetch_all_behavioral(_SETTINGS, force=args.force)
             if behavioral_data:
                 from core.behavioral import classify_behavioral_state
+                # LIVE staleness guard: drop feeds whose data-date is older than
+                # behavioral.stale_window_days so a month-old cache degrades the
+                # axis to missing (confidence falls) instead of sizing on it.
+                stale_days = float(
+                    (settings.get("behavioral", {}) or {}).get("stale_window_days", 14))
+                behavioral_data = _drop_stale_behavioral(
+                    behavioral_data, datetime.now(timezone.utc), stale_days)
                 behavioral_state = classify_behavioral_state(
                     behavioral_data, settings=settings)
                 logger.info("[behavioral] score=%.2f confidence=%.0f%%",
@@ -236,7 +249,7 @@ def main() -> None:
     elapsed = time.perf_counter() - t0
 
     # ── 7. persist ────────────────────────────────────────────────────────────
-    _save_scan(fetch_summary, results, forced=args.force)
+    _save_scan(fetch_summary, results, forced=args.force, settings=settings)
 
     # ── 8. report ─────────────────────────────────────────────────────────────
     _print_report(fetch_summary, results, total_seconds=elapsed, settings=settings)
@@ -289,24 +302,27 @@ def _expected_hold_range(engine) -> tuple[int, int]:
         return expected_hold_range(cap=cap)
     except Exception as exc:
         logging.getLogger(__name__).debug("expected-hold range fell back — %s", exc)
-        return (max(1, round(cap * 0.4)), cap)
+        # Same research ratios as expected_hold_range's own fallback (cap 25 ≈ 3–14d).
+        return (max(1, round(cap * 0.12)), max(1, round(cap * 0.56)))
 
 
 def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> float | None:
-    """Raise a held long's stop to breakeven once its best excursion since entry
+    """Move a held position's stop to breakeven once its best excursion since entry
     reaches ``execution.breakeven_trigger_r`` — the live half of the rule the
     backtester applies in ``_apply_dynamic_stop`` (shared decision:
     ``core.exits.breakeven_stop_level``; ADR-004).
 
-    Returns the new stop level when the position's stop was raised, else None.
-    The stop only ever moves UP and ``initial_stop`` is never touched (it stays
-    the R denominator for reconciliation). Idempotent across daily scans: once
-    the stop sits at/above the breakeven level this is a no-op. Fail-open —
-    any error logs a warning and never blocks the scan.
+    A long stop ratchets UP to (around) entry, a short stop ratchets DOWN — in
+    both directions the position's risk drops to ~0 without capping the upside.
+    Returns the new stop level when the stop moved, else None. ``initial_stop`` is
+    never touched (it stays the R denominator for reconciliation). Idempotent
+    across daily scans: once the stop sits at/beyond breakeven this is a no-op.
+    Fail-open — any error logs a warning and never blocks the scan.
     """
     logger = logging.getLogger(__name__)
     trigger = exec_cfg.breakeven_trigger_r
-    if not trigger or position is None or position.side != "long":
+    side = position.side if position is not None else None
+    if not trigger or side not in ("long", "short"):
         return None
     try:
         entry = float(position.entry_price)
@@ -316,42 +332,55 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
             else position.stop_price
         if init_stop is None:
             return None
-        risk = entry - float(init_stop)
+        init_stop = float(init_stop)
+        # Risk is the entry→initial-stop distance; the short stop sits ABOVE entry.
+        risk = (entry - init_stop) if side == "long" else (init_stop - entry)
         if risk <= 0:
             return None
         entry_pos = int(df.index.searchsorted(pd.Timestamp(position.entry_date)))
         if entry_pos >= len(df):
             return None
-        # Entry bar inclusive — matches the backtester's update_excursion.
-        mfe_r = (float(df["high"].iloc[entry_pos:].max()) - entry) / risk
+        # Best favorable excursion since entry (entry bar inclusive — matches the
+        # backtester's update_excursion): highest high for a long, lowest low for
+        # a short.
+        if side == "long":
+            mfe_r = (float(df["high"].iloc[entry_pos:].max()) - entry) / risk
+        else:
+            mfe_r = (entry - float(df["low"].iloc[entry_pos:].min())) / risk
         buffer = exec_cfg.breakeven_buffer_atr
         atr = None
         if buffer:
             _atr = df["atr"].iloc[-1] if "atr" in df.columns else None
             atr = float(_atr) if _atr is not None and pd.notna(_atr) else None
         new_stop = breakeven_stop_level(
-            side="long", entry_price=entry, atr=atr,
+            side=side, entry_price=entry, atr=atr,
             breakeven_trigger_r=float(trigger),
             breakeven_buffer_atr=float(buffer) if buffer else None,
-            prev_stop=position.stop_price, initial_stop=float(init_stop),
+            prev_stop=position.stop_price, initial_stop=init_stop,
             mfe_r=mfe_r,
         )
         if new_stop is None:
             return None
         current = position.stop_price
-        if current is not None and new_stop <= float(current):
-            return None  # already at/above breakeven — nothing to do
+        if current is not None:
+            current = float(current)
+            # Long stop only moves up; short stop only moves down. No-op once the
+            # stop already sits at/beyond breakeven.
+            if side == "long" and new_stop <= current:
+                return None
+            if side == "short" and new_stop >= current:
+                return None
         from core.position_manager import update_stop
         if not update_stop(position.id, float(new_stop)):
             logger.warning("[%s] breakeven stop update did not apply (id=%s)",
                            ticker, position.id)
             return None
-        logger.info("[%s] stop raised to breakeven %.4f (MFE %.2fR ≥ %.2gR trigger)",
+        logger.info("[%s] stop moved to breakeven %.4f (MFE %.2fR ≥ %.2gR trigger)",
                     ticker, new_stop, mfe_r, float(trigger))
         try:
             from core.telegram.push import send_notice
             send_notice(
-                f"🔒 {ticker}: stop raised to breakeven {new_stop:.2f} "
+                f"🔒 {ticker}: stop moved to breakeven {new_stop:.2f} "
                 f"(entry {entry:.2f}, best excursion {mfe_r:+.2f}R ≥ "
                 f"{float(trigger):g}R trigger). Risk on this position is now ~0.",
                 settings,
@@ -403,6 +432,7 @@ def _run_pipeline(
         macro_state: object | None = None,
         behavioral_state: object | None = None,
         rp_ranks: dict[str, float] | None = None,
+        now: datetime | None = None,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal for every fetched ticker.
@@ -437,9 +467,12 @@ def _run_pipeline(
     logger = logging.getLogger(__name__)
     results: list[TickerResult] = []
     settings = settings or {}
+    # One wall-clock stamp per scan → consistent freshness verdicts across tickers
+    # (injectable so tests run the guards against their fixtures' dates, not real now).
+    now = now or datetime.now(timezone.utc)
 
     # ── load market context and open positions once per run ──────────────────
-    market_dfs, vix_df = _load_market_context(tickers)
+    market_dfs, vix_df = _load_market_context(tickers, now=now)
     positions = load_open_positions()  # {ticker: Position}
     # Live open-risk budget (NORTH STAR): the validated portfolio caps aggregate
     # risk at max_open_risk and sizes each entry by size_mult. The scanner is an
@@ -461,9 +494,70 @@ def _run_pipeline(
             max_open_risk=max_open_risk, expected_hold=expected_hold,
             settings=settings, macro_state=macro_state,
             behavioral_state=behavioral_state, rp_ranks=rp_ranks,
+            now=now,
         ))
 
     return results
+
+
+def _ensure_fresh(ticker: str, df: pd.DataFrame, now: datetime) -> tuple[pd.DataFrame, int]:
+    """LIVE-only data-freshness guard: drop any unclosed current-day bar, then — if the data
+    is still behind the last completed exchange session — force ONE refetch (refetch-first).
+
+    Returns ``(df, stale_sessions)``. ``stale_sessions >= 1`` means the refetch could not
+    freshen the data, so a fire from it must be reviewed, not LIVE. Fail-open (never raises).
+    The backtester never calls this — it replays completed EOD bars by construction.
+    """
+    logger = logging.getLogger(__name__)
+    exch = exchange_for(ticker)
+    df = drop_unclosed_bar(df, now, exch)
+    if len(df) == 0:
+        return df, 0
+    behind = sessions_behind(df.index[-1].date(), now, exch)
+    if behind >= 1:
+        try:
+            fresh = get_or_fetch(ticker, _fetch_one, force=True)
+            if fresh is not None and len(fresh):
+                fresh = drop_unclosed_bar(fresh, now, exch)
+                if len(fresh):
+                    df = fresh
+                    behind = sessions_behind(df.index[-1].date(), now, exch)
+        except Exception as exc:
+            logger.warning("[%s] stale-refetch failed (%d session(s) behind) — %s",
+                           ticker, behind, exc)
+    return df, behind
+
+
+def _mark_review(ticker: str, signal: SignalResult, scan: ScanResult,
+                 stale_sessions: int) -> None:
+    """Downgrade a fired ENTRY to NEEDS_REVIEW (not LIVE) when its data is stale-after-refetch,
+    the overnight/weekend gap breaches 2×ATR, or the gap could not be verified at all (no live
+    quote). Mutates ``signal.tier``/``review_reason`` in place. The live price is fetched only
+    for a fired entry with a valid close/ATR — cheap and fail-open (a missing live price never
+    fabricates a breach, but it does flag the fire for review since the gap is unknown)."""
+    logger = logging.getLogger(__name__)
+    reasons: list[str] = []
+    if stale_sessions >= 1:
+        reasons.append(f"stale {stale_sessions} session" + ("s" if stale_sessions > 1 else ""))
+    close, atr = scan.close, scan.atr
+    if close and atr and close > 0 and atr > 0:
+        try:
+            live = get_live_price(ticker)
+        except Exception:
+            live = None
+        if live is None:
+            # No quote → the overnight/weekend gap is unknowable. Don't fabricate a
+            # breach, but don't ship a blind LIVE alert either: flag it for review.
+            logger.warning("[%s] no live quote — overnight gap unverified; "
+                           "marking NEEDS_REVIEW", ticker)
+            reasons.append("gap unverified — no live quote")
+        else:
+            gap, _pct, breached = overnight_gap(live, close, atr, atr_mult=2.0)
+            if breached:
+                reasons.append(f"gap {abs(gap) / atr:.1f}×ATR")
+    if reasons:
+        signal.tier = "NEEDS_REVIEW"
+        signal.review_reason = " · ".join(reasons)
 
 
 def _process_ticker(
@@ -479,6 +573,7 @@ def _process_ticker(
         macro_state: object | None,
         behavioral_state: object | None,
         rp_ranks: dict[str, float] | None,
+        now: datetime | None = None,
 ) -> TickerResult:
     """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
 
@@ -490,6 +585,12 @@ def _process_ticker(
     logger = logging.getLogger(__name__)
     held_position = positions.get(ticker)
     held_long = held_position is not None and held_position.side == "long"
+    held_short = held_position is not None and held_position.side == "short"
+    # Direction-neutral handles so the held-position branches below cover shorts
+    # too (the backtester and telegram_bot already pass held_short — this closes
+    # the live divergence). held_side is None for an unheld ticker (entry path).
+    held_side = "long" if held_long else "short" if held_short else None
+    held_exit_dir = "exit_long" if held_long else "exit_short" if held_short else None
 
     # ── 1. load cache ─────────────────────────────────────────────────────
     try:
@@ -500,6 +601,19 @@ def _process_ticker(
             ticker=ticker,
             scan=ScanResult(passed=False, reason="cache load failed"),
             error=str(exc),
+        )
+
+    # ── 1b. live data-freshness guard (drop partial bar; refetch-first on stale) ──
+    # LIVE path only — the backtester never reaches here. stale_sessions carries to the
+    # fire below: a stale-after-refetch (or gapped) entry is downgraded to NEEDS_REVIEW.
+    now = now or datetime.now(timezone.utc)
+    df, stale_sessions = _ensure_fresh(ticker, df, now)
+    if len(df) == 0:
+        reason = "no completed sessions after freshness trim"
+        logger.warning("[%s] skipping — %s", ticker, reason)
+        return TickerResult(
+            ticker=ticker,
+            scan=ScanResult(passed=False, reason=reason),
         )
 
     # ── 2. attach indicators ──────────────────────────────────────────────
@@ -556,18 +670,18 @@ def _process_ticker(
     # Held positions always proceed to signal evaluation regardless of
     # scan outcome — we need to know whether to exit even if liquidity
     # or ATR ranges drifted out of the scan window.
-    if not scan.passed and not held_long:
+    if not scan.passed and held_side is None:
         logger.debug("[%s] scan filtered — %s", ticker, scan.reason)
         return TickerResult(ticker=ticker, scan=scan)
 
     logger.debug("[%s] %s%s", ticker,
-                 "HELD " if held_long else "",
+                 "HELD " if held_side else "",
                  "scan PASSED" if scan.passed else "scan filtered (held → proceed)")
 
     # ── 7. signal ─────────────────────────────────────────────────────────
     # Earnings buffer only applies to entries; exits skip the fetch.
     earnings_date = None
-    if not held_long:
+    if held_side is None:
         try:
             earnings_date = get_next_earnings(ticker)
         except Exception as exc:
@@ -575,8 +689,11 @@ def _process_ticker(
                            ticker, exc)
 
     try:
-        # Compute and enrich regime BEFORE signal() so behavioral gate applies
-        regime = engine.market_regime(market_dfs, vix_df)
+        # Compute and enrich regime BEFORE signal() so behavioral gate applies.
+        # Live passes empty_vote_trend="CHOP": if the index caches are present but
+        # unreadable (wipe / partial rebuild) the scanner blocks entries instead
+        # of opening longs on a fail-open BULL.
+        regime = engine.market_regime(market_dfs, vix_df, empty_vote_trend="CHOP")
         if macro_state is not None or behavioral_state is not None:
             from dataclasses import replace
             regime = replace(
@@ -591,6 +708,7 @@ def _process_ticker(
             vix_df=vix_df,
             earnings_date=earnings_date,
             held_long=held_long,
+            held_short=held_short,
             regime=regime,
             with_checks=True,
         )
@@ -614,11 +732,11 @@ def _process_ticker(
 
     # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
     # Keep the live feed in step with the backtester's swing-horizon cap
-    # (ADR-001): force an exit on a held long that has reached the cap and —
-    # in if_not_profit mode — is not in profit. Shares core.exits with the
-    # backtester so live and backtest never diverge. Engine exits take
-    # precedence (we only override a non-exit signal).
-    if held_long and held_position is not None and signal.direction != "exit_long":
+    # (ADR-001): force an exit on a held position (long or short) that has
+    # reached the cap and — in if_not_profit mode — is not in profit. Shares
+    # core.exits with the backtester so live and backtest never diverge. Engine
+    # exits take precedence (we only override a non-exit signal).
+    if held_side and held_position is not None and signal.direction != held_exit_dir:
         _exec = engine.cfg.execution
         _mh_days = _exec.max_hold_days
         if _mh_days is not None:
@@ -627,12 +745,12 @@ def _process_ticker(
             if max_hold_exit_due(
                     bars_held=(len(df) - 1) - _entry_pos,
                     current_close=float(df["close"].iloc[-1]),
-                    entry_price=held_position.entry_price, side="long",
+                    entry_price=held_position.entry_price, side=held_side,
                     max_hold_days=int(_mh_days), mode=_mh_mode):
                 logger.info("[%s] max-hold time-stop exit (%d bars, %s)",
                             ticker, int(_mh_days), _mh_mode)
                 signal = SignalResult(
-                    passed=True, direction="exit_long", signal_type="time_stop",
+                    passed=True, direction=held_exit_dir, signal_type="time_stop",
                     market_regime=signal.market_regime,
                     ticker_trend=signal.ticker_trend,
                     reason=f"max-hold {int(_mh_days)} bars reached "
@@ -641,10 +759,11 @@ def _process_ticker(
 
     # ── 7c. live breakeven stop ───────────────────────────────────────────
     # Mirror of the backtester's _apply_dynamic_stop breakeven rule
-    # (core.exits.breakeven_stop_level, ADR-004): once a held long's best
-    # excursion reaches the trigger, raise positions.stop_price to entry.
-    # Skipped when the position is exiting this scan anyway. Fail-open.
-    if held_long and held_position is not None and signal.direction != "exit_long":
+    # (core.exits.breakeven_stop_level, ADR-004): once a held position's best
+    # excursion reaches the trigger, move positions.stop_price to entry (up for
+    # a long, down for a short). Skipped when the position is exiting this scan
+    # anyway. Fail-open.
+    if held_side and held_position is not None and signal.direction != held_exit_dir:
         _maybe_raise_stop_to_breakeven(
             ticker, df, held_position,
             engine.cfg.execution, settings,
@@ -656,6 +775,8 @@ def _process_ticker(
         # Entries only — exits don't display a hold horizon.
         if signal.direction in ("long", "short"):
             signal.expected_hold_days = expected_hold
+            # Downgrade to NEEDS_REVIEW if the data was stale-after-refetch or gapped > 2×ATR.
+            _mark_review(ticker, signal, scan, stale_sessions)
 
         # Collect historical signals for chart overlay
         hist_signals = []
@@ -702,9 +823,16 @@ def _process_ticker(
 
 def _load_market_context(
         succeeded: list[str],
+        now: datetime | None = None,
 ) -> tuple[dict[str, pd.DataFrame] | None, pd.DataFrame | None]:
     """
     Load SPY/QQQ (regime trend) and ^VIX (volatility) from cache.
+
+    LIVE-only freshness: each context frame has any unclosed current-day bar
+    dropped (``drop_unclosed_bar``) so the regime is classified on completed
+    sessions only — an intraday/catch-up run never reads a partial index bar.
+    The per-ticker path already does this via ``_ensure_fresh``; the backtester
+    never calls this (it slices frames point-in-time with ``.loc[:D]``).
 
     Returns
     -------
@@ -712,6 +840,7 @@ def _load_market_context(
     vix_df     : VIX OHLCV, or None when absent/failed.
     """
     logger = logging.getLogger(__name__)
+    now = now or datetime.now(timezone.utc)
 
     market_dfs: dict[str, pd.DataFrame] = {}
     for sym in _REGIME_INDICES:
@@ -719,14 +848,15 @@ def _load_market_context(
             logger.warning("Regime index %s not in fetched tickers", sym)
             continue
         try:
-            market_dfs[sym] = cache_load(sym)
+            market_dfs[sym] = drop_unclosed_bar(cache_load(sym), now, exchange_for(sym))
         except Exception as exc:
             logger.warning("Failed to load regime index %s — %s", sym, exc)
 
     vix_df: pd.DataFrame | None = None
     if _VIX_SYMBOL in succeeded:
         try:
-            vix_df = cache_load(_VIX_SYMBOL)
+            vix_df = drop_unclosed_bar(
+                cache_load(_VIX_SYMBOL), now, exchange_for(_VIX_SYMBOL))
         except Exception as exc:
             logger.warning("Failed to load %s — %s", _VIX_SYMBOL, exc)
     else:
@@ -743,6 +873,43 @@ def _load_market_context(
         )
 
     return (market_dfs or None), vix_df
+
+
+def _feed_last_date(df) -> "pd.Timestamp | None":
+    """Last timestamp of a feed frame (tz-stripped), or None for an empty frame
+    or a non-datetime index."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    idx = df.index
+    if not isinstance(idx, pd.DatetimeIndex) or len(idx) == 0:
+        return None
+    last = idx[-1]
+    return last.tz_localize(None) if last.tzinfo is not None else last
+
+
+def _drop_stale_behavioral(data: dict, now: datetime, stale_days: float) -> dict:
+    """LIVE-only: drop behavioral feeds whose latest data-date is more than
+    ``stale_days`` behind ``now`` so the classifier treats that axis as MISSING
+    (confidence falls) instead of sizing on month-old data. Returns a new dict of
+    the fresh feeds and WARNs once per dropped feed. The backtester never calls
+    this — it slices each feed point-in-time via ``as_of``."""
+    if not data or stale_days <= 0:
+        return data
+    logger = logging.getLogger(__name__)
+    now_naive = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    cutoff = pd.Timestamp(now_naive) - pd.Timedelta(days=stale_days)
+    fresh: dict = {}
+    for key, df in data.items():
+        last = _feed_last_date(df)
+        if last is not None and last < cutoff:
+            logger.warning(
+                "[behavioral] feed %r STALE — last data %s, > %g days old; "
+                "dropping (axis treated as missing, confidence falls).",
+                key, last.date(), stale_days,
+            )
+            continue
+        fresh[key] = df
+    return fresh
 
 
 def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -776,6 +943,7 @@ def _save_scan(
         fetch_summary: FetchSummary,
         results: list[TickerResult],
         forced: bool,
+        settings: dict | None = None,
 ) -> None:
     """
     Persist one scan_runs row + scan_results rows.
@@ -812,7 +980,23 @@ def _save_scan(
     )
 
     if run_id:
-        save_scan_results(run_id, results)
+        # POLICY: every scan must leave data for live reconciliation. A run_id
+        # without the matching result rows (e.g. a missing scan_results column)
+        # is just as blinding as no journal at all — surface a short insert
+        # loudly instead of letting save_scan_results fail open in silence.
+        inserted = save_scan_results(run_id, results)
+        if results and inserted != len(results):
+            msg = (f"Scan journal INCOMPLETE — {inserted}/{len(results)} rows "
+                   f"written for run_id={run_id}. Live reconciliation will be "
+                   f"blind to the missing fires; check the scan_results schema "
+                   f"(tier/review_reason columns) and the DB error log.")
+            print(f"  ⚠  {msg}")
+            try:
+                from core.telegram.push import send_notice
+                send_notice(f"⚠️ TradAlert: {msg}", settings or {})
+            except Exception as exc:
+                logging.getLogger(__name__).debug(
+                    "journal-incomplete notice skipped — %s", exc)
     else:
         # POLICY: every scan must leave data for live reconciliation. Make a
         # skipped journal loud rather than silent so the operator notices.
@@ -922,6 +1106,16 @@ def _print_report(
                    if r.signal is not None and r.signal.direction == "exit_short"]
     errors = [r for r in results if r.error]
 
+    # NEEDS_REVIEW: fired entries whose data was stale-after-refetch or gapped > 2×ATR — pulled
+    # into their own section (below). None flagged (the common post-close case) → the entries
+    # lists are unchanged → byte-identical baseline report.
+    review = [r for r in entries + short_entries
+              if r.signal is not None and r.signal.tier == "NEEDS_REVIEW"]
+    entries = [r for r in entries
+               if r.signal is not None and r.signal.tier != "NEEDS_REVIEW"]
+    short_entries = [r for r in short_entries
+                     if r.signal is not None and r.signal.tier != "NEEDS_REVIEW"]
+
     divider = "─" * 72
 
     logger.info(divider)
@@ -989,6 +1183,23 @@ def _print_report(
                 float(s.size_mult), s.stop_price, s.target_price,
                 s.min_rr, s.market_regime, s.ticker_trend,
                 "  ⚠over-budget" if budget_full else "",
+            )
+
+    # ── needs review (stale / gapped data — verify before acting) ───────────────
+    if review:
+        logger.info(divider)
+        logger.info("⚠ NEEDS REVIEW  %d alert(s) — data freshness, verify before acting",
+                    len(review))
+        for r in review:
+            s = r.signal
+            assert s is not None  # filtered by review comprehension
+            arrow = "▼" if s.direction == "short" else "▲"
+            logger.info(
+                "  %s %-10s  %-15s  size=%.2fx  stop=%-10.4f  target=%-10.4f"
+                "  R:R≥%.1f  %s / %s  [%s]",
+                arrow, r.ticker, s.signal_type,
+                float(s.size_mult), s.stop_price, s.target_price,
+                s.min_rr, s.market_regime, s.ticker_trend, s.review_reason,
             )
 
     # ── exits ─────────────────────────────────────────────────────────────────

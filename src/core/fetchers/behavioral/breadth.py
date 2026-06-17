@@ -23,6 +23,7 @@ from core.paths import BEHAVIORAL_DIR
 
 import pandas as pd
 
+from core.fetchers import cache_meta
 from core.fetchers.sp500_constituents import get_sp500_constituents
 from persistence.cache import load as cache_load
 
@@ -179,10 +180,22 @@ def _write_meta(meta_path: Path) -> None:
     meta_path.write_text(json.dumps(meta))
 
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
+    """Serve the cached parquet (fail-open) when a fresh read fails, but WARN with
+    the cache age when it is past the staleness window — an unbounded-stale cache
+    must not masquerade as a fresh feed (mirrors the macro fetchers)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_hours * 3600:
+                logger.warning(
+                    "[breadth] serving STALE cache for %s — %.1f h old (> %g h "
+                    "window); fresh read failed, value may be outdated.",
+                    parquet_path.stem, age / 3600.0, staleness_hours,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[breadth] cached parquet read failed at %s: %s", parquet_path, exc)
     return pd.DataFrame()

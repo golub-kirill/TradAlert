@@ -33,3 +33,17 @@ def test_zero_interval_is_a_noop(monkeypatch):
     monkeypatch.setattr(http.time, "sleep",
                         lambda s: (_ for _ in ()).throw(AssertionError("slept")))
     lim.wait()  # must not sleep
+
+
+def test_get_rate_limiter_shares_one_instance_per_key():
+    # Same key + interval → the SAME limiter, so concurrent EDGAR/feed callers
+    # actually share the throttle instead of each getting a private one.
+    a = http.get_rate_limiter("edgar-test", 0.5)
+    b = http.get_rate_limiter("edgar-test", 0.5)
+    assert a is b
+    # A different key is a different limiter.
+    assert http.get_rate_limiter("other-test", 0.5) is not a
+    # Changing the interval for a key replaces its limiter with the new spacing.
+    c = http.get_rate_limiter("edgar-test", 1.0)
+    assert c is not a
+    assert c.min_interval == 1.0

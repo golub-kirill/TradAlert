@@ -327,7 +327,10 @@ def expected_hold_range(cap: int = 25, fallback: tuple[int, int] | None = None) 
     (``cap`` = ``execution.max_hold_days``) when the DB is down or no run exists.
     """
     if fallback is None:
-        fallback = (max(1, round(cap * 0.4)), int(cap))
+        # Cap-anchored fallback using the reference run's actual hold ratios
+        # (p25 ≈ 0.12·cap, p75 ≈ 0.56·cap → cap 25 ≈ 3–14d), so a DB-down display
+        # still matches the data-driven range instead of spanning to the cap.
+        fallback = (max(1, round(cap * 0.12)), max(1, round(cap * 0.56)))
     conn = None
     try:
         conn = _connect()

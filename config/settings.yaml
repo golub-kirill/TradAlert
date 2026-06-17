@@ -120,7 +120,8 @@ macro: # block: macro data configuration
 
 
 # ── BEHAVIORAL DATA LAYER ─────────────────────────────────────────
-# COT, NAAIM, AAII, breadth, sector rotation.
+# COT, NAAIM, breadth, sector rotation. (Sentiment axis PURGED — AAII gated its free
+# feed; CNN F&G evaluated but dropped: no pre-2011 history + overlaps VIX/breadth.)
 # Fetched once per pipeline run.  Stale data > 14 days treated as missing.
 
 behavioral: # block: behavioral data configuration
@@ -134,13 +135,11 @@ behavioral: # block: behavioral data configuration
     breadth_state: { WEAK: 0.0, DETERIORATING: 0.2, NEUTRAL: 0.6, STRONG: 1.0 }
     sector_cycle: { DEFENSIVE_LEAD: 0.2, LATE: 0.4, MID: 0.7, EARLY: 1.0 }
     positioning_state: { CROWDED_LONG: 0.3, NEUTRAL: 1.0, CROWDED_SHORT: 0.8 }
-    sentiment_state: { EUPHORIA: 0.3, NORMAL: 1.0, FEAR: 0.7, PANIC: 0.9 }
 
   axis_weights: # how much each axis counts in composite
     breadth_state: 4
     sector_cycle: 2
     positioning_state: 2
-    sentiment_state: 1
 
   breadth_divergence_penalty: 0.2       # subtracted from behavioral_score when True
 

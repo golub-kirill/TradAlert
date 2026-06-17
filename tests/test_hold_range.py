@@ -56,16 +56,16 @@ class _FakeConn:
     def close(self): pass
 
 
-def test_expected_hold_range_fallback_is_cap_anchored(monkeypatch):
+def test_expected_hold_range_fallback_is_research_anchored(monkeypatch):
     def boom(): raise db.MySQLError("no db")
     monkeypatch.setattr(db, "_connect", boom)
-    assert expected_hold_range(cap=25) == (10, 25)      # round(0.4*25)=10, cap=25
+    assert expected_hold_range(cap=25) == (3, 14)        # round(0.12*25)=3, round(0.56*25)=14
 
 
 def test_expected_hold_range_fallback_when_no_run(monkeypatch):
     monkeypatch.setattr(db, "_connect", lambda: _FakeConn([]))
     monkeypatch.setattr(db, "reference_run", lambda cur: None)
-    assert expected_hold_range(cap=20) == (8, 20)        # round(0.4*20)=8
+    assert expected_hold_range(cap=20) == (2, 11)        # round(0.12*20)=2, round(0.56*20)=11
 
 
 def test_expected_hold_range_computes_from_bars(monkeypatch):

@@ -364,6 +364,12 @@ class SweepReport:
                 "initial_target": t.initial_target,
                 "exit_reason": t.exit_reason,
                 "r_multiple": round(t.r_multiple, 4),
+                # size- and borrow-adjusted R (= r_multiple × size_mult − borrow drag).
+                # validate_shorts uses this for the economic Sharpe/Calmar checks so the
+                # short side isn't judged on raw per-unit R (audit M7).
+                "effective_r": round(t.effective_r, 4),
+                "size_mult": round(t.size_mult, 4),
+                "borrow_annual_rate": round(t.borrow_annual_rate, 5),
                 "bars_held": t.bars_held,
                 "market_regime": t.market_regime,
                 "ticker_trend": t.ticker_trend,

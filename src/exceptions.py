@@ -84,6 +84,34 @@ class InsufficientDataError(ValidationError):
         super().__init__(detail=detail, ticker=ticker)
 
 
+class DataStalenessError(ValidationError):
+    """
+    Signals that a ticker's DATA (its most recent bar) is still behind the last completed
+    exchange session AFTER a refetch attempt — the engine would otherwise evaluate a signal
+    on bars blind to one or more sessions (weekend/overnight news). Distinct from
+    :class:`StaleDataError` (cache *file* age in hours); this is the bar *timestamp* in
+    trading days, on the LIVE path only.
+
+    NOTE: the live scanner does NOT raise this today — a stale-after-refetch (or gapped) fire
+    is DOWNGRADED to ``SignalResult.tier = "NEEDS_REVIEW"`` (``main._mark_review``) so it is
+    surfaced for review rather than dropped. This type is retained for callers that would
+    rather treat staleness as a hard error (see ``core.freshness`` + the live data-freshness
+    hardening).
+
+    Attributes
+    ----------
+    last_bar        : date  Most recent bar present in the data.
+    sessions_behind : int   Completed sessions the data is behind the last close (>= 1).
+    """
+
+    def __init__(self, last_bar, sessions_behind: int, ticker: str = "") -> None:
+        self.last_bar = last_bar
+        self.sessions_behind = sessions_behind
+        detail = (f"data ends {last_bar} — {sessions_behind} completed session(s) behind the "
+                  f"last close (still stale after refetch)")
+        super().__init__(detail=detail, ticker=ticker)
+
+
 # ── fetch branch ──────────────────────────────────────────────────────────────
 
 class FetchError(TradAlertError):

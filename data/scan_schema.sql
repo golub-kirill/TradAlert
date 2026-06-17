@@ -24,9 +24,17 @@ CREATE TABLE IF NOT EXISTS scan_results (
     -- full set of directions the scorer/engine can emit (long + short entries/exits)
     signal_kind  ENUM('none','entry_long','exit_long','entry_short','exit_short')
                               NOT NULL DEFAULT 'none',
+    -- live data-freshness tier (LIVE path only; the backtester never writes scan_results).
+    -- NEEDS_REVIEW = fired on stale/gapped data; reconcile_live.py excludes these.
+    tier         ENUM('LIVE','NEEDS_REVIEW') NOT NULL DEFAULT 'LIVE',
+    review_reason VARCHAR(255) NULL,
     score        DECIMAL(5,2) NULL,
     reason       VARCHAR(255) NULL,
     `close`      DOUBLE       NULL,
+    -- fired-signal geometry (see data/scan_results_recon_migration.sql); NULL for non-signals
+    stop_price   DOUBLE       NULL,
+    target_price DOUBLE       NULL,
+    signal_type  VARCHAR(24)  NULL,
     atr          DOUBLE       NULL,
     atr_pct      DOUBLE       NULL,
     dv20         DOUBLE       NULL,

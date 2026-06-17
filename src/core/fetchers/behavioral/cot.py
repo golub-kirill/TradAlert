@@ -218,10 +218,22 @@ def _normalise_tff_rows(
     return df[["lev_long", "lev_short", "lev_net"]].dropna(subset=["lev_net"])
 
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_days: float = _DEFAULT_STALENESS_DAYS) -> pd.DataFrame:
+    """Serve the cached parquet (fail-open) when a fetch fails, but WARN with the
+    cache age when it is past the staleness window — an unbounded-stale cache must
+    not masquerade as a fresh feed (mirrors the macro fetchers)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_days * 86400:
+                logger.warning(
+                    "[cot] serving STALE cache for %s — %.1f d old (> %g d "
+                    "window); upstream fetch failed, value may be outdated.",
+                    parquet_path.stem, age / 86400.0, staleness_days,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[cot] cached parquet read failed at %s: %s",
                          parquet_path, exc)

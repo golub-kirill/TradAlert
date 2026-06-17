@@ -116,9 +116,10 @@ class SignalResult:
     Attributes
     ----------
     passed             : True when a signal fired and all gates cleared.
-    direction          : "long" | "exit_long" | "none".
-    signal_type        : "momentum" | "mean_reversion" | "regime" | "none".
-                         "regime" pairs only with ``direction="exit_long"``.
+    direction          : "long" | "short" | "exit_long" | "exit_short" | "none".
+    signal_type        : "momentum" | "mean_reversion" | "regime" | "time_stop" | "none".
+                         "regime" and "time_stop" pair only with an exit direction
+                         ("exit_long" / "exit_short").
     stop_price         : ``close − ATR × atr_multiplier`` on entry. 0.0 on exit.
     target_price       : ``close + risk × min_rr`` on entry. 0.0 on exit.
     min_rr             : Minimum risk:reward ratio from config. 0.0 on exit.
@@ -129,7 +130,8 @@ class SignalResult:
     reason             : Explanation string; always populated.
     expected_hold_days : (low, high) trading-day range, display-only. The live path
                          (main.py) sets it from the reference backtest's actual
-                         bars_held p25-p75; this (10, 15) default is the fallback.
+                         bars_held p25-p75 (the single source of truth); this (3, 14)
+                         default is the research-consistent fallback if never set.
     """
     passed: bool
     direction: Direction = "none"
@@ -142,9 +144,15 @@ class SignalResult:
     ticker_trend: str = ""
     reason: str = ""
     # ── display-only context (set by main.py on the live path) ────────────────
-    expected_hold_days: tuple[int, int] = field(default=(10, 15), repr=False)
+    expected_hold_days: tuple[int, int] = field(default=(3, 14), repr=False)
     # ── entry-gate trigger panel (populated only when signal(with_checks=True)) ──
     checks: list[GateCheck] = field(default_factory=list, repr=False)
+    # ── live data-freshness tier (set by main.py's freshness guard, never the engine) ──
+    # "LIVE" | "NEEDS_REVIEW". The engine/backtester never touch this → default "LIVE"
+    # keeps the backtest byte-identical. A fired entry is downgraded to NEEDS_REVIEW when its
+    # data is stale-after-refetch or the overnight gap breaches the ATR threshold.
+    tier: str = "LIVE"
+    review_reason: str = ""   # e.g. "gap 2.3×ATR · stale 1 session"
 
 
 # Typo-protected constants for signal types and directions.

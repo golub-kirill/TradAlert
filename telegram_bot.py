@@ -270,7 +270,7 @@ def _engine_verdict(pos, df) -> str:
 
     engine = _get_engine()
     market_dfs, vix_df = _load_market_context()
-    regime = engine.market_regime(market_dfs, vix_df)
+    regime = engine.market_regime(market_dfs, vix_df, empty_vote_trend="CHOP")
     sig = engine.signal(
         pos.ticker, df, market_dfs=market_dfs, vix_df=vix_df,
         held_long=(pos.side == "long"), held_short=(pos.side == "short"),
@@ -301,10 +301,20 @@ def _build_chart(ticker: str):
         return None
     engine = _get_engine()
     market_dfs, vix_df = _load_market_context()
-    regime = engine.market_regime(market_dfs, vix_df)
+    regime = engine.market_regime(market_dfs, vix_df, empty_vote_trend="CHOP")
     sig = engine.signal(
         ticker, df, market_dfs=market_dfs, vix_df=vix_df,
         regime=regime, with_checks=True)
+    # Populate the data-driven expected-hold range (p25–p75 of real bars_held) so a
+    # regenerated chart shows the SAME horizon as the entry alert/caption — not the
+    # static SignalResult default.
+    if sig.passed and sig.direction in ("long", "short"):
+        try:
+            from backtest.db import expected_hold_range
+            sig.expected_hold_days = expected_hold_range(
+                cap=int(engine.cfg.execution.max_hold_days or 25))
+        except Exception:
+            pass  # keep the SignalResult default
     return chart(ticker, df, signal=(sig if sig.passed else None),
                  output_dir=SCREENSHOTS_DIR, regime=regime)
 

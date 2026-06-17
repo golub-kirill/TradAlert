@@ -4,7 +4,11 @@ Behavioral regime classifier.
 Computes a ``BehavioralState`` from fetched behavioral data feeds:
  - breadth → breadth_state, breadth_divergence
  - sector rotation → sector_cycle
- - COT + NAAIM + AAII → positioning_state, sentiment_state
+ - COT + NAAIM → positioning_state
+
+The sentiment axis (AAII, then CNN Fear & Greed) was PURGED: AAII gated its free feed
+and F&G has no history before its ~2011 inception (so ~32% of the 2000-2026 backtest
+ran sentiment-absent) and overlaps the VIX/breadth axes. Behavioral score is 3-axis.
 
 The composite ``behavioral_score ∈ [0, 1]`` drives the position size
 multiplier together with the macro ``risk_on_score`` (geometric mean).
@@ -43,10 +47,9 @@ def _column_or_warn(df, col, axis):
 # release. Backtest as_of slicing must use the RELEASE date, not the report/
 # survey date, or a print leaks into decisions made before it existed:
 #   cot_es : CFTC TFF reports Tuesday positions, released the following Friday (+3).
-#   naaim  : weekly exposure survey, released ~1 day after the survey date (+1).
-#   aaii   : weekly sentiment survey, released ~1 day after the Wednesday close (+1).
+#   naaim  : exposure survey dated to its Wednesday survey day, released next day (+1).
 # Price-derived feeds (breadth, sector_rotation) have no publication lag.
-_RELEASE_LAG_DAYS = {"cot_es": 3, "naaim": 1, "aaii": 1}
+_RELEASE_LAG_DAYS = {"cot_es": 3, "naaim": 1}
 
 
 def _release_align(df: "pd.DataFrame | None", lag_days: int) -> "pd.DataFrame | None":
@@ -74,7 +77,6 @@ class BehavioralState:
     breadth_divergence : True when SPY at new high but breadth < 55%
     sector_cycle : "EARLY" | "MID" | "LATE" | "DEFENSIVE_LEAD"
     positioning_state : "CROWDED_LONG" | "NEUTRAL" | "CROWDED_SHORT"
-    sentiment_state : "EUPHORIA" | "NORMAL" | "FEAR" | "PANIC"
 
     behavioral_score : composite [0, 1]
     confidence : fraction of axes with fresh data
@@ -84,7 +86,6 @@ class BehavioralState:
     breadth_divergence: bool
     sector_cycle: str
     positioning_state: str
-    sentiment_state: str
 
     behavioral_score: float
     confidence: float
@@ -180,7 +181,6 @@ def classify_behavioral_state(
     # visible from its publication date onward (no look-ahead in backtests).
     cot_es = _slice(_release_align(data.get("cot_es"), _RELEASE_LAG_DAYS["cot_es"]))
     naaim = _slice(_release_align(data.get("naaim"), _RELEASE_LAG_DAYS["naaim"]))
-    aaii = _slice(_release_align(data.get("aaii"), _RELEASE_LAG_DAYS["aaii"]))
 
     spy_t = _slice(spy_df) if spy_df is not None else None
 
@@ -215,19 +215,11 @@ def classify_behavioral_state(
         if cot_absent and naaim_absent:
             missing_axes.append("positioning_state")
 
-    # ── sentiment_state ──────────────────────────────────────────────────
-    if aaii is not None and not aaii.empty:
-        sentiment_state = _classify_sentiment(aaii)
-    else:
-        sentiment_state = "NORMAL"
-        missing_axes.append("sentiment_state")
-
     # ── composite behavioral_score ───────────────────────────────────────
     state_values = {
         "breadth_state": breadth_state,
         "sector_cycle": sector_cycle,
         "positioning_state": positioning_state,
-        "sentiment_state": sentiment_state,
     }
 
     behavioral_weights = behavioral_cfg.get("behavioral_weights", {})
@@ -235,7 +227,6 @@ def classify_behavioral_state(
         "breadth_state": 4,
         "sector_cycle": 2,
         "positioning_state": 2,
-        "sentiment_state": 1,
     })
 
     numerator = 0.0
@@ -272,7 +263,6 @@ def classify_behavioral_state(
         breadth_divergence=breadth_divergence,
         sector_cycle=sector_cycle,
         positioning_state=positioning_state,
-        sentiment_state=sentiment_state,
         behavioral_score=round(behavioral_score, 4),
         confidence=round(confidence, 4),
         missing_axes=missing_axes,
@@ -405,43 +395,6 @@ def _classify_positioning(
         return "CROWDED_SHORT"
     else:
         return "NEUTRAL"
-
-
-def _classify_sentiment(aaii: pd.DataFrame) -> str:
-    """
-    Classify sentiment from AAII bull-bear spread z-score.
-
-    The z-score uses a trailing 52-week window (not the full series) so the
-    classification reflects the *current* sentiment regime rather than being
-    anchored to the whole history. AAII is weekly, so 52 rows ≈ one year.
-
-    > 2σ → EUPHORIA
-    < −2σ → PANIC
-    < −1σ → FEAR
-    else → NORMAL
-    """
-    spread = _column_or_warn(aaii, "spread", "sentiment")
-    if spread is None or len(spread) < 52:
-        return "NORMAL"
-
-    window = spread.tail(52)
-    latest = float(spread.iloc[-1])
-    mean = float(window.mean())
-    std = float(window.std())
-
-    if std == 0:
-        return "NORMAL"
-
-    z = (latest - mean) / std
-
-    if z > 2.0:
-        return "EUPHORIA"
-    elif z < -2.0:
-        return "PANIC"
-    elif z < -1.0:
-        return "FEAR"
-    else:
-        return "NORMAL"
 
 
 def _rolling_percentile(series: pd.Series, lookback: int) -> float | None:

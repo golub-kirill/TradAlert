@@ -4,9 +4,10 @@ Behavioral data fetchers.
 Fetches behavioral / structural data feeds:
  COT — CFTC Commitments of Traders report
  NAAIM — NAAIM exposure index
- AAII — AAII bull-bear survey
  Breadth — % S&P 500 above MA200
  Sector — (XLI+XLF)/(XLP+XLU) rotation ratio
+
+(The sentiment axis — AAII, then CNN Fear & Greed — was PURGED; see core.behavioral.)
 
 Each fetcher follows the fail-open convention: stale data > 14 days is
 treated as missing; missing axes are dropped from the composite.
@@ -16,7 +17,6 @@ Public API
 fetch_all_behavioral(settings) -> dict[str, pd.DataFrame | dict]
 fetch_cot(contract) -> pd.DataFrame
 fetch_naaim -> pd.DataFrame
-fetch_aaii -> pd.DataFrame
 compute_sp500_breadth -> pd.DataFrame
 compute_sector_rotation -> pd.DataFrame
 """
@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from core.fetchers.behavioral.aaii import fetch_aaii
 from core.fetchers.behavioral.breadth import compute_sp500_breadth, compute_sector_rotation
 from core.fetchers.behavioral.cot import fetch_cot, fetch_all_cot
 from core.fetchers.behavioral.naaim import fetch_naaim
@@ -38,7 +37,6 @@ __all__ = [
     "fetch_cot",
     "fetch_all_cot",
     "fetch_naaim",
-    "fetch_aaii",
     "compute_sp500_breadth",
     "compute_sector_rotation",
 ]
@@ -61,7 +59,6 @@ def fetch_all_behavioral(
     dict with keys:
     cot_es, cot_tnote, cot_vix — COT DataFrames
     naaim — NAAIM DataFrame
-    aaii — AAII DataFrame
     breadth — S&P 500 breadth DataFrame
     sector_rotation — sector ratio DataFrame
 
@@ -107,17 +104,6 @@ def fetch_all_behavioral(
     except Exception as exc:
         logger.warning("[behavioral] NAAIM fetch failed: %s", exc, exc_info=True)
         failed.append("naaim")
-
-    # AAII
-    try:
-        aaii = fetch_aaii(
-            data_dir=data_dir, staleness_days=staleness_days, force=force,
-        )
-        if not aaii.empty:
-            result["aaii"] = aaii
-    except Exception as exc:
-        logger.warning("[behavioral] AAII fetch failed: %s", exc, exc_info=True)
-        failed.append("aaii")
 
     # Breadth (compute_sp500_breadth uses staleness_hours; convert from days)
     try:

@@ -85,6 +85,28 @@ def test_missing_index_data_defaults_to_chop_and_logs(caplog):
     assert "no index data" in caplog.text
 
 
+def test_present_but_too_short_frames_default_bull_but_live_passes_chop(caplog):
+    # Both index frames present but shorter than ma_fast (=3) → no symbol votes
+    # → total_votes == 0. The default keeps BULL (a backtest warm-up artifact, so
+    # run_id=15 stays byte-identical); the live scanner passes CHOP to fail safe.
+    dfs = _indices([1, 2], [1, 2])
+    assert classify_market_regime(_cfg(), dfs, None).trend == "BULL"
+    with caplog.at_level("ERROR"):
+        r = classify_market_regime(_cfg(), dfs, None, empty_vote_trend="CHOP")
+    assert r.trend == "CHOP" and not r.allows_longs
+    assert "too short" in caplog.text
+
+
+def test_engine_forwards_empty_vote_trend():
+    import yaml
+    from core.filter_engine import FilterEngine
+    cfg_path = Path(__file__).resolve().parent.parent / "config" / "filters.yaml"
+    eng = FilterEngine.from_dict(yaml.safe_load(cfg_path.read_text(encoding="utf-8")))
+    dfs = _indices([1, 2], [1, 2])  # far shorter than ma_fast → no votes
+    assert eng.market_regime(dfs, None).trend == "BULL"            # default
+    assert eng.market_regime(dfs, None, empty_vote_trend="CHOP").trend == "CHOP"
+
+
 def test_ma_short_misalignment_demotes_bull_to_chop():
     cfg = _cfg(require_ma_short_alignment=True, ma_short=2)
     # last 6 > MA(3)=5.67 (BULL vote) but < MA(2)=8 → demoted

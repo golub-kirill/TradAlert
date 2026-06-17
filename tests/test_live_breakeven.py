@@ -20,10 +20,12 @@ from main import _maybe_raise_stop_to_breakeven
 EXEC_CFG = SimpleNamespace(breakeven_trigger_r=1.0, breakeven_buffer_atr=None)
 
 
-def _df(highs, start="2026-01-05"):
+def _df(highs, lows=None, start="2026-01-05"):
     idx = pd.bdate_range(start, periods=len(highs))
-    return pd.DataFrame({"high": highs, "close": [h - 0.5 for h in highs]},
-                        index=idx)
+    if lows is None:
+        lows = [h - 1.0 for h in highs]
+    return pd.DataFrame({"high": highs, "low": lows,
+                         "close": [h - 0.5 for h in highs]}, index=idx)
 
 
 def _pos(stop_price=95.0, initial_stop=95.0, side="long", entry_bar_of=None):
@@ -31,6 +33,13 @@ def _pos(stop_price=95.0, initial_stop=95.0, side="long", entry_bar_of=None):
                   if entry_bar_of is not None else date(2026, 1, 5))
     return SimpleNamespace(id=7, ticker="TEST.1", side=side,
                            entry_price=100.0, entry_date=entry_date,
+                           stop_price=stop_price, initial_stop=initial_stop)
+
+
+def _short_pos(stop_price=110.0, initial_stop=110.0):
+    """Held short: entry 100, initial stop ABOVE entry (risk = stop − entry = 10)."""
+    return SimpleNamespace(id=8, ticker="TEST.2", side="short",
+                           entry_price=100.0, entry_date=date(2026, 1, 5),
                            stop_price=stop_price, initial_stop=initial_stop)
 
 
@@ -94,10 +103,36 @@ def test_disabled_when_trigger_absent_or_zero(calls):
     assert calls["update"] == []
 
 
-def test_longs_only(calls):
-    df = _df([101, 106])
-    pos = _pos(side="short")
-    assert _maybe_raise_stop_to_breakeven("TEST.1", df, pos, EXEC_CFG, {}) is None
+def test_short_stop_lowered_to_entry_when_mfe_reaches_trigger(calls):
+    # entry 100, initial_stop 110 → risk 10; lowest low 89 → MFE (100−89)/10 = 1.1R
+    df = _df(highs=[101, 99, 96, 95], lows=[99, 95, 89, 92])
+    new = _maybe_raise_stop_to_breakeven("TEST.2", df, _short_pos(), EXEC_CFG, {})
+    assert new == 100.0
+    assert calls["update"] == [(8, 100.0)]
+    assert len(calls["notice"]) == 1
+
+
+def test_short_untouched_below_trigger(calls):
+    # lowest low 95 → MFE (100−95)/10 = 0.5R < 1.0R
+    df = _df(highs=[101, 99, 98], lows=[99, 96, 95])
+    assert _maybe_raise_stop_to_breakeven("TEST.2", df, _short_pos(), EXEC_CFG, {}) is None
+    assert calls["update"] == []
+
+
+def test_short_never_raises_a_stop_already_below_entry(calls):
+    # MFE ≥ trigger, but the stop is already locked in profit (below entry) — moving
+    # it back up to entry would loosen risk, so it must be a no-op.
+    df = _df(highs=[101, 99, 96], lows=[99, 90, 89])
+    pos = _short_pos(stop_price=99.0)
+    assert _maybe_raise_stop_to_breakeven("TEST.2", df, pos, EXEC_CFG, {}) is None
+    assert calls["update"] == []
+
+
+def test_short_invalid_stop_below_entry_is_noop(calls):
+    # A short whose initial stop sits BELOW entry has non-positive risk — skip.
+    df = _df(highs=[101, 99], lows=[99, 90])
+    pos = _short_pos(stop_price=95.0, initial_stop=95.0)
+    assert _maybe_raise_stop_to_breakeven("TEST.2", df, pos, EXEC_CFG, {}) is None
     assert calls["update"] == []
 
 

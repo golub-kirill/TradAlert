@@ -67,28 +67,36 @@ def _win_rate(df: pd.DataFrame) -> float:
     return float((df["r_multiple"] > 0).mean() * 100.0)
 
 
-def _sharpe(df: pd.DataFrame) -> float:
+def _econ_r_col(df: pd.DataFrame) -> str:
+    """Column for the ECONOMIC checks (Sharpe/Calmar/drawdown): size- and
+    borrow-adjusted ``effective_r`` when the ledger carries it, else per-unit
+    ``r_multiple`` for older ledgers. Judging shorts on raw per-unit R ignores
+    size_mult and borrow cost and overstates the short side (audit M7)."""
+    return "effective_r" if "effective_r" in df.columns else "r_multiple"
+
+
+def _sharpe(df: pd.DataFrame, rcol: str = "r_multiple") -> float:
     """Per-trade Sharpe proxy: mean(R) / std(R)."""
     if len(df) < 2:
         return float("nan")
-    sd = float(df["r_multiple"].std(ddof=1))
+    sd = float(df[rcol].std(ddof=1))
     if sd == 0:
         return float("nan")
-    return float(df["r_multiple"].mean()) / sd
+    return float(df[rcol].mean()) / sd
 
 
-def _max_drawdown_r(df: pd.DataFrame) -> float:
+def _max_drawdown_r(df: pd.DataFrame, rcol: str = "r_multiple") -> float:
     """Max peak-to-trough drawdown (in R) of the cumulative-R equity curve."""
     if df.empty:
         return 0.0
     order = "exit_date" if "exit_date" in df.columns else "entry_date"
-    s = df.sort_values(order)["r_multiple"].cumsum()
+    s = df.sort_values(order)[rcol].cumsum()
     return float((s.cummax() - s).max())
 
 
-def _calmar(df: pd.DataFrame) -> float:
-    total_r = float(df["r_multiple"].sum())
-    dd = _max_drawdown_r(df)
+def _calmar(df: pd.DataFrame, rcol: str = "r_multiple") -> float:
+    total_r = float(df[rcol].sum())
+    dd = _max_drawdown_r(df, rcol)
     if dd <= 0:
         return float("inf") if total_r > 0 else 0.0
     return total_r / dd
@@ -169,14 +177,16 @@ def run_checks(df: pd.DataFrame, baseline: pd.DataFrame | None) -> list[Check]:
             "pass --baseline <long-only trades.csv> to compute",
         ))
     else:
-        on_sh, off_sh = _sharpe(df), _sharpe(baseline)
-        on_cal, off_cal = _calmar(df), _calmar(baseline)
+        # Economic comparison → size+borrow-adjusted effective_r when available.
+        rcol_on, rcol_off = _econ_r_col(df), _econ_r_col(baseline)
+        on_sh, off_sh = _sharpe(df, rcol_on), _sharpe(baseline, rcol_off)
+        on_cal, off_cal = _calmar(df, rcol_on), _calmar(baseline, rcol_off)
         ok = (on_sh >= off_sh * SHARPE_FLAT_TOL) if off_sh == off_sh else True
         checks.append(Check(
             "4. Sharpe/Calmar shorts on vs off",
             "PASS" if ok else "WARN",
             f"Sharpe {off_sh:.3f} -> {on_sh:.3f} | Calmar {off_cal:.2f} -> "
-            f"{on_cal:.2f} (shorts are insurance: want flat or better)",
+            f"{on_cal:.2f} (R={rcol_on}; shorts are insurance: want flat or better)",
         ))
 
     # 5. by-exit breakdown

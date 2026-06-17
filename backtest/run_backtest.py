@@ -597,6 +597,14 @@ def _parse_args() -> argparse.Namespace:
 def _setup_logging(level: str) -> None:
     logging.basicConfig(level=getattr(logging, level),
                         format="  %(levelname)-8s %(name)s — %(message)s")
+    # Defensive: mask anything resembling an API key (e.g. a leaked FRED key in
+    # a URL) before it reaches the log, same as main.py. The filter lives on the
+    # handlers — not the root logger — so it also catches records propagated up
+    # from child loggers.
+    from core.fetchers.http import mask_api_keys_filter
+    _mask = mask_api_keys_filter()
+    for _h in logging.getLogger().handlers:
+        _h.addFilter(_mask)
     for noisy in ("yfinance", "urllib3", "peewee", "PIL"):
         logging.getLogger(noisy).setLevel(logging.CRITICAL)
 

@@ -155,26 +155,6 @@ def test_scan_blocks_nan_indicators_instead_of_passing():
     assert "warmup" in res.reason.lower()
 
 
-# ── behavioral sentiment z-score uses a trailing 52-week window ───────────────
-
-def test_sentiment_zscore_uses_trailing_52w_not_full_series():
-    from core.behavioral import _classify_sentiment
-    hist = [1.0] * 148  # high bullish history
-    recent = [0.45, 0.55] * 25 + [0.50, 0.50]  # 52 wks, mean 0.50, latest 0.50
-    spread = hist + recent
-    idx = pd.date_range("2020-01-01", periods=len(spread), freq="W-WED")
-    aaii = pd.DataFrame({"spread": spread}, index=idx)
-
-    # Rolling-52w: latest == recent-window mean → z ≈ 0 → NORMAL.
-    assert _classify_sentiment(aaii) == "NORMAL"
-
-    # The old full-series path would have diverged (latest far below the
-    # long-run mean → z < −1 → FEAR), confirming the window actually changed.
-    s = pd.Series(spread, dtype=float)
-    z_full = (s.iloc[-1] - s.mean()) / s.std()
-    assert z_full < -1.0
-
-
 # ── COT positioning: lev_net (TFF) consumer + fail-open on schema mismatch ─────
 
 def test_classify_positioning_uses_lev_net_and_fails_open():
