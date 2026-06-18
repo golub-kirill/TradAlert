@@ -45,8 +45,8 @@ class Trade:
     market_regime  : Regime label at entry, e.g. 'BULL_NORMAL'.
     ticker_trend   : 'UPTREND' | 'DOWNTREND' | 'CHOP' at entry.
     entry_score    : Always 0.0 for new trades. Kept (with its
-                     backtest_trades column) because historical journaled
-                     rows carry real values from the retired entry scorer.
+                     backtest_trades column) so historical journaled rows
+                     from the retired entry scorer still carry real values.
     """
     ticker: str
     signal_type: str
@@ -67,13 +67,12 @@ class Trade:
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.
     size_mult: float = 1.0
-    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
-    # 0.0 (default) = no borrow drag, so longs and pre-v2 runs are unchanged.
-    # Set at entry from signals.borrow.*; folded into effective_r as a
-    # per-trade R drag proportional to bars_held (see borrow_drag_r).
+    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr). 0.0 (default) =
+    # no borrow drag, so longs are unchanged. Set at entry from signals.borrow.*;
+    # folded into effective_r as a per-trade R drag scaled by bars_held.
     borrow_annual_rate: float = 0.0
 
-    # ── exit-quality instrumentation (Phase 0; zero behavior change) ──────────
+    # ── exit-quality instrumentation (Phase 0; no behavior change) ────────────
     # Running intrabar extremes over the held bars, finalized to mfe_r/mae_r at
     # close. R uses the SAME initial-stop denominator as compute_r, so a future
     # dynamic stop never changes these. None until the first update_excursion.
@@ -168,9 +167,9 @@ class Trade:
             drag_R = fee_per_share_per_day × bars_held / risk_per_share
 
         252 (trading days/yr) keeps the unit consistent with ``bars_held``
-        (trading bars). Returns 0.0 for longs, a non-positive rate, an
-        open trade, or non-positive risk. v1 uses a single rate; a real
-        per-symbol borrow source is a follow-on (see TODO).
+        (trading bars). Returns 0.0 for longs, a non-positive rate, an open
+        trade, or non-positive risk. Uses a single flat rate (no per-symbol
+        borrow source).
         """
         if (self.direction != "short" or self.borrow_annual_rate <= 0
                 or not self.is_closed):
@@ -204,18 +203,16 @@ class Trade:
         backtester always populates exit_price first, so this is safe to
         call as the last step of close_trade().
 
-        Gap-through entries (risk ≤ 0) are scored 0R *by design* — this is NOT a
-        hidden left-tail loss. When the T+1 open gaps past the stop, the same-bar
-        stop logic fills the exit at that same open, so exit ≈ entry and the only
-        realized cost is entry/exit slippage. Re-measured 2026-06-11 on the frozen
-        snapshot (213-universe headline run_id=15): 6 of 1622 trades gap through —
-        all on the 2016-06-24 Brexit gap — booked −0.005R each (commission only),
-        −0.03R total; the unbooked slippage cost stays well under 1% of the
-        headline's bootstrap SE (±~30R), i.e. immaterial. Booking the true
-        slippage loss would require threading the *intended* (signal-based) risk
-        through the close path; not worth the added surface area.
-        (``tests/test_gap_through.py`` locks the 0R accounting and the
-        immateriality bound.)
+        Gap-through entries (risk ≤ 0) are scored 0R *by design* — NOT a hidden
+        left-tail loss. When the T+1 open gaps past the stop, the same-bar stop
+        logic fills the exit at that same open, so exit ≈ entry and the only
+        realized cost is entry/exit slippage. On the frozen headline (run_id=15,
+        213-universe) only 6 of 1622 trades gap through (all the 2016-06-24
+        Brexit gap), booked −0.005R each (commission only); the unbooked slippage
+        is immaterial (well under 1% of the bootstrap SE ±~30R). Booking the true
+        slippage would mean threading the intended (signal-based) risk through the
+        close path — not worth the surface area. ``tests/test_gap_through.py``
+        locks the 0R accounting and the immateriality bound.
 
         Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
         the stop and the target, the backtester records the STOP fill (the

@@ -8,11 +8,9 @@ Two facilities:
    (5xx, 429, ConnectionError, Timeout). Per-host rate limiters can be
    plugged in via the ``rate_limit_key`` argument.
 
-2. ``mask_api_keys_filter`` — a ``logging.Filter`` that masks anything
-   that looks like a 32-hex-char API key (FRED format) in log messages.
-   Defensive: even if a future log call accidentally leaks the FRED key
-   in a string, the on-disk log will show
-   "<API-KEY-MASKED>" instead. Install via:
+2. ``mask_api_keys_filter`` — a ``logging.Filter`` that masks 32-char API
+   keys (FRED format) and Telegram bot tokens in log messages, so a leaked
+   secret reads as "<API-KEY-MASKED>" / "<TG-TOKEN-MASKED>" on disk. Install via:
 
    logger.addFilter(mask_api_keys_filter())
 """
@@ -44,10 +42,8 @@ class _MinIntervalLimiter:
         if self.min_interval <= 0:
             return
         # Reserve this caller's slot atomically (advance _last under the lock),
-        # then sleep OUTSIDE the lock. Concurrent callers therefore get distinct,
-        # interval-spaced slots instead of all reading a stale _last and firing
-        # together. Holding _last unlocked across the sleep (the old code) let N
-        # threads burst, defeating the throttle.
+        # then sleep OUTSIDE the lock, so concurrent callers get distinct,
+        # interval-spaced slots instead of all reading a stale _last and bursting.
         with self._lock:
             now = time.monotonic()
             target = max(now, self._last + self.min_interval)
@@ -151,8 +147,7 @@ def request_with_retry(
 
     if last_exc is not None:
         raise last_exc
-    # Should never reach here, but for safety:
-    raise RuntimeError("Unexpected end of retry loop")
+    raise RuntimeError("Unexpected end of retry loop")  # unreachable
 
 
 def _safe_url(url: str) -> str:
@@ -163,30 +158,26 @@ def _safe_url(url: str) -> str:
 
 # ── Log filter that masks secrets (API keys, bot tokens) ────────────────────
 
-# Lowercase alnum, not just hex: FRED keys are 32-char lowercase hex today, but
-# a rotated or third-party 32-char key need not be — the wider class costs no
-# real-world false positives (no natural log token is 32 lowercase alnum chars).
+# Lowercase alnum (wider than hex) to also catch rotated/third-party 32-char
+# keys; no natural log token is 32 lowercase alnum chars, so no false positives.
 _HEX_KEY_PATTERN = re.compile(r"\b[a-z0-9]{32}\b")
-# Telegram bot token: numeric bot id, a colon, then a ~35-char base64ish secret
-# (e.g. 123456789:AAFakeTokenValue...). Mask it so a leaked token can't be read
-# off a log line — the daemon's polling URL and PTB debug output embed it. No
-# leading \b: the polling URL glues the id to "bot" (…/bot123456789:secret/…).
+# Telegram bot token: numeric bot id, colon, ~35-char base64ish secret. No
+# leading \b — the daemon's polling URL glues the id to "bot"
+# (…/bot123456789:secret/…), which embeds the token alongside PTB debug output.
 _TG_TOKEN_PATTERN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
 
 class _MaskApiKeysFilter(logging.Filter):
-    """Mask secrets in log messages: 32-hex API keys (FRED) and Telegram bot tokens.
+    """Mask secrets in log messages: 32-char API keys (FRED) and Telegram bot tokens.
 
-    Defensive filtering covers cases we missed. Install at the root logger
-    in setup_logging so all handlers benefit.
+    Install at the root logger in setup_logging so all handlers benefit.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
             if _HEX_KEY_PATTERN.search(msg) or _TG_TOKEN_PATTERN.search(msg):
-                # Overwrite the formatted args by setting record.msg to the
-                # already-formatted-and-masked string and clearing args.
+                # Store the already-masked string as record.msg and clear args.
                 msg = _HEX_KEY_PATTERN.sub("<API-KEY-MASKED>", msg)
                 msg = _TG_TOKEN_PATTERN.sub("<TG-TOKEN-MASKED>", msg)
                 record.msg = msg

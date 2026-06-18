@@ -174,8 +174,7 @@ def test_oos_leg_replays_the_full_mutation_dict(monkeypatch):
 
 def test_baseline_winner_replays_clean_base_config(monkeypatch):
     # When the IS winner is the baseline, the OOS leg must run the unmodified
-    # base config — the old single-param path injected a junk top-level
-    # cfg["baseline"] key.
+    # base config (no injected top-level cfg["baseline"] key).
     wfe, calls = _wf_engine(monkeypatch)
     wfe._run_window_with_mutations(WIN.oos_start, WIN.oos_end, WIN, {})
     call = calls[-1]

@@ -62,10 +62,8 @@ def fetch_all_behavioral(
     breadth — S&P 500 breadth DataFrame
     sector_rotation — sector ratio DataFrame
 
-    ``behavioral.data_dir`` and ``behavioral.stale_window_days``
-    from settings.yaml are now read here and forwarded to every sub-fetcher
-    (previously each fetcher hardcoded its own value, so the YAML keys were
-    dead).
+    ``behavioral.data_dir`` and ``behavioral.stale_window_days`` from
+    settings.yaml are read here and forwarded to every sub-fetcher.
     """
     # load behavioral config block once and forward to each fetcher.
     from core.defaults import DEFAULTS
@@ -128,7 +126,7 @@ def fetch_all_behavioral(
         failed.append("sector_rotation")
 
     # aggregate "X/Y fetched, Z failed: …" line so operators see the
-    # health snapshot without grepping the 5 per-axis WARNs.
+    # health snapshot without grepping the per-axis WARNs.
     actual = len(result)
     if failed:
         logger.warning("[behavioral] %d feeds fetched, %d axes failed: %s",

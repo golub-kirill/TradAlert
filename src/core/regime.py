@@ -1,14 +1,12 @@
 """
 Broad-market regime: the MarketRegime state object and its classifier.
 
-Extracted from filter_engine so the most-reused seam in the codebase is a
-leaf module: consumers that only need the regime state (backtester, charts,
-Telegram, tests) no longer have to import the full engine, and the classifier
-is unit-testable as a pure function. ``core.filter_engine`` re-exports every
-name here, so ``from core.filter_engine import MarketRegime`` keeps working.
+Leaf module so regime-only consumers (backtester, charts, Telegram, tests) can
+skip importing the full engine, and the classifier stays a unit-testable pure
+function. ``core.filter_engine`` re-exports every name here, so
+``from core.filter_engine import MarketRegime`` keeps working.
 
-This module must not import ``core.filter_engine`` (it is the dependency
-arrow being straightened — tests/test_regime_module.py locks it).
+Must not import ``core.filter_engine`` (locked by tests/test_regime_module.py).
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ class MarketRegime:
     vix_rising  : True when VIX has risen over the slope-lookback window. Set
                   by ``classify_market_regime`` from ``regime.vix_slope_lookback_days``
                   (default 5 bars). Consulted by the entry gate when
-                  ``regime.vix_slope_block`` is enabled — see the Feb 2025
+                  ``regime.vix_slope_block`` is enabled.
     macro       : Optional MacroState (default None).
     behavioral  : Optional BehavioralState (default None).
     """

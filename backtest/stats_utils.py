@@ -222,11 +222,10 @@ def bootstrap_ci(
         for _ in range(n)
     ])
 
-    # Drop non-finite resamples before the percentile / SE. profit_factor returns
-    # +inf for a resample with zero losers (common on rare-loss samples), which
-    # would otherwise poison np.percentile/std into nan. The other metrics are
-    # always finite, so this is a no-op for them. n_samples reports how many
-    # resamples actually informed the CI.
+    # Drop non-finite resamples before percentile/SE: profit_factor returns +inf
+    # for a zero-loser resample, which would poison np.percentile/std into nan
+    # (no-op for the always-finite metrics). n_samples reports how many resamples
+    # informed the CI.
     finite = boots[np.isfinite(boots)]
     if finite.size == 0:
         return BootstrapResult(
@@ -336,20 +335,13 @@ def sharpe_ratio(monthly_r: Sequence[float]) -> float:
     """
     Annualised Sharpe ratio of a monthly R-multiple series, risk-free = 0.
 
-    The backtester is pure-R: ``monthly_r`` is the sum of trade R-multiples per
-    calendar month (``EquityCurve.monthly``). R is unit-less — 1R is whatever
-    fraction of equity the deployed sizing risks per trade — so there is no
-    equity-per-R baked into the backtest. We therefore report the **scale-invariant**
-    Sharpe (mean / std of the monthly R series, annualised by √12) with **no
-    risk-free hurdle**. Subtracting a fixed cash rate would require assuming a
-    1R↔equity-% factor that the backtest does not define; doing so would make the
-    ratio depend on the chosen risk fraction rather than on the strategy's edge.
-    Absolute return-over-cash (which *does* depend on the risk fraction) is reported
-    separately, not folded in here.
-
-    (Earlier versions subtracted a 5% risk-free rate converted at a hardcoded
-    "1R ≈ 10% of equity" — inconsistent with the project's 1%-fixed-risk policy and
-    not scale-invariant. rf=0 removes that assumption; see ADR-001 / verification docs.)
+    ``monthly_r`` is the sum of trade R-multiples per calendar month
+    (``EquityCurve.monthly``). R is unit-less, so the backtest has no
+    equity-per-R baseline; this reports the scale-invariant Sharpe
+    (mean / std, annualised by √12) with no risk-free hurdle. Subtracting a
+    cash rate would need a 1R↔equity-% factor the backtest doesn't define and
+    would make the ratio depend on the risk fraction, not the edge (see
+    ADR-001). Absolute return-over-cash is reported separately.
 
     Returns NaN when fewer than 2 months or when std == 0.
     """
@@ -366,13 +358,11 @@ def sortino_ratio(monthly_r: Sequence[float]) -> float:
     """
     Annualised Sortino ratio of a monthly R-multiple series, risk-free = 0.
 
-    Uses the standard *target downside deviation*: the squared shortfall below 0 is
-    averaged over **all** months (upside months contribute 0), i.e.
-    ``dd = sqrt(mean(min(r, 0) ** 2))`` over the full series — **not** averaged over
-    only the down-months. The "/N" form is the textbook definition and keeps the
-    number comparable to published Sortinos; the prior "/n_down" form divided by the
-    count of negative months, which inflates the denominator and understates Sortino.
-    Risk-free = 0, consistent with :func:`sharpe_ratio`.
+    Uses the standard *target downside deviation*: the squared shortfall below 0
+    is averaged over **all** months (upside months contribute 0), i.e.
+    ``dd = sqrt(mean(min(r, 0) ** 2))`` (the /N textbook form, comparable to
+    published Sortinos — not /n_down, which would understate it). Risk-free = 0,
+    consistent with :func:`sharpe_ratio`.
 
     Returns +inf when there are no negative months, NaN when < 2 months.
     """
@@ -416,8 +406,7 @@ def consecutive_loss_stats(r_multiples: Sequence[float]) -> ConsecutiveLossStats
 
     A trade is a loss when its R-multiple < 0. Scratch trades (r == 0) are
     neutral and break a streak — consistent with the project-wide convention
-    (stats.py / _profit_factor); the old ``<= 0`` counted scratches as losses
-    and inflated the loss-streak risk stats.
+    (stats.py / _profit_factor).
 
     Returns ConsecutiveLossStats with observed streak lengths,
     max streak, and average streak.

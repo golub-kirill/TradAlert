@@ -1,5 +1,5 @@
 """
-Bootstrap report display fixes (audit E1/E3):
+Bootstrap report display:
   - the "significant" (CI-excludes-0) mark is only meaningful for signed metrics
     (expectancy, total_r); win_rate and profit_factor are always > 0;
   - the resample count in the header is derived from the data, not hard-coded.

@@ -85,7 +85,7 @@ def _leg_or_none(cfg: dict, base: str, *, rsi_min: bool, rsi_max: bool,
     )
 
 
-# ── scan-gate blocks (beachhead — all required, see _REQUIRED_CONFIG_KEYS) ─────
+# ── scan-gate blocks (all required, see _REQUIRED_CONFIG_KEYS) ─────────────────
 
 @dataclass(frozen=True)
 class PriceCfg:
@@ -114,7 +114,7 @@ class TrendCfg:
     ma_slow: int
 
 
-# ── remaining blocks (modelled now; consumed in later migration phases) ───────
+# ── remaining config blocks ───────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class RegimeCfg:

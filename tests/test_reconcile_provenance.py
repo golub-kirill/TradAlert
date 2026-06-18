@@ -1,10 +1,10 @@
-"""Reconciliation provenance + effective_r aggregation + replay parity (P1 #7/#8/#9).
+"""Reconciliation provenance + effective_r aggregation + replay parity.
 
 Covers:
-  * backtest.db.reference_run    — prefer the latest scoring-OFF run (#9a)
-  * backtest.db.trade_r_column   — aggregate effective_r when present, else r_multiple (#7)
+  * backtest.db.reference_run    — prefer the latest scoring-OFF run
+  * backtest.db.trade_r_column   — aggregate effective_r when present, else r_multiple
   * backtest.db._run_use_scoring — parse _meta.use_scoring from a config snapshot
-  * reconcile_live._replay       — max-hold mode parity with the backtester (#8)
+  * reconcile_live._replay       — max-hold mode parity with the backtester
 No DB: the cursor is a tiny in-memory fake.
 """
 
@@ -68,14 +68,14 @@ def test_run_use_scoring_parses_meta():
     assert _run_use_scoring("not json") is None
 
 
-# ── trade_r_column (#7) ───────────────────────────────────────────────────────
+# ── trade_r_column ────────────────────────────────────────────────────────────
 
 def test_trade_r_column_prefers_effective_r_when_present():
     assert trade_r_column(_FakeCursor(has_col=True)) == "effective_r"
     assert trade_r_column(_FakeCursor(has_col=False)) == "r_multiple"
 
 
-# ── reference_run provenance (#9a) ────────────────────────────────────────────
+# ── reference_run provenance ──────────────────────────────────────────────────
 
 def test_reference_run_prefers_latest_scoring_off():
     # Newest (id 3) is scoring-ON; the reconciler must skip it for the scoring-OFF run.
@@ -95,7 +95,7 @@ def test_reference_run_explicit_id_wins():
     assert reference_run(_FakeCursor(runs=runs), run_id=1)["id"] == 1
 
 
-# ── reconcile_live._replay max-hold parity (#8) ───────────────────────────────
+# ── reconcile_live._replay max-hold parity ────────────────────────────────────
 
 def test_replay_max_hold_mode_parity():
     from scripts.reconcile_live import _replay

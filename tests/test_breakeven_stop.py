@@ -1,7 +1,7 @@
 """
-Breakeven stop (exit-logic Phase 2b): pure decision function + a portfolio scenario
-proving it moves the stop to entry once the trade reaches the trigger MFE, converting
-a give-back LOSS into a ~0R breakeven WITHOUT capping the upside, R off the INITIAL stop.
+Breakeven stop: pure decision function + a portfolio scenario proving it moves the
+stop to entry once the trade reaches the trigger MFE, converting a give-back LOSS into
+a ~0R breakeven WITHOUT capping the upside; R measured off the INITIAL stop.
 """
 
 from __future__ import annotations

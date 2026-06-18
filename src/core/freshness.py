@@ -1,17 +1,15 @@
 """
-core/freshness.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Live data-freshness guards — so the LIVE scanner never evaluates a signal on a partial
-(unclosed) bar or on stale data, and an overnight/weekend gap downgrades a fire to
-NEEDS_REVIEW instead of LIVE. See DESIGN §0 vector C/G + TODO "Live data-freshness hardening".
+Live data-freshness guards so the LIVE scanner never evaluates a signal on a
+partial (unclosed) bar or on stale data, and an overnight/weekend gap downgrades
+a fire to NEEDS_REVIEW instead of LIVE.
 
-**LIVE PATH ONLY.** The daily backtester replays COMPLETED end-of-day bars by construction, so
-none of this touches it — the run_id=15 headline stays byte-identical. These are pure helpers
-(trading-day calendar math, gap arithmetic); the live wiring in ``main.py`` decides what to do
-with the verdicts (refetch on stale, skip if still stale, mark NEEDS_REVIEW on a gap).
+LIVE PATH ONLY. The daily backtester replays completed EOD bars by construction
+and never touches this. These are pure helpers (trading-day calendar math, gap
+arithmetic); the live wiring in ``main.py`` acts on the verdicts (refetch on
+stale, skip if still stale, mark NEEDS_REVIEW on a gap).
 
-Exchange awareness: US tickers use the NYSE calendar, ``.TO`` names the TSX calendar (different
-holidays — Canada Day, Canadian Thanksgiving, etc.), via ``pandas_market_calendars``.
+Exchange awareness: US tickers use the NYSE calendar, ``.TO`` names the TSX
+calendar (different holidays), via ``pandas_market_calendars``.
 """
 
 from __future__ import annotations

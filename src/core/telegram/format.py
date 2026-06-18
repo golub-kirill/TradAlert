@@ -2,8 +2,8 @@
 Pure HTML formatters for Telegram messages (rich "card" style).
 
 No python-telegram-bot, no network, no `now()` — deterministic given inputs, so
-golden-string unit-testable and reusable by both the push (phase 1) and the
-interactive daemon (phase 2). A `sendPhoto` message = chart `.webp` + the caption
+golden-string unit-testable and reusable by both the outbound push and the
+interactive daemon. A `sendPhoto` message = chart `.webp` + the caption
 these return: a bold emoji header over a `<blockquote>` card, plus unicode meters
 (▰▱ R:R bar, ●-marker PnL gauge), profit/risk %s, and a collapsible
 `<blockquote expandable>` detail block so the headline stays compact.
@@ -290,7 +290,7 @@ def format_stand_down(run_date: Any, *, n_scanned: int = 0, regime_label: str | 
     return _card(f"📊 <b>TradAlert</b> · {run_date:%Y-%m-%d}", lines)
 
 
-# ── open-position card (phase 2 management) ──────────────────────────────────────
+# ── open-position card (daemon management) ───────────────────────────────────────
 
 def format_position_card(pos: Any, *, now: float | None = None,
                          unrealized_r: float | None = None, unrealized_pct: float | None = None,

@@ -1,56 +1,40 @@
 """
-backtest/walk_forward.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Rolling walk-forward validation for the TradAlert backtest system.
 
-Strategy
-────────
 Split the full date range into overlapping IS/OOS windows:
 
     |←──── IS (3yr) ────→|←─ OOS (1yr) ─→|
                       |←──── IS (3yr) ────→|←─ OOS (1yr) ─→|
-                                        ...
 
-With 8 years of data and a 6-month step, this yields ~9 windows,
-each with an independent OOS period.
+~9 windows from 8 years of data at a 6-month step, each with an
+independent OOS period.
 
 Walk-forward modes
 ──────────────────
-  baseline (re_tune=False):  Run the *current* config on IS and OOS.
-      Validates temporal stability but does not defeat parameter-tuning
+  baseline (re_tune=False):  Run the current config on IS and OOS.
+      Tests temporal stability only; does not defeat parameter-tuning
       data-snooping.
 
-  re-tune (re_tune=True):  For each IS window, run an OFAT sweep
-      via SweepEngine.run_ofat(), pick the best-by-E[R] config, then
-      apply *that* config to the OOS window.  The OOS cell is then a
-      true "if I had only seen up to IS_end, what would I have shipped"
-      test.  Sweep results are cached in-memory for fast re-runs.
+  re-tune (re_tune=True):  Per IS window, run an OFAT sweep, pick the
+      best-by-E[R] config, apply it to OOS — a true "if I had only seen
+      up to IS_end, what would I have shipped" test. Sweeps cached in-memory.
 
-  joint re-tune (re_tune=True, joint_samples>0):  Same protocol, but the
-      per-window search is SweepEngine.run_random_joint() — N seeded
-      multi-knob configs instead of one-factor-at-a-time. OFAT can only
-      ship a single-knob change per window, so its degradation understates
-      the overfitting of a multi-parameter selection; the joint mode
-      reproduces that selection with an explicit per-window trial count
-      (the input a deflated-Sharpe correction needs).
+  joint re-tune (re_tune=True, joint_samples>0):  Same protocol with
+      SweepEngine.run_random_joint() — N seeded multi-knob configs instead
+      of one-factor-at-a-time. OFAT ships one knob per window and so
+      understates multi-parameter overfitting; joint mode reproduces that
+      selection with an explicit per-window trial count (the input a
+      deflated-Sharpe correction needs).
 
-The key insight: the pre-loaded UniverseData is reused across every
-window.  Only the PortfolioConfig date-window changes, so no I/O
-occurs after initial data load.
+The pre-loaded UniverseData is reused across every window; only the
+PortfolioConfig date-window changes, so no I/O occurs after initial load.
 
 Public API
 ──────────
-    WalkForwardEngine(universe, base_cfg, base_port_cfg,
-                      is_years, oos_years, step_months, re_tune, grid)
-        .run(progress)  → WalkForwardReport
-
-    WalkForwardReport
-        .windows        list[WFWindow]
-        .is_stats        pd.DataFrame  (one row per window, IS metrics)
-        .oos_stats       pd.DataFrame  (one row per window, OOS metrics)
-        .degradation     float          IS_avg_er − OOS_avg_er
-        .oos_positive    float          fraction of OOS windows with E[R]>0
-        .summary_lines() list[str]
+    WalkForwardEngine(universe, base_cfg, base_port_cfg, ...).run(progress)
+        → WalkForwardReport
+    WalkForwardReport: .results, .to_dataframe(), .degradation,
+        .pct_oos_positive, .summary_lines()
 """
 
 from __future__ import annotations
@@ -74,7 +58,7 @@ def _advance_months(d: date, months: int) -> date:
 
     ``date.replace(month=...)`` keeps the original day, so a 29/30/31 start date
     landing on a shorter month would raise ValueError. Clamping makes window
-    stepping safe for any universe start date (audit V4); days <= 28 are unchanged.
+    stepping safe for any start date; days <= 28 are unchanged.
     """
     import calendar
     month_idx = d.month - 1 + months
@@ -139,7 +123,7 @@ class WalkForwardReport:
     step_months: int
     re_tune: bool = False      # whether re-tuning was used
     joint_samples: int = 0     # >0 → randomized multi-knob re-tune (N per window)
-    joint_seed: int = 0        # sampler seed (surfaced so seed-shopping is visible)
+    joint_seed: int = 0        # sampler seed (surfaced so seed-shopping stays visible)
 
     @property
     def oos_er_values(self) -> list[float]:
@@ -244,9 +228,8 @@ class WalkForwardReport:
                         f"    W{r.window.index:02d} tuned: {params_str}"
                     )
                 else:
-                    # Make silent baseline wins visible — the baseline competes
-                    # in IS selection, and "no candidate beat it" is itself a
-                    # result the reader must see.
+                    # Surface silent baseline wins: the baseline competes in IS
+                    # selection, and "no candidate beat it" is itself a result.
                     lines.append(
                         f"    W{r.window.index:02d} tuned: baseline retained "
                         f"(no candidate beat it in-sample)"
@@ -277,20 +260,17 @@ class WalkForwardEngine:
     """
 
     # Trade-count floor for IS parameter selection: a combo must clear this many
-    # IS trades to be eligible as "best", so a tiny-sample fluke E[R] cannot win
-    # selection. Falls back to the full set when no combo clears it (sparse window).
+    # IS trades to be eligible as "best", so a tiny-sample fluke E[R] cannot win.
     _MIN_IS_TRADES: int = 20
 
     @staticmethod
     def _select_best_is(points, min_trades: int):
         """Pick the highest-E[R] sweep point that clears the trade-count floor.
 
-        Fallback ladder (audit L1): combos clearing the floor → any combo that
-        actually traded → the baseline. The old ``or list(points)`` fallback could
-        pick an arbitrary ZERO-trade point — which, when a whole window's workers
-        crashed (every point zeroed/_empty), silently tuned the OOS leg on a junk
-        config. We never select a 0-trade point: if none traded, return the
-        baseline so a failed window degrades to baseline-config OOS, not garbage.
+        Fallback ladder: combos clearing the floor → any combo that actually
+        traded → the baseline. Never selects a 0-trade point, so a window whose
+        workers all crashed (every point zeroed) degrades to baseline-config OOS
+        rather than tuning the OOS leg on a junk config.
         """
         if not points:
             return None
@@ -326,15 +306,13 @@ class WalkForwardEngine:
         self._re_tune = re_tune
         self._grid = grid if grid is not None else PARAM_GRID
         # Joint re-tune: >0 replaces the per-window OFAT sweep with N seeded
-        # multi-knob samples (knobs mutated per sample = joint_knobs). The
-        # seed is offset by the window index so every window draws its own
-        # reproducible candidate set.
+        # multi-knob samples (joint_knobs mutated per sample). Seed is offset
+        # by window index so each window draws its own reproducible candidates.
         self._joint_samples = max(0, int(joint_samples))
         self._joint_knobs = max(1, int(joint_knobs))
         self._joint_seed = int(joint_seed)
-        # Parallel workers for the per-window re-tune sweep (re_tune=True).
-        # 0/1 = sequential. The baseline (re_tune=False) path runs single
-        # _run_one calls and does not use the pool.
+        # Parallel workers for the per-window re-tune sweep. 0/1 = sequential.
+        # The baseline (re_tune=False) path runs single _run_one calls, no pool.
         self._n_workers = n_workers
 
         # In-memory sweep cache keyed by (is_start, is_end)
@@ -519,9 +497,9 @@ class WalkForwardEngine:
             best_is = self._select_best_is(all_pts, self._MIN_IS_TRADES)
             self._sweep_cache[cache_key] = best_is
 
-        # Extract the tuned mutation set from the best sweep point. Joint
-        # points carry the full multi-knob dict; OFAT points carry their
-        # single knob; the baseline carries nothing (OOS replays base config).
+        # Tuned mutation set from the best sweep point: joint points carry the
+        # full multi-knob dict; OFAT points carry their single knob; the
+        # baseline carries nothing (OOS replays base config).
         tuned_params: dict = {}
         if not best_is.is_baseline:
             if getattr(best_is, "mutations", None):
@@ -534,10 +512,9 @@ class WalkForwardEngine:
             window.oos_start, window.oos_end, window, tuned_params,
         )
 
-        # IS point: the SAME tuned config's in-sample result (best_is is the IS
-        # sweep point that was selected). Reporting tuned-IS vs tuned-OOS makes
-        # degradation an honest overfitting measure — the old baseline-IS-vs-
-        # tuned-OOS understated it (different configs on each side).
+        # IS point = the SAME tuned config's in-sample result (best_is is the
+        # selected IS sweep point). Tuned-IS vs tuned-OOS keeps degradation an
+        # honest overfitting measure (same config on both sides).
         is_pt = best_is
 
         return is_pt, oos_pt, tuned_params
@@ -578,8 +555,8 @@ class WalkForwardEngine:
             param_label=f"W{window.index:02d}-tuned",
             group="walk_forward",
             is_baseline=False,
-            # Route every knob through the settings channel too — without
-            # this, settings-resident winners (e.g. behavioral.size_mult_floor)
-            # silently replay baseline settings on the OOS leg.
+            # Route every knob through the settings channel too; otherwise
+            # settings-resident winners (e.g. behavioral.size_mult_floor) replay
+            # baseline settings on the OOS leg.
             mutations=mutations,
         )

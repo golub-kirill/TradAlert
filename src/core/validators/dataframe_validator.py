@@ -199,11 +199,11 @@ def _fix_volume_dtype(df: pd.DataFrame, tag: str) -> pd.DataFrame:
 
 
 def _drop_duplicate_dates(df: pd.DataFrame, tag: str) -> pd.DataFrame:
-    """Drop duplicate-timestamp rows (keep the last — the most recently fetched/corrected
-    value), with a log. A duplicate bar date is a recoverable provider blip; keeping one
-    preserves index uniqueness so downstream ``.iloc[-1]`` / resampling can't double-count.
-    No-op on clean data. (Monotonicity is already guaranteed by the preceding ``sort_index``;
-    calendar gaps from holidays are NOT a violation, so they are not flagged here.)"""
+    """Drop duplicate-timestamp rows, keeping the last (most recently corrected) value.
+
+    A duplicate bar date is a recoverable provider blip; keeping one preserves index
+    uniqueness so downstream ``.iloc[-1]`` / resampling can't double-count. No-op on
+    clean data. Holiday calendar gaps are not violations and are not flagged here."""
     dup = df.index.duplicated(keep="last")
     n = int(dup.sum())
     if n:

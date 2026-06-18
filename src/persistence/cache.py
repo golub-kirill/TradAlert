@@ -192,9 +192,9 @@ def get_or_fetch(
 
 def _path(ticker: str, cache_dir: Path | str) -> Path:
     # Reject path-traversal before the ticker becomes a filename. Legit symbols
-    # (^VIX, BRK.B, CL=F, ATD.TO, TEST.1) contain none of these, so this only
-    # blocks separators / parent refs — defense in depth on the owner-gated
-    # Telegram chart path that flows a user-supplied ticker here (audit F4).
+    # (^VIX, BRK.B, CL=F, ATD.TO, TEST.1) contain none of these, so blocking
+    # separators / parent refs is defense in depth on the Telegram chart path
+    # that flows a user-supplied ticker here.
     t = str(ticker).upper()
     if (not t) or ("/" in t) or ("\\" in t) or (".." in t) or ("\x00" in t):
         raise ValidationError(f"invalid ticker for cache path: {ticker!r}")

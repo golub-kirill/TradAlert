@@ -195,10 +195,9 @@ def save_scan_results(
         )
     except (MySQLError, ConfigError) as exc:
         # Loud, not a warning: a failed insert means the scan fired alerts but
-        # journaled nothing, so reconcile_live is blind to those fires. Stay
-        # fail-open (return 0, never abort the scan) but make the loss VISIBLE —
-        # the caller surfaces it to the operator. A common cause is a missing
-        # tier/review_reason column (see data/scan_results_tier_migration.sql).
+        # journaled nothing, so reconcile_live is blind to those fires. Fail-open
+        # (return 0, never abort the scan) but make the loss visible to the
+        # operator. Common cause: a missing tier/review_reason column.
         logger.error(
             "scan_results bulk insert FAILED for run_id=%d — live journal is "
             "INCOMPLETE; reconciliation will be blind to this scan's fires: %s",

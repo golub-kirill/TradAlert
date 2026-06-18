@@ -5,13 +5,11 @@ Computes:
 - pct_above_ma200 : % of S&P 500 constituents trading above their MA200.
 - sector_rotation : (XLI + XLF) / (XLP + XLU) growth-vs-defensive ratio.
 
-SURVIVORSHIP CAVEAT (audit F3): ``pct_above_ma200`` is built from the CURRENT
-S&P 500 membership applied across each name's full price history. Names that were
-removed from the index are absent, and today's members are projected backward, so
-historical breadth is biased bullish (only survivors are counted). The honest fix
-is a date-stamped historical-membership source; until then the early-history
-breadth axis should be read as optimistic. The fetcher emits a WARNING on every
-recompute so the limitation is never silent.
+SURVIVORSHIP CAVEAT (audit F3): ``pct_above_ma200`` uses the CURRENT S&P 500
+membership across each name's full price history, so removed names are absent and
+today's members are projected backward — early-history breadth reads bullish. Fix
+needs a date-stamped historical-membership source; until then the fetcher WARNs on
+every recompute.
 """
 
 from __future__ import annotations
@@ -63,10 +61,9 @@ def compute_sp500_breadth(
         logger.warning("[breadth] no S&P 500 constituents available")
         return _load_cached_or_empty(parquet_path, staleness_hours)
 
-    # Survivorship bias (audit F3): this is the CURRENT membership applied to the
-    # full price history — removed names are missing and present names are
-    # projected backward, biasing early-history breadth bullish. A date-stamped
-    # historical-membership feed is the proper fix; flag it loudly until then.
+    # Survivorship bias (audit F3): CURRENT membership applied to full history
+    # biases early-history breadth bullish; flag it loudly until a date-stamped
+    # historical-membership feed exists.
     logger.warning(
         "[breadth] computed from CURRENT S&P 500 membership (%d names) across full "
         "history — survivorship bias; early-history breadth reads optimistic "
@@ -74,10 +71,8 @@ def compute_sp500_breadth(
         len(constituents),
     )
 
-    # Full S&P 500 universe — no truncation. The old ``constituents[:100]`` skewed
-    # breadth toward alphabetically-early (A–C) names and baked in a fixed count,
-    # violating the universe-agnostic rule (NORTH STAR #2). Tickers without at least
-    # 200 cached bars are skipped.
+    # Full S&P 500 universe — no truncation (universe-agnostic, NORTH STAR #2).
+    # Tickers without at least 200 cached bars are skipped.
     above_by_ticker: dict[str, pd.Series] = {}
     for ticker in constituents:
         try:
@@ -94,9 +89,7 @@ def compute_sp500_breadth(
         return _load_cached_or_empty(parquet_path, staleness_hours)
 
     # Row-wise % of constituents above their MA200 across the union of dates.
-    # Vectorised (replaces the per-date Python loop) so the full universe stays cheap;
-    # ``skipna`` drops dates a ticker didn't trade, matching the prior semantics
-    # (MA200-warmup bars stay counted as below, exactly as before).
+    # ``skipna`` drops dates a ticker didn't trade; MA200-warmup bars count as below.
     above_df = pd.DataFrame(above_by_ticker)
     pct = (100.0 * above_df.mean(axis=1, skipna=True)).dropna()
     out = pd.DataFrame({"pct_above_ma200": pct})
@@ -182,9 +175,8 @@ def _write_meta(meta_path: Path) -> None:
 
 def _load_cached_or_empty(parquet_path: Path,
                           staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
-    """Serve the cached parquet (fail-open) when a fresh read fails, but WARN with
-    the cache age when it is past the staleness window — an unbounded-stale cache
-    must not masquerade as a fresh feed (mirrors the macro fetchers)."""
+    """Serve cached parquet (fail-open) when a fresh read fails; WARN with cache age
+    when past the staleness window so a stale cache can't masquerade as fresh."""
     if parquet_path.exists():
         try:
             df = pd.read_parquet(parquet_path)

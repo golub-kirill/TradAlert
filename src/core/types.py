@@ -1,20 +1,14 @@
 """
 Cross-layer DTOs (domain types).
 
-This module exists so that ``src/persistence/`` and ``src/core/`` can
-share result types without either importing from the application entry
-point (``main.py``).
-
-Previously ``TickerResult`` lived in ``main.py`` and was imported by
-``persistence.db`` via ``TYPE_CHECKING`` — a layering inversion
-(infrastructure → application) that only worked because the cycle was
-deferred to type-checking time.
+A leaf module so ``src/persistence/`` and ``src/core/`` can share result types
+without importing the application entry point (``main.py``); it must not import
+the engine.
 
 Public types
 ------------
 ScanResult / SignalResult / GateCheck
-    Engine result DTOs (moved here from ``core.filter_engine``, which
-    re-exports them — this module is a leaf; it must not import the engine).
+    Engine result DTOs; ``core.filter_engine`` re-exports them.
 TickerResult
     Per-ticker outcome of one live scan: scan + optional signal + optional error.
 """
@@ -160,14 +154,10 @@ class SignalResult:
     event_risk: str = ""      # e.g. "FOMC in 2d (2026-03-18)"
 
 
-# Typo-protected constants for signal types and directions.
-# 65+ places in the codebase compare strings like signal.direction == "long"
-# or signal.signal_type == "momentum". A Literal type alias catches mypy but
-# not runtime typos. Use these constants instead of bare strings.
-#
-# Backwards-compatible: still stored as plain `str` values, just sourced
-# from one place. The string values intentionally match the Literal aliases
-# defined above in this module.
+# Typo-protected constants for signal types and directions. Literal aliases
+# catch mypy but not runtime typos; use these constants instead of bare strings
+# at the many == comparison sites. Values intentionally match the Literal
+# aliases above.
 
 class SIGNAL_TYPE:
     MOMENTUM: str = "momentum"

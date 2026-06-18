@@ -68,8 +68,8 @@ def fetch_yf_macro_series(
         ticker_obj = yf.Ticker(ticker)
         df = ticker_obj.history(start=start, auto_adjust=False)
     except (OSError, ValueError, AttributeError, RuntimeError) as exc:
-        # yfinance wraps network and parse errors broadly; cover OS/value
-        # for the common cases and Attribute/Runtime for the upstream wraps.
+        # yfinance wraps network/parse errors broadly — catch the common OS/value
+        # cases plus the Attribute/Runtime upstream wraps.
         logger.warning("[yf_macro] fetch failed for %s: %s", ticker, exc, exc_info=True)
         return _load_cached_or_empty(parquet_path, staleness_hours)
 
@@ -91,9 +91,8 @@ def fetch_yf_macro_series(
 
 def _load_cached_or_empty(parquet_path: Path,
                           staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
-    """Serve the cached parquet (fail-open) when a fetch fails, but WARN with the
-    cache age when it is past the staleness window — a silently-unbounded-stale
-    cache must not masquerade as a fresh series (audit F2)."""
+    """Serve cached parquet (fail-open) when a fetch fails; WARN with cache age when
+    past the staleness window so a stale cache can't masquerade as fresh (audit F2)."""
     if parquet_path.exists():
         try:
             df = pd.read_parquet(parquet_path)

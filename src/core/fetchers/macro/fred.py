@@ -81,8 +81,8 @@ def fetch_fred_series(
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.RequestException as exc:
-        # do NOT log str(exc) — requests embeds the full URL
-        # (with api_key=...) in HTTPError messages. Log type + status only.
+        # do NOT log str(exc) — requests embeds the full URL (with api_key=...)
+        # in HTTPError messages. Log type + status only.
         status = getattr(getattr(exc, "response", None), "status_code", "n/a")
         logger.warning(
             "[fred] fetch failed for %s: %s (status=%s)",
@@ -154,12 +154,8 @@ def _is_monthly_series(series_id: str) -> bool:
 
 
 def _get_api_key() -> str | None:
-    """Read the FRED API key from the env var named in settings.yaml.
-
-    previously the env-var name was hardcoded as "FRED_API_KEY".
-    Now it's read from ``settings.yaml::macro.fred_api_key_env`` (falling
-    back to "FRED_API_KEY" so existing deployments keep working).
-    """
+    """Read the FRED API key from the env var named by
+    ``settings.yaml::macro.fred_api_key_env`` (defaults to "FRED_API_KEY")."""
     from core.defaults import DEFAULTS
     import yaml
     from pathlib import Path
@@ -176,9 +172,8 @@ def _get_api_key() -> str | None:
 
 def _load_cached_or_empty(parquet_path: Path,
                           staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
-    """Load cached parquet (fail-open) when a fetch fails, but WARN with the cache
-    age when it is past the staleness window so an unbounded-stale cache can't
-    masquerade as a fresh series (audit F2)."""
+    """Load cached parquet (fail-open) when a fetch fails; WARN with cache age when
+    past the staleness window so a stale cache can't masquerade as fresh (audit F2)."""
     if parquet_path.exists():
         try:
             df = pd.read_parquet(parquet_path)

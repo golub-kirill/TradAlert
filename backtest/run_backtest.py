@@ -13,7 +13,7 @@ Usage
     python backtest/run_backtest.py --tickers MSFT GOOGL TSLA  # subset
     python backtest/run_backtest.py --walk-forward          # IS/OOS validation
     python backtest/run_backtest.py --mean-rev-tune         # mean-rev sweep
-    python backtest/run_backtest.py --workers=8             # parrallel running
+    python backtest/run_backtest.py --workers=8             # parallel
 """
 
 from __future__ import annotations
@@ -32,9 +32,8 @@ for _p in [str(_ROOT), str(_ROOT / "src")]:
         sys.path.insert(0, _p)
 
 # Load secrets.env so DB_* (journaling) and FRED_API_KEY (macro) reach
-# os.environ. This entry point must load it explicitly (as main.py does at
-# import); without it --journal fails with "DB env vars not set" even when
-# config/secrets.env is populated.
+# os.environ. This entry point must load it explicitly; without it journaling
+# fails with "DB env vars not set" even when config/secrets.env is populated.
 try:
     from dotenv import load_dotenv
 
@@ -113,10 +112,9 @@ def main() -> None:
     uni = load_universe(
         tickers,
         ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
-        earnings_aware=True,  # always load history; earnings_buffer_days sweep
-        # has zero effect when this is False because
-        # prepped[ticker].earnings_history stays [] and
-        # next_earn is always None inside call_engine_slice
+        earnings_aware=True,  # always load history; when False the
+        # earnings_buffer_days sweep is a no-op (earnings_history stays [],
+        # next_earn always None in call_engine_slice)
         cache_dir=_ROOT / "data" / "prices",
         earnings_dir=_ROOT / "data" / "earnings_history",
         start_date=start_date,
@@ -139,8 +137,8 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size positions);
-        # risk-adjusted optimum from the 2026-06-04 budget sweep (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
+        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size
+        # positions); risk-adjusted optimum (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
@@ -148,14 +146,12 @@ def main() -> None:
         "close_open_at_eod": True,
     }
 
-    # Chronic-loser penalty (--chronic-penalty). We pass the raw config
-    # *dict* through base_port; each sweep worker constructs its own
-    # TickerHealth so per-run ledgers stay isolated. When the flag is off,
-    # the key is absent and PortfolioConfig.ticker_health stays None.
+    # Chronic-loser penalty (--chronic-penalty). Pass the raw config dict through
+    # base_port; each sweep worker builds its own TickerHealth so per-run ledgers
+    # stay isolated. Flag off → key absent, PortfolioConfig.ticker_health=None.
     if args.chronic_penalty:
         chronic_cfg = base_cfg.get("chronic_loser_penalty", {}) or {}
-        # Force enabled even if YAML default is False (the CLI flag is the
-        # operator's explicit opt-in).
+        # Force enabled even if YAML default is False (the flag is opt-in).
         chronic_cfg = {**chronic_cfg, "enabled": True}
         base_port["chronic_loser_cfg"] = chronic_cfg
         print(f"  ▸ Chronic-loser penalty: ENABLED  "
@@ -188,11 +184,10 @@ def main() -> None:
         print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
               "short entries fire in BEAR regimes)")
 
-    # Time-based max-hold exit (--max-hold-days). Enforces a swing-trading
-    # horizon: a held trade is force-closed at the bar's CLOSE once it has
-    # been held N trading bars. Off by default (key absent in base_port) so
-    # the baseline replays bit-identically. `execution.max_hold_days` in
-    # filters.yaml supplies the default; the CLI flag overrides it.
+    # Time-based max-hold exit (--max-hold-days): force-close a held trade at the
+    # bar's CLOSE once held N trading bars. Off by default (key absent) so the
+    # baseline replays bit-identically. Default from execution.max_hold_days in
+    # filters.yaml; the CLI flag overrides it.
     mh_days = exec_cfg.get("max_hold_days")
     mh_mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
     if args.max_hold_days is not None:
@@ -205,7 +200,7 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
-    # ATR trailing stop (exit-logic Phase 2a). Off by default → baseline identical.
+    # ATR trailing stop. Off by default → baseline identical.
     if args.trail_atr_mult is not None:
         base_port["trail_atr_mult"] = float(args.trail_atr_mult)
         if args.trail_activate_r is not None:
@@ -565,7 +560,7 @@ def _parse_args() -> argparse.Namespace:
                         "the position is not in profit (lets winners run to "
                         "target).")
     p.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
-                   help="ATR trailing stop (exit-logic Phase 2a): ratchet the stop to "
+                   help="ATR trailing stop: ratchet the stop to "
                         "highest_high − ATR×M (long; short mirrors), in the trade's "
                         "favor only. Off by default so the baseline replays "
                         "identically. R stays off the INITIAL stop — the trail changes "
@@ -637,10 +632,9 @@ def _journal_baseline(
             "start_date": str(start_date) if start_date else None,
             "end_date": str(end_date) if end_date else None,
             "universe": uni.summary(),
-            # Run provenance: backtest.db.reference_run selects the expectancy
-            # reference on `use_scoring is False`. Every run is scoring-OFF now,
-            # so write the constant — older scoring-ON rows stay distinguishable
-            # and are still skipped.
+            # backtest.db.reference_run selects the expectancy reference on
+            # `use_scoring is False`. All runs are scoring-OFF now; writing the
+            # constant keeps older scoring-ON rows distinguishable (and skipped).
             "use_scoring": False,
         }
 

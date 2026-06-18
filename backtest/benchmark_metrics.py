@@ -8,19 +8,18 @@ and % periods beating. Pure functions; ``scripts/benchmark_relative.py`` does th
 UNIT CONTRACT (load-bearing — read before using)
 ─────────────────────────────────────────────────
 Every metric here except :func:`align_strategy_benchmark` operates on two *already
-aligned, same-unit* monthly series. The strategy P&L is in **R** (unit-less: 1R is
-whatever equity fraction the sizing risks per trade); a price benchmark (SPY) is in
-**decimal return**. Each excess metric is built on the *difference* ``strat − bench``,
-which is only meaningful when both legs share a unit — so the **caller** must first
-convert strategy R → return under an explicit equity-per-R assumption (the project's
-fixed-risk policy is 1R = 1% equity) before calling these.
+aligned, same-unit* monthly series. Strategy P&L is in **R** (unit-less); a price
+benchmark (SPY) is in **decimal return**. Each excess metric uses the difference
+``strat − bench``, meaningful only when both legs share a unit — so the **caller**
+must first convert strategy R → return under an explicit equity-per-R assumption
+(project policy: 1R = 1% equity) before calling these.
 
-A series' *own* standalone Sharpe (``stats_utils.sharpe_ratio``) is the only genuinely
-unit-free benchmark comparison; the excess metrics here are assumption-dependent on the
-1R↔equity factor and must be labelled as such by the caller (see ``validation_prereg.md``
-§P1-M). With risk-free = 0, :func:`excess_sharpe` and :func:`information_ratio` are the
-SAME quantity — the annualised Sharpe of the active-return series — so the latter
-delegates to the former; both names exist to match the validation-program spec.
+A series' own standalone Sharpe (``stats_utils.sharpe_ratio``) is the only unit-free
+benchmark comparison; the excess metrics here depend on the 1R↔equity factor and must
+be labelled as such by the caller (see ``validation_prereg.md`` §P1-M). With
+risk-free = 0, :func:`excess_sharpe` and :func:`information_ratio` are the SAME
+quantity (annualised Sharpe of the active-return series) — the latter delegates to the
+former; both names exist to match the validation-program spec.
 """
 
 from __future__ import annotations
@@ -59,12 +58,11 @@ def align_strategy_benchmark(strat_monthly, bench_monthly):
     """Align a strategy monthly-R series with a benchmark monthly-return series.
 
     The strategy series is densified to **contiguous** calendar months over its own
-    active span ``[first, last]``, zero-filling months with no closed trade — the same
-    contiguous-month logic ``equity_curve.build_curve`` uses for Sharpe (flat months are
-    real; the √12 annualisation assumes one value per calendar month, and a flat strategy
-    month in which the benchmark moved is a genuine relative gain/loss). The densified
-    strategy is then intersected with the benchmark's months (the benchmark always has a
-    value, so it is not zero-filled).
+    active span ``[first, last]``, zero-filling months with no closed trade (same logic
+    ``equity_curve.build_curve`` uses for Sharpe — flat months are real, and a flat
+    strategy month in which the benchmark moved is a genuine relative gain/loss). The
+    densified strategy is then intersected with the benchmark's months (the benchmark
+    always has a value, so it is not zero-filled).
 
     Returns ``(periods, strat_arr, bench_arr)`` — a ``PeriodIndex('M')`` and two aligned
     float ndarrays, sorted ascending. Empty inputs yield empty outputs.

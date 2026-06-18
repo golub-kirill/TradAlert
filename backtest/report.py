@@ -524,10 +524,9 @@ def _build_html(report, equity=None, wf_report=None,
         eq_dates = [str(d.date()) for d in equity.equity.index]
         eq_vals = [round(float(v), 4) for v in equity.equity.values]
         dd_vals = [round(float(v), 4) for v in equity.drawdown.values]
-        # Backfill zero-trade months so silent regimes (e.g. the
-        # Mar-May 2025 tariff-scare gap from the 2026-05-27 postmortem)
-        # show up explicitly in the bar chart. Renders zero months grey
-        # so they're distinguishable from real flat months.
+        # Backfill zero-trade months so silent regimes (e.g. the Mar-May 2025
+        # tariff-scare gap) show up explicitly in the bar chart, rendered grey
+        # to stay distinguishable from real flat months.
         _mo_keys = list(equity.monthly.index)
         if _mo_keys:
             _first = _mo_keys[0]
@@ -572,7 +571,7 @@ def _build_html(report, equity=None, wf_report=None,
         mo_colors_js = str(mo_colors)
         sh_cls = "green" if equity.sharpe > 1 else ("yellow" if equity.sharpe > 0 else "red")
         # inf Sortino (no downside months) is degenerate, not a validated pass —
-        # don't auto-green it via the numeric >1.5 path (audit E3).
+        # don't auto-green it via the numeric >1.5 path.
         so_cls = "green" if (
             equity.sortino == equity.sortino
             and equity.sortino != float("inf")
@@ -635,9 +634,8 @@ def _build_html(report, equity=None, wf_report=None,
 </table></div>"""
 
     # ── Position Sizing & Kelly ───────────────────────────────────────────
-    # Operator-facing layout: 1% fixed-risk recommendation leads; Kelly is
-    # demoted to a labelled reference table. Mirrors print_kelly() so the
-    # HTML report cannot disagree with the terminal report.
+    # 1% fixed-risk recommendation leads; Kelly is a labelled reference table.
+    # Mirrors print_kelly() so HTML and terminal reports cannot disagree.
     kelly_html = ""
     if kelly:
         risk_dollars = bankroll * fixed_risk_pct
@@ -740,9 +738,8 @@ def _build_html(report, equity=None, wf_report=None,
         )
 
     # ── Stop-out latency histogram ────────────────────────────────────────
-    # Postmortem 2026-05-27 found 11 of 36 stops failed within 3 bars
-    # (-12.9R, 26 % of stop damage). Surfacing the distribution here makes
-    # bad-entry latency visible at a glance for future runs.
+    # Surfaces the bars-held distribution of stop-outs so early-bar stop damage
+    # (bad-entry latency) is visible at a glance.
     stop_latency_html = ""
     try:
         _stop_trades = [

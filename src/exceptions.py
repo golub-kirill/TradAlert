@@ -58,16 +58,15 @@ class InsufficientDataError(ValidationError):
 
 class DataStalenessError(ValidationError):
     """
-    Signals that a ticker's DATA (its most recent bar) is still behind the last completed
-    exchange session AFTER a refetch attempt — the engine would otherwise evaluate a signal
-    on bars blind to one or more sessions (weekend/overnight news). This is the bar
-    *timestamp* in trading days (not cache *file* age), on the LIVE path only.
+    Ticker's most recent bar is still behind the last completed exchange session
+    AFTER a refetch — the engine would otherwise evaluate a signal blind to one or
+    more sessions (weekend/overnight news). Measures bar *timestamp* in trading
+    days (not cache *file* age), LIVE path only.
 
-    NOTE: the live scanner does NOT raise this today — a stale-after-refetch (or gapped) fire
-    is DOWNGRADED to ``SignalResult.tier = "NEEDS_REVIEW"`` (``main._mark_review``) so it is
-    surfaced for review rather than dropped. This type is retained for callers that would
-    rather treat staleness as a hard error (see ``core.freshness`` + the live data-freshness
-    hardening).
+    NOTE: the live scanner does NOT raise this — a stale-after-refetch (or gapped)
+    fire is downgraded to ``SignalResult.tier = "NEEDS_REVIEW"``
+    (``main._mark_review``) rather than dropped. Retained for callers that prefer
+    to treat staleness as a hard error.
 
     Attributes
     ----------

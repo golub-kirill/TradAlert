@@ -2,12 +2,8 @@
 S&P/TSX 60 constituent list from Wikipedia.
 
 Scrapes the current TSX 60 constituents table (~60 large-cap Canadian names)
-and caches the result for 7 days. Returns a list of ticker strings with ``.TO``
-suffix for Yahoo Finance compatibility.
-
-(Earlier this pointed at the S&P/TSX **Composite** page (~220 names) while still
-being named/guarded for the 60 — the count guard below would never have caught
-that mismatch. Fixed to the 60-name index page.)
+from the 60-name index page and caches the result for 7 days. Returns ticker
+strings with ``.TO`` suffix for Yahoo Finance compatibility.
 """
 
 from __future__ import annotations
@@ -101,8 +97,7 @@ def get_tsx60_constituents(
 
     # The S&P/TSX 60 has ~60 members; allow a small band for footnote/drift rows.
     # An out-of-band count means the scrape grabbed the wrong table (e.g. the
-    # ~220-name Composite this fetcher used to point at) — reject rather than
-    # silently adopt a wrong universe.
+    # ~220-name Composite) — reject rather than adopt a wrong universe.
     _MIN_EXPECTED, _MAX_EXPECTED = 55, 70
     if not (_MIN_EXPECTED <= len(tickers) <= _MAX_EXPECTED):
         logger.error(

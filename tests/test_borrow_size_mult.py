@@ -1,8 +1,8 @@
 """
 Borrow drag must scale with position size (audit D2): a reduced-size short
 borrows proportionally fewer shares, so effective_r = (r_multiple - borrow_drag_r)
-* size_mult, not r_multiple*size_mult - borrow_drag_r (which over-charged borrow
-on size-reduced shorts). Long-only behavior is unchanged (drag = 0).
+* size_mult, not r_multiple*size_mult - borrow_drag_r (the latter over-charges
+borrow on size-reduced shorts). Long-only is unchanged (drag = 0).
 """
 
 from __future__ import annotations
@@ -34,8 +34,7 @@ def test_borrow_drag_scales_with_size_mult():
 
     assert full.effective_r == pytest.approx((2.0 - drag) * 1.0)
     assert half.effective_r == pytest.approx((2.0 - drag) * 0.5)
-    # The half-size short pays half the borrow — not the full drag the old
-    # r*size_mult - drag formula charged.
+    # Half-size short pays half the borrow, not the full drag.
     assert half.effective_r != pytest.approx(2.0 * 0.5 - drag)
 
 

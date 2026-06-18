@@ -104,10 +104,9 @@ PARAM_GRID: list[ParamSpec] = [
               "Momentum MACD delta gate", "momentum_entry"),
 
     # Momentum exit (fade trigger). NB `signals.momentum.short` is the held-LONG
-    # momentum-fade EXIT (legacy name), not a short entry. The rsi_min floor
-    # below rarely binds — at a MACD zero-cross-down RSI is usually well above
-    # 40 — so sweeping it often shows little/no effect (inert gate, not a wiring
-    # bug). Instrument binding frequency before pruning/widening.
+    # momentum-fade EXIT (legacy name), not a short entry. The rsi_min floor below
+    # rarely binds (at a MACD zero-cross-down RSI is usually well above 40), so
+    # sweeping it often shows little effect — an inert gate, not a wiring bug.
     # See docs/triage_raw_notes_2026-06.md (Note 2a).
     ParamSpec("signals.momentum.short.rsi_min",
               (25, 30, 35, 40),
@@ -154,10 +153,9 @@ PARAM_GRID: list[ParamSpec] = [
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
 
-    # Behavioral size-multiplier floor. The consumer key is
-    # `size_mult_floor` (settings.yaml + behavioral classifier). The old
-    # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
-    # name nobody reads, so this row had no effect. Fixed to `size_mult_floor`.
+    # Behavioral size-multiplier floor. Consumer key is `size_mult_floor`
+    # (settings.yaml + behavioral classifier); the alias must match that spelling
+    # or this row is a no-op.
     ParamSpec("behavioral.size_mult_floor",
               (0.25, 0.35, 0.50, 0.65),
               "Behavioral size floor", "phase8"),
@@ -181,9 +179,9 @@ PORTFOLIO_GRID: list[ParamSpec] = [
               "Max portfolio drawdown (R)", "portfolio",
               fmt="{:.1f}"),
 
-    # Dynamic exits. These dimensions WERE searched (2026-06 exit-logic probes),
-    # so they must sit in the grid for honest multiple-testing trial counts —
-    # the deflated-Sharpe N is only as truthful as the grid it sweeps.
+    # Dynamic exits. These dimensions were searched, so they must sit in the grid
+    # for honest multiple-testing trial counts — the deflated-Sharpe N is only as
+    # truthful as the grid it sweeps.
     ParamSpec("portfolio.breakeven_trigger_r",
               (0.5, 0.75, 1.0, 1.25, 1.5),
               "Breakeven stop trigger (R)", "exits",
@@ -351,7 +349,7 @@ class SweepReport:
                 "r_multiple": round(t.r_multiple, 4),
                 # size- and borrow-adjusted R (= r_multiple × size_mult − borrow drag).
                 # validate_shorts uses this for the economic Sharpe/Calmar checks so the
-                # short side isn't judged on raw per-unit R (audit M7).
+                # short side isn't judged on raw per-unit R.
                 "effective_r": round(t.effective_r, 4),
                 "size_mult": round(t.size_mult, 4),
                 "borrow_annual_rate": round(t.borrow_annual_rate, 5),
@@ -715,9 +713,8 @@ class SweepEngine:
                     n_failed += 1
                     # Log the FULL worker traceback (exc_info), not just str(exc),
                     # so a BrokenProcessPool / OOM / pickling crash is diagnosable
-                    # instead of silently swallowed and replaced by a zeroed point
-                    # that downstream tuning then treats as a real 0-trade config
-                    # (audit L1).
+                    # rather than silently swallowed into a zeroed point that
+                    # downstream tuning treats as a real 0-trade config.
                     logger.error("Job failed [%s=%s] — substituting an empty point",
                                  job["param_label"], job["param_value"], exc_info=exc)
                     points[idx] = _empty_point(
@@ -751,9 +748,8 @@ class SweepEngine:
             mutations: dict | None = None,
     ) -> SweepPoint:
         """Hot-path: construct engine + portfolio config, run the backtest,
-        collect stats. Decomposed into module-level helpers (so the worker
-        stand-in shares them) — config-load and the per-job settings prep no
-        longer touch disk on every job (settings.yaml is cached per process)."""
+        collect stats. Built from module-level helpers shared with the worker
+        stand-in; settings.yaml is cached per process so jobs don't re-read disk."""
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -803,10 +799,9 @@ _PORT_FIELDS = frozenset({
     "breakeven_trigger_r", "breakeven_buffer_atr",
 })
 
-# config/settings.yaml is read ONCE per process and reused: each job deep-copies
-# this base and applies its own mutations, instead of re-reading the file on every
-# job. _UNLOADED distinguishes "not yet read" from a cached read that yielded None
-# (missing/unreadable file → fail-open, same as the old per-job behavior).
+# config/settings.yaml is read ONCE per process: each job deep-copies this base and
+# applies its own mutations. _UNLOADED distinguishes "not yet read" from a cached
+# read that yielded None (missing/unreadable file → fail-open).
 _SETTINGS_UNLOADED = object()
 _BASE_SETTINGS = _SETTINGS_UNLOADED
 
@@ -904,10 +899,10 @@ def _collect_point(trades, run_id, param_name, param_value, param_label,
 
 # ── worker helpers (module-level so ProcessPoolExecutor can pickle them) ──────
 
-# Per-worker universe cache. The 75 MB UniverseData is shipped to each worker
-# process ONCE via the pool initializer (initargs) and unpickled here, instead of
-# being passed (and re-deserialised) on every job — which made the IPC, not the
-# backtest, the bottleneck and defeated --workers scaling. See _run_parallel.
+# Per-worker universe cache. UniverseData is shipped to each worker process ONCE
+# via the pool initializer (initargs) and unpickled here, rather than re-passed and
+# re-deserialised on every job — which would make IPC the bottleneck and defeat
+# --workers scaling. See _run_parallel.
 _WORKER_UNIVERSE = None
 
 

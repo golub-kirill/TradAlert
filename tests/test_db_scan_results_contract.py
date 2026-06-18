@@ -1,14 +1,12 @@
-"""scan_results write contract — the live-journal path that shipped untested (audit H4)
-and let the broken tier migration (C1) pass green.
+"""scan_results write contract for the live-journal path (audit H4, C1 regression).
 
-Locks the things that, together, would have caught C1:
+Locks three things that together catch a tier/review_reason schema drift (C1):
   • the INSERT's column list, its %(name)s placeholders, and the dict _result_to_row
-    builds are mutually consistent (no drift between SQL and code);
+    builds stay mutually consistent (no drift between SQL and code);
   • every column the INSERT writes exists in the fresh schema (scan_schema.sql), which
-    defines BOTH tier and review_reason — the C1 bug shipped review_reason AFTER a tier
-    column that did not yet exist, so the fresh-schema guard below locks the end state
-    (the one-off upgrade .sql is owner-applied and no longer kept in the repo);
-  • save_scan_results returns the rowcount on success and fails LOUD-but-open
+    defines BOTH tier and review_reason (the one-off upgrade .sql is owner-applied and
+    not kept in the repo);
+  • save_scan_results returns the rowcount on success and fails loud-but-open
     (logs ERROR, returns 0, never raises) when the INSERT errors.
 """
 

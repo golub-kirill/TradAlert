@@ -1,7 +1,7 @@
 # TradAlert runtime dependencies.
 #
 # Versions intentionally unpinned; add explicit pins (`==X.Y.Z`) once the
-# project is on a CI / release cycle. F1-8 / F9-10 follow-ups track that.
+# project is on a CI / release cycle.
 
 # Core data / numerics
 pandas

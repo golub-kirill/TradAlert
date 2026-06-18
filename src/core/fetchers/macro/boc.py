@@ -10,10 +10,8 @@ Series IDs:
  BD.CDN.5YR.DQ.YLD  — Government of Canada 5-year benchmark bond yield
  BD.CDN.10YR.DQ.YLD — Government of Canada 10-year benchmark bond yield
 
-Note: the legacy V39055/56/57 bond-yield IDs were retired by the Bank of
-Canada and now 404 on the Valet API. The current benchmark yields live in
-the "bond_yields_benchmark" group under the BD.CDN.*.DQ.YLD names. The
-overnight-rate series (V39079) is unaffected and still valid.
+Note: the legacy V39055/56/57 bond-yield IDs were retired and now 404; current
+benchmark yields use the BD.CDN.*.DQ.YLD names. V39079 (overnight rate) is unaffected.
 """
 
 from __future__ import annotations
@@ -81,10 +79,9 @@ def fetch_boc_series(
         resp.raise_for_status()
         data = resp.json()
     except requests.HTTPError as exc:
-        # A 404 means the Valet series ID is retired/deprecated. That is an
-        # expected, recoverable condition — log a single clean line (NO stack
-        # trace) and fail open. Other HTTP statuses are unexpected but still
-        # non-fatal: skip this series rather than poison the regime calc.
+        # 404 = retired/deprecated series ID (expected); other statuses unexpected
+        # but still non-fatal. Either way skip the series rather than poison the
+        # regime calc. No stack trace on the 404 path.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status == 404:
             logger.warning(
@@ -98,10 +95,8 @@ def fetch_boc_series(
             )
         return _load_cached_or_empty(parquet_path, staleness_hours)
     except (OSError, ValueError, RuntimeError) as exc:
-        # Network failure (OSError), bad JSON (ValueError), or other runtime
-        # error. Non-fatal: skip the series and fall back to cache/empty so a
-        # single broken feed never pollutes the regime calculation. No stack
-        # trace — this path is expected to fire on transient outages.
+        # Network failure / bad JSON / runtime error — non-fatal, fall back to
+        # cache/empty so one broken feed never pollutes the regime calc.
         logger.warning("[boc] fetch failed for %s: %s — skipping (fail-open)", series_id, exc)
         return _load_cached_or_empty(parquet_path, staleness_hours)
 
@@ -158,9 +153,8 @@ def _parse_boc_observations(observations: list[dict], series_id: str) -> pd.Data
 
 def _load_cached_or_empty(parquet_path: Path,
                           staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
-    """Load cached parquet (fail-open) when a fetch fails, but WARN with the cache
-    age when it is past the staleness window so an unbounded-stale cache can't
-    masquerade as a fresh series (audit F2 — same pattern as fred/yf_macro)."""
+    """Load cached parquet (fail-open) when a fetch fails; WARN with cache age when
+    past the staleness window so a stale cache can't masquerade as fresh (audit F2)."""
     if parquet_path.exists():
         try:
             df = pd.read_parquet(parquet_path)

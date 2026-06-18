@@ -11,9 +11,6 @@ silently re-introduce same-bar (T, not T+1) leakage or drop the friction path:
   - bars_held equals the entry -> exit index gap;
   - the portfolio path applies entry slippage and per-trade commission to R;
   - the portfolio walk slices market context to <= the decision bar (causal).
-
-These pass on current code by design — they are the regression guard for the
-feed-alignment work that follows.
 """
 
 from __future__ import annotations

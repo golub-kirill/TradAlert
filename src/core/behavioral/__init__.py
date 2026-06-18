@@ -94,9 +94,8 @@ class BehavioralState:
     size_multiplier: float = 1.0
 
 
-# same caching pattern as classify_macro_state — recomputed every
-# bar in portfolio_backtester.run_prepped despite identical inputs across
-# many bars (most behavioral feeds are weekly/monthly).
+# Cache keyed by (as_of, data fingerprint, settings): run_prepped recomputes every
+# bar despite identical inputs (most behavioral feeds are weekly/monthly).
 _BEHAV_STATE_CACHE: dict[tuple, "BehavioralState"] = {}
 _BEHAV_STATE_CACHE_MAX: int = 4096
 
@@ -162,10 +161,8 @@ def classify_behavioral_state(
             try:
                 df = df.loc[:as_of]
             except TypeError as exc:
-                # Treat the axis as missing rather than skipping the as_of
-                # slice: a skipped slice would expose the classifier to the
-                # WHOLE series including future data → look-ahead bias in
-                # walk-forward backtests.
+                # Treat the axis as missing rather than skipping the as_of slice:
+                # skipping would expose the full series (future data) → look-ahead.
                 logger.warning(
                     "behavioral._slice: as_of=%s slice failed on %s — "
                     "treating axis as MISSING (refusing to use full-history "
@@ -242,8 +239,8 @@ def classify_behavioral_state(
 
     behavioral_score = numerator / denominator if denominator > 0 else 0.5
     total_axes = len(axis_weights)
-    # Clamp ≥ 0: missing_axes now uses canonical names (one entry per axis), so it
-    # can no longer exceed total_axes, but guard against a negative confidence.
+    # Clamp ≥ 0: missing_axes uses canonical names (one entry per axis) so it can't
+    # exceed total_axes, but guard against negative confidence anyway.
     confidence = max(0.0, (total_axes - len(missing_axes)) / total_axes) if total_axes > 0 else 0.0
 
     # derive size_multiplier from behavioral_score using behavioral

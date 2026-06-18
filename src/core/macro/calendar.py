@@ -1,26 +1,18 @@
 """
-Auto-populated calendar events (FOMC / CPI / NFP) for the stop-date gate.
+Curated calendar events (FOMC / CPI / NFP) for the stop-date gate.
 
 Public API: ``get_calendar_events() -> list[CalendarEvent]``
 
-Strategy
-────────
-The gold-standard live fetch (Fed press-room scraper / BLS feed) is in
-the long-term backlog. For now this returns a curated list of known
-high-impact macro events for the rolling year. The list is maintained
-in ``config/macro_calendar.yaml`` if present, falling back to a hard-
-coded set of next-12-month FOMC and CPI dates.
-
-FOMC dates are publicly published by the Federal Reserve a year in
-advance: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-CPI release dates follow the BLS calendar (~mid-month, ~08:30 ET).
+Source resolution: ``config/macro_calendar.yaml`` if present, else a hard-coded
+next-12-month list of FOMC and CPI/NFP dates. FOMC dates are published a year
+ahead by the Fed (federalreserve.gov/monetarypolicy/fomccalendars.htm); CPI/NFP
+follow the BLS calendar (~08:30 ET).
 
 Consumed by ``main.py`` two ways:
-  1. seeds ``FilterEngine._stop_dates`` so any new entry ON one of these dates
-     is blocked (held positions still exit normally — the gate is entry-only); and
-  2. ``event_risk_flag()`` surfaces an ADVISORY flag on a fresh entry when an event
-     falls within the next few days (``upcoming_event_risk``) — informational only,
-     it never gates or sizes a trade.
+  1. seeds ``FilterEngine._stop_dates`` so a new entry ON one of these dates is
+     blocked (held positions still exit normally — the gate is entry-only); and
+  2. ``event_risk_flag()`` surfaces an ADVISORY flag on a fresh entry when an
+     event falls within the next few days — it never gates or sizes a trade.
 """
 
 from __future__ import annotations
@@ -123,9 +115,9 @@ def get_calendar_events(
 
     events.sort(key=lambda e: e.date)
 
-    # Loudly flag an exhausted calendar: the hard-coded fallback ends 2026-12-31,
-    # so from 2027 onward (absent a config/macro_calendar.yaml refresh) every
-    # event is in the past and the entry-side event-risk gate silently goes dark.
+    # Flag an exhausted calendar loudly: the hard-coded fallback ends 2026-12-31,
+    # so from 2027 (absent a config/macro_calendar.yaml refresh) every event is
+    # past and the entry-side event-risk gate goes dark.
     today = date.today()
     if not events:
         logger.warning("[calendar] no macro events available — the event-risk "
@@ -146,12 +138,11 @@ def upcoming_event_risk(
 ) -> CalendarEvent | None:
     """Nearest scheduled macro event in ``[today, today + within_days]`` (inclusive), or None.
 
-    Pure + deterministic — ``today`` is passed explicitly (no ``date.today()``) and ``events`` is
-    a ``get_calendar_events()`` list, so it is unit-testable. ADVISORY ONLY: it never gates or
-    sizes a trade (the entry-DAY no-trade block is the ``stop_dates`` gate); this just lets the
-    live alert say "you are entering 2 days before FOMC". ``today`` is included so a same-day
-    event still reads (a fired entry on an event day is normally blocked, but the flag stays
-    honest if the block is ever disabled). Ties on the soonest date resolve to list order.
+    Pure + deterministic (``today`` passed explicitly, ``events`` is a
+    ``get_calendar_events()`` list) so it is unit-testable. ADVISORY ONLY: never
+    gates or sizes a trade (the entry-DAY no-trade block is the ``stop_dates``
+    gate). ``today`` is included so a same-day event still reads. Ties on the
+    soonest date resolve to list order.
     """
     if within_days < 0:
         return None

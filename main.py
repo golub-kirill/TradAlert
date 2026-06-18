@@ -21,9 +21,8 @@ import yaml
 from dotenv import load_dotenv
 
 # ── path bootstrap ────────────────────────────────────────────────────────────
-# Ensure src/ is on the Python path so this script is runnable from the CLI
-# (python main.py) as well as from within the IDE with src/ as a source root.
-# Mirrors the same pattern used in position_CLI.py.
+# Put src/ on sys.path so this script runs from the CLI and from the IDE
+# (src/ as a source root).
 _SRC = Path(__file__).parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -58,10 +57,9 @@ try:
     from core.indicators.rp_rank import build_rp_rank_table  # noqa: E402
     from core.indicators.chart_signal_history import collect_signal_history  # noqa: E402
 
-    # Kept intentionally: graceful-import guard for the optional
-    # modules (macro / calendar / rp_rank / signal_history). A partial or
-    # stripped install degrades to long-only core instead of crashing at
-    # import; the four consult sites below fall back when this is False.
+    # Graceful-import guard for optional modules (macro / calendar / rp_rank /
+    # signal_history). A partial install degrades to long-only core instead of
+    # crashing at import; consult sites below fall back when this is False.
     _PHASE_MODULES_AVAILABLE = True
 except ImportError:
     _PHASE_MODULES_AVAILABLE = False
@@ -138,14 +136,13 @@ def main() -> None:
         logger.warning("[tier_b] fetch failed — proceeding without: %s", exc)
 
     # ── context → enrich → scan → signal ─────────────────────────────
-    # Parse filters.yaml once and pass the dict to the engine so the file is
-    # not read and parsed a second time inside FilterEngine.__init__.
+    # Parse filters.yaml once and pass the dict to the engine so __init__ does
+    # not re-read it.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
-    # --allow-shorts flips the master switch on. We only mutate
-    # when the flag is set, so an unflagged run leaves filters.yaml untouched
-    # (allow_shorts defaults false there) and the long-only baseline replays
-    # bit-identically.
+    # --allow-shorts flips the master switch on. Only mutated when the flag is
+    # set, so an unflagged run leaves the long-only baseline replay-identical
+    # (allow_shorts defaults false in filters.yaml).
     if args.allow_shorts:
         filters_cfg.setdefault("signals", {})["allow_shorts"] = True
         logger.info("[shorts] --allow-shorts enabled (signals.allow_shorts=true)")
@@ -172,9 +169,9 @@ def main() -> None:
             behavioral_data = fetch_all_behavioral(_SETTINGS, force=args.force)
             if behavioral_data:
                 from core.behavioral import classify_behavioral_state
-                # LIVE staleness guard: drop feeds whose data-date is older than
-                # behavioral.stale_window_days so a month-old cache degrades the
-                # axis to missing (confidence falls) instead of sizing on it.
+                # LIVE staleness guard: drop feeds older than
+                # behavioral.stale_window_days so a stale cache degrades the axis
+                # to missing (confidence falls) instead of sizing on it.
                 stale_days = float(
                     (settings.get("behavioral", {}) or {}).get("stale_window_days", 14))
                 behavioral_data = _drop_stale_behavioral(
@@ -191,9 +188,7 @@ def main() -> None:
     # Wire calendar events into engine (in-memory only)
     if _PHASE_MODULES_AVAILABLE:
         try:
-            cal_events = get_calendar_events()
-            # Extend engine._stop_dates with calendar events
-            # (done after engine construction below)
+            cal_events = get_calendar_events()  # injected into engine._stop_dates below
         except (ImportError, OSError, ValueError, RuntimeError) as exc:
             logger.debug("[calendar] get_calendar_events failed (skipping): %s", exc)
             cal_events = []
@@ -256,8 +251,7 @@ def main() -> None:
 
     # ── 8b. telegram push (fail-open; bit-neutral to the scan) ─────────────────
     # Off unless settings.telegram.enabled. Import inside the try so a missing
-    # python-telegram-bot dep or any send error degrades to a log line and never
-    # breaks the scan (mirrors the optional-import pattern above).
+    # dep or any send error degrades to a log line and never breaks the scan.
     try:
         from core.telegram.push import send_alerts
         send_alerts(results, settings, macro_state=macro_state,
@@ -266,9 +260,9 @@ def main() -> None:
         logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 
     # ── 8c. DB-health notice (fail-open, notification only) ────────────────────
-    # If MySQL was unreachable, the scan fired with no open-position awareness and
-    # left no journaled record. We do NOT block firing (fail-open by design) — we
-    # alert the operator so a blind run doesn't pass silently.
+    # If MySQL was unreachable the scan fired with no open-position awareness and
+    # left no journaled record. Firing is not blocked (fail-open by design); the
+    # operator is alerted so a blind run doesn't pass silently.
     try:
         from core.position_manager import db_reachable
         if not db_reachable():
@@ -313,12 +307,11 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
     backtester applies in ``_apply_dynamic_stop`` (shared decision:
     ``core.exits.breakeven_stop_level``; ADR-004).
 
-    A long stop ratchets UP to (around) entry, a short stop ratchets DOWN — in
-    both directions the position's risk drops to ~0 without capping the upside.
-    Returns the new stop level when the stop moved, else None. ``initial_stop`` is
-    never touched (it stays the R denominator for reconciliation). Idempotent
-    across daily scans: once the stop sits at/beyond breakeven this is a no-op.
-    Fail-open — any error logs a warning and never blocks the scan.
+    A long stop ratchets UP to (around) entry, a short stop ratchets DOWN; either
+    way the position's risk drops to ~0 without capping upside. Returns the new
+    stop level when it moved, else None. ``initial_stop`` is never touched (it
+    stays the R denominator for reconciliation). Idempotent across daily scans
+    (no-op once the stop sits at/beyond breakeven). Fail-open.
     """
     logger = logging.getLogger(__name__)
     trigger = exec_cfg.breakeven_trigger_r
@@ -341,7 +334,7 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
         entry_pos = int(df.index.searchsorted(pd.Timestamp(position.entry_date)))
         if entry_pos >= len(df):
             return None
-        # Best favorable excursion since entry (entry bar inclusive — matches the
+        # Best favorable excursion since entry (entry bar inclusive, matching the
         # backtester's update_excursion): highest high for a long, lowest low for
         # a short.
         if side == "long":
@@ -476,18 +469,18 @@ def _run_pipeline(
     # ── load market context and open positions once per run ──────────────────
     market_dfs, vix_df = _load_market_context(tickers, now=now)
     positions = load_open_positions()  # {ticker: Position}
-    # Live open-risk budget (NORTH STAR): the validated portfolio caps aggregate
-    # risk at max_open_risk and sizes each entry by size_mult. The scanner is an
-    # alerter, so it surfaces budget consumed + size_mult rather than executing.
+    # Live open-risk budget: the validated portfolio caps aggregate risk at
+    # max_open_risk and sizes each entry by size_mult. The scanner surfaces budget
+    # consumed + size_mult rather than executing.
     max_open_risk = float((settings.get("risk") or {}).get("max_open_risk", 5.0))
-    # Expected-hold range (display-only): the single source of truth, data-driven
-    # from the reference backtest's actual bars_held (p25-p75). Computed once per
-    # scan and applied to every fired entry. Fail-open.
+    # Expected-hold range (display-only), data-driven from the reference
+    # backtest's bars_held (p25-p75). Computed once per scan, applied to every
+    # fired entry. Fail-open.
     expected_hold = _expected_hold_range(engine)
-    # Event-risk advisory (display-only): one scan-wide flag (FOMC/CPI/NFP within N days)
-    # stamped onto each fresh entry. Universe-wide, so computed once. now.date() is the UTC
-    # date — the scan runs post-close so it matches the trading date; advisory window
-    # tolerance makes any tz edge harmless. Fail-open (never blocks a scan).
+    # Event-risk advisory (display-only): one scan-wide flag (FOMC/CPI/NFP within N
+    # days) stamped on each fresh entry. now.date() is the UTC date; the scan runs
+    # post-close so it matches the trading date and the advisory window absorbs any
+    # tz edge. Fail-open.
     event_risk = ""
     if cal_events:
         try:
@@ -595,16 +588,14 @@ def _process_ticker(
 
     Returns the ticker's TickerResult. Shared market context (market_dfs/vix_df),
     open positions, and the open-risk budget are loaded once per scan by
-    _run_pipeline and passed in. Per-ticker steps and their fail-open contract are
-    identical to the original inline loop body.
+    _run_pipeline and passed in. Per-ticker steps are fail-open.
     """
     logger = logging.getLogger(__name__)
     held_position = positions.get(ticker)
     held_long = held_position is not None and held_position.side == "long"
     held_short = held_position is not None and held_position.side == "short"
     # Direction-neutral handles so the held-position branches below cover shorts
-    # too (the backtester and telegram_bot already pass held_short — this closes
-    # the live divergence). held_side is None for an unheld ticker (entry path).
+    # too. held_side is None for an unheld ticker (entry path).
     held_side = "long" if held_long else "short" if held_short else None
     held_exit_dir = "exit_long" if held_long else "exit_short" if held_short else None
 
@@ -747,11 +738,11 @@ def _process_ticker(
         )
 
     # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
-    # Keep the live feed in step with the backtester's swing-horizon cap
-    # (ADR-001): force an exit on a held position (long or short) that has
-    # reached the cap and — in if_not_profit mode — is not in profit. Shares
-    # core.exits with the backtester so live and backtest never diverge. Engine
-    # exits take precedence (we only override a non-exit signal).
+    # Mirror of the backtester's swing-horizon cap (ADR-001): force an exit on a
+    # held position (long or short) that reached the cap and — in if_not_profit
+    # mode — is not in profit. Shares core.exits with the backtester so live and
+    # backtest never diverge. Engine exits take precedence (only a non-exit signal
+    # is overridden).
     if held_side and held_position is not None and signal.direction != held_exit_dir:
         _exec = engine.cfg.execution
         _mh_days = _exec.max_hold_days
@@ -1000,9 +991,9 @@ def _save_scan(
 
     if run_id:
         # POLICY: every scan must leave data for live reconciliation. A run_id
-        # without the matching result rows (e.g. a missing scan_results column)
-        # is just as blinding as no journal at all — surface a short insert
-        # loudly instead of letting save_scan_results fail open in silence.
+        # without its result rows (e.g. a missing scan_results column) is as
+        # blinding as no journal — surface a short insert loudly instead of
+        # letting save_scan_results fail open silently.
         inserted = save_scan_results(run_id, results)
         if results and inserted != len(results):
             msg = (f"Scan journal INCOMPLETE — {inserted}/{len(results)} rows "
@@ -1107,27 +1098,25 @@ def _print_report(
 
     scan_passed = [r for r in results if r.scan.passed]
     scan_blocked = [r for r in results if not r.scan.passed and not r.error]
-    # The ``r.signal is not None`` guard in each comprehension below is
-    # redundant at runtime (the initial filter already excludes None) but
-    # required by the type checker so subsequent ``.attribute`` accesses
-    # narrow correctly. Without it PyCharm flagged 16 None-deref warnings
-    # in this block — see TODO.md ``main.py None-deref guards``.
+    # The ``r.signal is not None`` guard in each comprehension below is redundant
+    # at runtime (the filter already excludes None) but lets the type checker
+    # narrow subsequent ``.attribute`` accesses.
     signals = [r for r in results if r.signal is not None and r.signal.passed]
     entries = [r for r in signals
                if r.signal is not None and r.signal.direction == "long"]
     exits = [r for r in signals
              if r.signal is not None and r.signal.direction == "exit_long"]
-    # Short-side counterparts. Empty unless --allow-shorts fired
-    # short entries / exit_short covers, so the baseline summary is unchanged.
+    # Short-side counterparts. Empty unless --allow-shorts fired short entries /
+    # exit_short covers, so the baseline summary is unchanged.
     short_entries = [r for r in signals
                      if r.signal is not None and r.signal.direction == "short"]
     short_exits = [r for r in signals
                    if r.signal is not None and r.signal.direction == "exit_short"]
     errors = [r for r in results if r.error]
 
-    # NEEDS_REVIEW: fired entries whose data was stale-after-refetch or gapped > 2×ATR — pulled
-    # into their own section (below). None flagged (the common post-close case) → the entries
-    # lists are unchanged → byte-identical baseline report.
+    # NEEDS_REVIEW: fired entries whose data was stale-after-refetch or gapped
+    # > 2×ATR, split into their own section below. None flagged (the common
+    # post-close case) leaves the entries lists and report unchanged.
     review = [r for r in entries + short_entries
               if r.signal is not None and r.signal.tier == "NEEDS_REVIEW"]
     entries = [r for r in entries
@@ -1154,8 +1143,8 @@ def _print_report(
     for r in scan_blocked:
         logger.debug("  filtered  %-12s %s", r.ticker, r.scan.reason)
 
-    # ── open-risk budget (NORTH STAR: live exposure must track the validated
-    # portfolio, which caps aggregate risk and sizes by size_mult) ──────────────
+    # ── open-risk budget (live exposure tracks the validated portfolio, which
+    # caps aggregate risk and sizes by size_mult) ───────────────────────────────
     max_open_risk = float((settings or {}).get("risk", {}).get("max_open_risk", 5.0))
     n_open = None
     try:
@@ -1166,8 +1155,8 @@ def _print_report(
 
     # ── entries ───────────────────────────────────────────────────────────────
     logger.info(divider)
-    # Scan-wide event-risk advisory (set on every fresh entry; same string for all). Surfaced
-    # once here so the operator sees an upcoming FOMC/CPI/NFP before acting. "" when none.
+    # Scan-wide event-risk advisory (same string on every fresh entry). Surfaced
+    # once here so the operator sees an upcoming FOMC/CPI/NFP. "" when none.
     event_risk = next(
         (r.signal.event_risk for r in (entries + short_entries + review)
          if r.signal is not None and getattr(r.signal, "event_risk", "")), "")
@@ -1195,8 +1184,7 @@ def _print_report(
         logger.info("ENTRIES  none")
 
     # ── short entries ──────────────────────────────────────────
-    # Only rendered when short signals exist, so a long-only (baseline) run
-    # produces byte-identical summary output.
+    # Rendered only when short signals exist, so a long-only run is unchanged.
     if short_entries:
         logger.info(divider)
         logger.info("SHORTS   %d entry alert(s)", len(short_entries))

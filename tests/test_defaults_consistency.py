@@ -1,7 +1,6 @@
 """
-defaults.py registry must agree with the actual code fallbacks it documents
-(audit F6). Keys had drifted from the code source-of-truth and the
-disagreement was silent — lock them so they can't diverge again.
+The defaults.py registry must match the actual code fallbacks it documents
+(audit F6) — lock the keys so they can't silently diverge.
 """
 
 from __future__ import annotations

@@ -430,10 +430,9 @@ class FilterEngine:
         if direction == "none":
             return self._fail_result(why, regime, ticker_trend)
 
-        # Hard-to-borrow gate (shorts only, opt-in).
-        # Many small caps are HTB / unavailable to borrow; v1 assumed
-        # availability. Symbols listed in ``signals.hard_to_borrow_list``
-        # cannot be shorted. No effect on longs or when the list is absent.
+        # Hard-to-borrow gate (shorts only, opt-in). Symbols in
+        # ``signals.hard_to_borrow_list`` cannot be shorted (many small caps are
+        # unavailable to borrow). No effect on longs or when the list is absent.
         if direction == "short":
             if ticker in set(self.cfg.signals.hard_to_borrow_list):
                 return self._fail_result(
@@ -441,11 +440,9 @@ class FilterEngine:
                     regime, ticker_trend,
                 )
 
-        # 5a. Anti-gap entry confirmation (opt-in).
-        # Postmortem 2026-05-27 found 11 of 36 stop-outs failed within 3
-        # bars (-12.9R, 26% of all stop damage). All fired on red bars
-        # (close < open). Require trigger-bar close ≥ open before queuing
-        # the T+1 entry. Cheap gate, no cost when off.
+        # 5a. Anti-gap entry confirmation (opt-in). Require trigger-bar
+        # close ≥ open before queuing the T+1 entry — early stop-outs cluster
+        # on red trigger bars (close < open). Cheap gate, no cost when off.
         if self.cfg.signals.require_trigger_bar_up:
             try:
                 tr_close = float(row["close"])
@@ -463,10 +460,9 @@ class FilterEngine:
         atr_mult = self.cfg.signals.stop_loss.atr_multiplier
         min_rr = self.cfg.signals.stop_loss.min_rr
         is_long_dir = (direction == "long")
-        # Shorts have a bounded upside (price floor of $0), so
-        # they can warrant a tighter reward ceiling. ``min_rr_short`` lets
-        # the short side demand a different R:R. Absent → falls back to
-        # ``min_rr`` so longs and pre-v2 configs are unchanged.
+        # Shorts have bounded upside (price floor of $0), so ``min_rr_short``
+        # lets the short side demand a different R:R. Absent → falls back to
+        # ``min_rr``.
         if not is_long_dir and self.cfg.signals.stop_loss.min_rr_short is not None:
             min_rr = self.cfg.signals.stop_loss.min_rr_short
         stop_dist = row["atr"] * atr_mult
@@ -483,15 +479,15 @@ class FilterEngine:
                 f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
-        # size_mult_gate: block entries when the composite macro x behavioral
+        # size_mult_gate: block entries when the composite macro × behavioral
         # position-size multiplier is below the configured floor.
         #
-        # NOTE (audit F5): this is `enabled: true` in filters.yaml, but it is
-        # currently INERT — regime.size_multiplier is the geometric mean of two
-        # axes each floored at 0.25 (settings.{macro,behavioral}.size_mult_floor),
-        # so it is >= 0.25 == the gate `min`, and the strict `< min` never fires.
-        # To actually gate, lower an axis floor below `min` or raise `min` above
-        # 0.25 — both BLOCK entries and move the headline, so re-validate first.
+        # Currently INERT even when `enabled: true`: regime.size_multiplier is the
+        # geometric mean of two axes each floored at 0.25
+        # (settings.{macro,behavioral}.size_mult_floor), so it is >= 0.25 == the
+        # gate `min` and the strict `< min` never fires. To actually gate, lower an
+        # axis floor below `min` or raise `min` above 0.25 — both BLOCK entries and
+        # move the headline, so re-validate first.
         smg = self.cfg.signals.size_mult_gate
         if smg.enabled:
             min_mult = float(smg.min)
@@ -613,7 +609,7 @@ class FilterEngine:
         else:
             tcfg = (self.cfg.signals.mean_reversion.long if is_long
                     else self.cfg.signals.mean_reversion.short_entry)
-        if tcfg is None:           # absent short_entry → all-None leg (matches the old `or {}`)
+        if tcfg is None:           # absent short_entry → all-None leg
             tcfg = SignalLeg()
 
         if rsi is not None:
@@ -718,7 +714,7 @@ class FilterEngine:
             stop_dist = atr * atr_mult
             add("RISK", "Stop", True, f"{stop_dist / close * 100:.1f}% / {atr_mult:.1f}ATR")
         # Position-size multiplier (macro × behavioral) — the validated portfolio
-        # sizes each entry by this, so the live read must show it (NORTH STAR).
+        # sizes each entry by this, so the live read must show it.
         smult = clamp01(float(regime.size_multiplier))
         add("RISK", "Size", smult >= 0.5, f"{smult:.2f}x", strength=smult)
         if earnings_date is not None and earnings_date >= self._today:
@@ -893,13 +889,11 @@ class FilterEngine:
         Returns ``(direction, signal_type, reason)``.
         """
         # ── VIX slope gate (opt-in) ──────────────────────────────────────
-        # When ``regime.vix_slope_block`` is enabled and VIX has risen over
-        # the configured lookback window, block fresh momentum entries even
-        # if the absolute VIX level is still in the LOW or NORMAL band.
-        # Targets the Feb 2025 cluster: 8 momentum trades / 1 win on bars
-        # where VIX was below vix_low but climbing into a tariff scare.
-        # Mean-reversion entries are NOT gated — they often want falling
-        # markets / chop and have their own ATR-relative gates.
+        # When ``regime.vix_slope_block`` is enabled and VIX has risen over the
+        # configured lookback window, block fresh momentum entries even if the
+        # absolute VIX level is still LOW/NORMAL (catches momentum entered into a
+        # rising-VIX scare). Mean-reversion entries are NOT gated — they often
+        # want falling/chop markets and have their own ATR-relative gates.
         slope_block = bool(self.cfg.regime.vix_slope_block)
         allow_shorts = bool(self.cfg.signals.allow_shorts)
 
@@ -1016,9 +1010,8 @@ class FilterEngine:
         Fires when ``RSI > signals.mean_reversion.short_entry.rsi_min`` AND
         histogram delta <= -``min_hist_delta_atr * atr`` (downtick).
 
-        Note: ``mean_reversion.short`` is the *held-long exit* trigger and
-        is NOT what we want here. The new ``mean_reversion.short_entry``
-        block is the fresh-short trigger.
+        Note: ``mean_reversion.short`` is the *held-long exit* trigger, not this;
+        the fresh-short trigger is ``mean_reversion.short_entry``.
         """
         cfg = self.cfg.signals.mean_reversion.short_entry
         if cfg is None:

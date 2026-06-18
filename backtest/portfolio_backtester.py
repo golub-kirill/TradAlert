@@ -1,14 +1,11 @@
 """
-Portfolio-aware bar-replay backtester with concurrent-position cap.
+Portfolio-aware bar-replay backtester with an open-risk budget cap.
 
-    Slippage apply_stop_fill() from backtester.py handles gap-through
-            stops. Entry slippage applied as PortfolioConfig.entry_slippage_pct.
-
-    Regime  Computed once per bar from market_t / vix_t and reused
-            across all per-bar engine calls. Saves N engine._market_regime
-            calls per bar.
-
-    Commission commission_r subtracted from r_multiple in _close_trade.
+Slippage   : apply_stop_fill() (backtester.py) handles gap-through stops; entry
+             slippage applied as PortfolioConfig.entry_slippage_pct.
+Regime     : computed once per bar from market_t / vix_t and reused across all
+             per-bar engine calls.
+Commission : commission_r subtracted from r_multiple in _close_trade.
 
 Per-bar pipeline (in order)
 ────────────────────────────────
@@ -60,13 +57,12 @@ class PortfolioConfig:
     Attributes
     ----------
     max_open_risk        : Aggregate open-risk budget, in size_mult units. Each
-                           open position consumes its own ``size_mult`` (a full-size
-                           position = 1.0; a regime/chronic-reduced 0.25× position =
-                           0.25). A new entry is dropped when it would push total open
-                           risk past this budget. This is a risk control, so it is
-                           intentionally universe-agnostic (independent of watchlist
-                           size). Must be > 0. Replaces the old raw-count cap
-                           ``max_concurrent`` (budget B ≈ B full-size positions).
+                           open position consumes its own ``size_mult`` (full-size =
+                           1.0; a regime/chronic-reduced 0.25× position = 0.25). A new
+                           entry is dropped when it would push total open risk past
+                           this budget. Universe-agnostic risk control (independent of
+                           watchlist size). Must be > 0. Budget B ≈ B full-size
+                           positions.
     start_date           : Earliest entry date. None → warmup end.
     end_date             : Latest entry date. None → end of data.
     earnings_aware       : Reconstruct historical earnings for buffer gate.
@@ -86,32 +82,29 @@ class PortfolioConfig:
     entry_slippage_pct: float = 0.0
     commission_r: float = 0.0
     max_drawdown_r: Optional[float] = None
-    # Chronic-loser tracker (see core.ticker_health.TickerHealth). When None,
-    # the policy is off and the backtester replays baseline behavior exactly.
-    # The tracker's penalty multiplies into signal.size_mult at entry.
+    # Chronic-loser tracker (see core.ticker_health.TickerHealth). None → off,
+    # baseline behavior exact. The penalty multiplies into signal.size_mult at entry.
     ticker_health: Optional["TickerHealth"] = None
-    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
-    # baseline replays bit-identically. When set, a still-open trade is closed
-    # at the bar's CLOSE once it has been held ``max_hold_days`` trading bars
-    # (same bar-count convention as Trade.bars_held = exit_idx - entry_idx).
-    # Stop/target on the same bar take precedence (checked first, pessimistic).
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF (baseline
+    # bit-identical). When set, a still-open trade closes at the bar's CLOSE once
+    # held ``max_hold_days`` bars (same convention as Trade.bars_held = exit_idx -
+    # entry_idx). Same-bar stop/target take precedence (checked first, pessimistic).
     #   mode "hard"          → always exit at the cap.
-    #   mode "if_not_profit" → exit at the cap only when the position is not in
-    #                          profit at that close (lets winners run to target).
+    #   mode "if_not_profit" → exit at the cap only when not in profit at that close
+    #                          (lets winners run to target).
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
-    # ATR trailing stop (exit-logic Phase 2a). None → OFF, so the baseline replays
-    # bit-identically. When set, current_stop = highest_high − ATR×trail_atr_mult
-    # (long; short mirrors), computed at END of each bar and checked on the NEXT bar
-    # (look-ahead-free). trail_activate_r: only start trailing once the trade has
-    # reached this MFE in R (None → trail from entry). The R denominator stays the
-    # INITIAL stop — the trail changes only the exit price/reason.
+    # ATR trailing stop. None → OFF (baseline bit-identical). When set, current_stop
+    # = highest_high − ATR×trail_atr_mult (long; short mirrors), computed at END of
+    # each bar and checked on the NEXT bar (look-ahead-free). trail_activate_r: only
+    # start trailing once MFE reaches this R (None → trail from entry). The R
+    # denominator stays the INITIAL stop — the trail changes only exit price/reason.
     trail_atr_mult: Optional[float] = None
     trail_activate_r: Optional[float] = None
-    # Breakeven stop (exit-logic Phase 2b). None → OFF. Once the trade reaches
-    # breakeven_trigger_r of favorable excursion, move the stop to entry ±
-    # breakeven_buffer_atr×ATR — protects the downside WITHOUT capping the upside
-    # (does not trail further). R denominator stays the INITIAL stop.
+    # Breakeven stop. None → OFF. Once the trade reaches breakeven_trigger_r of
+    # favorable excursion, move the stop to entry ± breakeven_buffer_atr×ATR —
+    # protects the downside WITHOUT capping the upside (does not trail further). R
+    # denominator stays the INITIAL stop.
     breakeven_trigger_r: Optional[float] = None
     breakeven_buffer_atr: Optional[float] = None
 
@@ -256,10 +249,8 @@ class PortfolioBacktester:
     # ── ticker-health helper ──────────────────────────────────────────────
 
     def _record_close(self, trade: Trade) -> None:
-        """Forward a closed trade to the chronic-loser tracker, if enabled.
-
-        Safe to call when ``cfg.ticker_health`` is None — no-op. Pulled
-        into a helper so the four close sites stay one-liners.
+        """Forward a closed trade to the chronic-loser tracker (no-op when
+        ``cfg.ticker_health`` is None).
         """
         if self._cfg.ticker_health is None or trade.exit_date is None:
             return

@@ -1,5 +1,5 @@
 """
-Regression tests for audit-driven changes (2026-05-31):
+Regression tests for audit-driven changes:
   - signals.size_mult_gate blocks/allows entries by composite size multiplier.
   - Reporting (equity curve + stats) aggregates Trade.effective_r, so the
     macro/behavioral position-size multiplier and borrow drag reach the
@@ -146,8 +146,7 @@ def test_scan_requires_ma_slow_rows():
 def test_scan_blocks_nan_indicators_instead_of_passing():
     eng = _engine()
     df = _firing_df(260)
-    # Corrupt the last bar's ATR to NaN (warmup-like). Old behaviour: NaN
-    # comparisons silently pass the volatility gate. New: blocked.
+    # NaN ATR (warmup-like) must block, not silently pass the volatility gate.
     df = df.copy()
     df.loc[df.index[-1], "atr"] = np.nan
     res = eng.scan("X", df)

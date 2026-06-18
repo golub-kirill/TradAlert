@@ -70,11 +70,8 @@ def apply_stop_fill(initial_stop: float, bar_open: float) -> float:
     Gap-through model: if the bar opened *below* the stop (overnight news,
     gap-down), the stop-market order executes at ``bar_open`` — potentially
     much worse than ``initial_stop``. If triggered intraday (``bar_open >=
-    stop > bar_low``), executes at ``initial_stop``.
-
-    This is the primary mechanism by which real stops produce losses worse
-    than −1 R. Without it every stop reports exactly −1 R regardless of how
-    badly price gapped.
+    stop > bar_low``), executes at ``initial_stop``. This is the mechanism by
+    which real stops produce losses worse than −1 R.
 
     Args:
         initial_stop: Stop level set at signal time. Never changes.
@@ -92,11 +89,8 @@ def apply_target_fill(initial_target: float, bar_open: float) -> float:
     Gap-through model: if the bar opened *above* the target (overnight news,
     gap-up), the target-as-limit order executes at ``bar_open`` — better
     than ``initial_target``. If triggered intraday (``bar_open <= target
-    <= bar_high``), executes at ``initial_target``.
-
-    Without this, gap-up days are silently truncated to the configured R:R,
-    understating realised edge. Symmetric to the loss-side gap model so
-    headline R-multiple isn't biased by direction.
+    <= bar_high``), executes at ``initial_target``. Symmetric to the loss-side
+    gap model so the headline R-multiple isn't biased by direction.
 
     Args:
         initial_target: Target level set at signal time. Never changes.
@@ -143,21 +137,14 @@ def adjust_target_for_slippage(
 ) -> float:
     """Re-anchor the target to the slipped entry so realised R matches configured.
 
-    Long-side rationale (existing): ``FilterEngine`` sets
-    ``target_price = close + (close - stop) * min_rr`` using the
-    *pre-slippage* close. The backtester then fills at
-    ``close * (1 + entry_slippage_pct)``. ``Trade.compute_r`` computes
-    ``risk_per_share`` from the slipped entry, so a target hit on the
-    pre-slippage target reports r ≈ min_rr − slippage_pct × close / risk
-    — silently below configured min_rr.
+    Long side: ``FilterEngine`` sets
+    ``target_price = close + (close - stop) * min_rr`` from the *pre-slippage*
+    close, but the backtester fills at ``close * (1 + entry_slippage_pct)`` and
+    ``Trade.compute_r`` derives ``risk_per_share`` from the slipped entry — so a
+    pre-slippage-target hit reports r below configured min_rr. Short side
+    mirrors with opposite sign (stop above entry, target below).
 
-    Short-side mirror: stop sits above entry, target below. Slippage
-    pushes the slipped sell-entry below the close, so the pre-slippage
-    target (also below close) is *closer* than min_rr × slipped_risk
-    away. Same drift, opposite sign.
-
-    The ``direction`` parameter selects the sign. Default ``"long"`` so
-    existing callers stay unchanged.
+    The ``direction`` parameter selects the sign (default ``"long"``).
 
     Returns ``configured_target`` unchanged when ``min_rr <= 0`` (exit
     signals) or when ``real_risk`` is non-positive (degenerate trade —
@@ -197,20 +184,20 @@ class BacktestConfig:
     end_date: Optional[date] = None
     earnings_aware: bool = True
     close_open_at_eod: bool = True
-    # Chronic-loser soft-penalty. When None (default), the policy is off
-    # and the backtester reproduces baseline behavior exactly. Pass an
-    # instance (typically ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``)
-    # to apply the sliding-scale size penalty on a per-ticker basis.
+    # Chronic-loser soft-penalty. None (default) → off, baseline behavior exact.
+    # Pass an instance (typically
+    # ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``) to apply the
+    # sliding-scale per-ticker size penalty.
     ticker_health: Optional["TickerHealth"] = None
-    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
-    # baseline replays bit-identically. Mirrors PortfolioConfig.max_hold_days:
-    # a still-open trade closes at the bar CLOSE once held this many bars.
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF (baseline
+    # bit-identical). Mirrors PortfolioConfig.max_hold_days: a still-open trade
+    # closes at the bar CLOSE once held this many bars.
     #   mode "hard"          → always exit at the cap.
     #   mode "if_not_profit" → exit at the cap only when not in profit.
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
-    # ATR trailing stop (exit-logic Phase 2a). None → OFF (baseline bit-identical).
-    # Mirrors PortfolioConfig; see core.exits.trailing_stop_level. R stays off the
+    # ATR trailing stop. None → OFF (baseline bit-identical). Mirrors
+    # PortfolioConfig; see core.exits.trailing_stop_level. R stays off the
     # initial stop — the trail changes only the exit price/reason.
     trail_atr_mult: Optional[float] = None
     trail_activate_r: Optional[float] = None
@@ -436,9 +423,9 @@ class BarReplayBacktester:
                 # Same-bar pessimistic: if BOTH touched, stop wins.
                 # Long  : stop hit when bar_low <= stop (price falling)
                 # Short : stop hit when bar_high >= stop (price rallying)
-                # Effective stop = trailing/dynamic stop once set, else initial. The
-                # level was set at the PREVIOUS bar's end (look-ahead-free). R stays
-                # off the initial stop.
+                # Effective stop = trailing/dynamic stop once set, else initial. Set
+                # at the PREVIOUS bar's end (look-ahead-free); R stays off the
+                # initial stop.
                 eff_stop = open_trade.current_stop if open_trade.current_stop is not None else stop
                 stop_reason = ((open_trade.current_stop_reason or "stop")
                                if open_trade.current_stop is not None and open_trade.current_stop != stop
@@ -545,10 +532,8 @@ class BarReplayBacktester:
     # ── ledger helper ─────────────────────────────────────────────────────
 
     def _record_close(self, ticker: str, trade: Trade) -> None:
-        """Forward a closed trade to the chronic-loser tracker, if enabled.
-
-        Safe to call when ``cfg.ticker_health`` is None — no-op in that
-        case. Pulled into a helper so the four close sites stay one-liners.
+        """Forward a closed trade to the chronic-loser tracker (no-op when
+        ``cfg.ticker_health`` is None).
         """
         if self._cfg.ticker_health is None or trade.exit_date is None:
             return

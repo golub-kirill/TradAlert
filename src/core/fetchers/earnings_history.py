@@ -107,8 +107,6 @@ def fetch_earnings_dates_from_yfinance(ticker: str) -> list[date]:
                 # yfinance indexes earnings_dates in the exchange timezone, so
                 # ts.date() is the exchange-local calendar date — the correct key
                 # for the buffer gate, matching the bar/date comparison side.
-                # Residual ±1-day risk only if a future yfinance version returns a
-                # tz-naive UTC timestamp near midnight (audit B4 — Low).
                 d = ts.date() if hasattr(ts, "date") else None
                 if isinstance(d, date):
                     out.append(d)

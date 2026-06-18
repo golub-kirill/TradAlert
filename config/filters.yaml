@@ -37,9 +37,8 @@ regime: # block: broad-market regime classifier
   require_all_indices: true            # true: unanimous vote; false: majority vote
   ma_short: 20                         # secondary short-term MA for regime alignment
   require_ma_short_alignment: false     # true: all indices must also be above MA(ma_short)
-  vix_slope_block: false               # opt-in: block fresh momentum entries when VIX is rising
-  # over the lookback window, even at low VIX level.
-  # Targets Feb 2025 cluster — see postmortem.
+  vix_slope_block: false               # opt-in: block fresh momentum entries when VIX is
+  # rising over the lookback window, even at low VIX level.
   vix_slope_lookback_days: 5           # bars looked back when computing vix_rising
 
 
@@ -60,9 +59,9 @@ events: # block: calendar gates
 # ── EXECUTION MODEL ───────────────────────────────────────────────────────────
 
 execution: # block: backtest fill model
-  entry_slippage_pct: 0.0020            # 0.20% added to bar_open on long fills; a
-                                        # conservative realistic-friction default
-                                        # (results are sensitive to slippage)
+  entry_slippage_pct: 0.0020            # 0.20% added to bar_open on long fills;
+                                        # conservative friction default (results
+                                        # are sensitive to slippage)
   commission_r: 0.0050            # round-trip cost in R; subtracted from r_multiple
   # Time-based max-hold (swing-horizon) exit. Closes a still-open trade at the
   # bar CLOSE once held N trading bars; stop/target on the same bar win first.
@@ -71,7 +70,7 @@ execution: # block: backtest fill model
   max_hold_mode: if_not_profit          # exit at the cap only when NOT in profit
                                         # (lets winners run; 'hard' = always exit).
                                         # if_not_profit dominates hard on every
-                                        # metric (ADR-001) — the trading default.
+                                        # metric (ADR-001).
   # Breakeven stop: once a trade's best excursion reaches this many R, the
   # stop moves to entry — protects the give-back leak without capping the
   # upside (ADR-004: +6.8R, +0.04 Sharpe, −7R maxDD in the paired snapshot
@@ -85,41 +84,35 @@ execution: # block: backtest fill model
 signals: # block: trigger configuration
 
   # Magnitude gates are ATR-relative: |macd_hist[t] - macd_hist[t-1]|
-  # must be >= min_hist_delta_atr * row.atr. A typical value of 0.05
-  # means "delta worth ~5% of one ATR". This makes the same threshold
-  # behave consistently across $7 and $400 names instead of triggering
-  # on noise for low-priced stocks and never firing for high-priced ones.
+  # must be >= min_hist_delta_atr * row.atr (e.g. 0.05 = ~5% of one ATR).
+  # ATR-scaling keeps the threshold consistent across $7 and $400 names.
 
-  allow_shorts: false                # Short-side master switch. When false
-    # (default), no short entries are
-  # emitted and the baseline backtest
-  # replays bit-identical. Enable via
-  # --allow-shorts on run_backtest.py.
+  allow_shorts: false                # Short-side master switch. When false, no short
+  # entries are emitted and the baseline backtest replays
+  # bit-identical. Enable via --allow-shorts on run_backtest.py.
 
   hard_to_borrow_list: [ ]            # Symbols that cannot be shorted
   # (hard-to-borrow / unavailable). Short entries on
   # these are blocked; longs unaffected. e.g. [GME, AMC].
 
   borrow: # Stock-borrow cost for shorts.
-    annual_rate_default: 0.03        #   3%/yr realistic default; 0.0 = off. Charged only
-                                     #   on shorts (--allow-shorts); longs never pay.
+    annual_rate_default: 0.03        #   3%/yr default; 0.0 = off. Charged only on
+                                     #   shorts (--allow-shorts); longs never pay.
     per_ticker: { }                   #   per-symbol overrides, e.g. {GME: 0.30}.
-    # Folded into Trade.effective_r as an R drag ∝ bars_held; longs never charged.
-    # v1 is a flat configured rate — a live per-symbol borrow source is a follow-on.
+    # Folded into Trade.effective_r as an R drag ∝ bars_held; flat configured rate.
 
   require_trigger_bar_up: true      # opt-in: only queue T+1 entry when trigger
-  # bar T closed >= open (no red-bar entries).
-  # Targets 11 fast stop-outs from postmortem.
+  # bar T closed >= open (no red-bar entries; cuts fast stop-outs).
 
   momentum: # block: trend-following triggers
     long: # entry: macd_hist crosses up + RSI in band + delta gate
       rsi_min: 50                       # inclusive floor for momentum long
-      rsi_max: 70                       # inclusive ceiling for momentum long (widened from 65; more entries)
+      rsi_max: 70                       # inclusive ceiling for momentum long
       min_hist_delta_atr: 0.08          # ATR-multiple; (row - prev) >= this * atr
       max_bars_since_cross: 3           # block entries if MACD zero-cross happened >N bars ago (stale signal)
     short: # held-long exit: fade trigger; reused by _momentum_fade_exit
       rsi_min: 30                       # inclusive floor for fade trigger
-      rsi_max: 65                       # was 45 — widened; MACD zero-cross after a run lands at RSI 45-65, so 45 silently blocked all fades
+      rsi_max: 65                       # MACD zero-cross after a run lands at RSI 45-65; 45 would block all fades
       min_hist_delta_atr: 0.18          # ATR-multiple; (row - prev) <= -this * atr
     short_entry: # Fresh short on downside momentum
       rsi_min: 30                       # inclusive floor (very oversold blocks new shorts)
@@ -156,15 +149,15 @@ signals: # block: trigger configuration
     short_cover_oversold: true        # cover held SHORT on oversold + upturn
 
   stop_loss: # block: position-sizing & R:R structure
-    atr_multiplier: 2.5                 # stop = close - atr*atr_multiplier (sweep: 2.5 â†’ +0.112 R, wider stops survive noise)
-    min_rr: 2.5                         # target = close + risk*min_rr; ratio gate (balanced: better than 2.0, not as sparse as 3.0)
+    atr_multiplier: 2.5                 # stop = close - atr*atr_multiplier (wider stops survive noise)
+    min_rr: 2.5                         # target = close + risk*min_rr; ratio gate (balanced vs 2.0/3.0)
       # min_rr_short: 2.5                 # optional R:R gate for SHORTS only.
       #   Shorts have bounded upside (price floor $0), so a
     #   tighter reward ceiling can be justified. Absent →
     #   falls back to min_rr above. Only affects shorts.
 
-  size_mult_gate: #composite (macro×behavioral) position-size gate
-    enabled: true                      # default off so existing sweeps replay identically
+  size_mult_gate: # composite (macro×behavioral) position-size gate
+    enabled: true                       # master switch
     min: 0.25                           # block entries when regime.size_multiplier < this
 
 
@@ -175,10 +168,9 @@ chronic_loser_penalty:
   enabled: false                        # master switch
   lookback_days: 90                     # losses older than this age off the streak
   # Scale: consecutive_losses_threshold → size_mult. Monotonic floors, NO hard
-  # block. Ledger analysis (2026-06-03, docs/triage Note 4) showed forward
-  # expectancy stays POSITIVE even after 4+ consecutive losses (~+0.11R), so the
-  # old `4: 0.0` block forfeited profitable trades. 4+ now floors at 0.25 — the
-  # multiplier uses the largest key ≤ streak (see core/ticker_health.py).
+  # block — forward expectancy stays POSITIVE even after 4+ consecutive losses
+  # (~+0.11R), so 4+ floors at 0.25 rather than blocking. The multiplier uses the
+  # largest key ≤ streak (see core/ticker_health.py).
   scale: # consecutive_losses_threshold → size_mult
     2: 0.5                              # 2 losses in window → half size
-    3: 0.25                             # 3+ → quarter size (floor; was 4: 0.0 block)
+    3: 0.25                             # 3+ → quarter size (floor)

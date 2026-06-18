@@ -1,21 +1,13 @@
 """
 Historical earnings-date fetcher (standalone-file cache, backtest pipeline).
 
-Persists to ``data/earnings_history/{TICKER}.json``. The live pipeline instead
-stores earnings in the sectioned ``data/fundamentals/{TICKER}.json`` cache
-(``core.fetchers.earnings_history``).
-
-Both pipelines fetch through the SAME source —
-``earnings_history.fetch_earnings_dates_from_yfinance`` — so the two caches cannot
-see different date lists for a ticker on the same fetch. Only the on-disk *layout*
-differs, kept separate so the backtest can populate its own cache without touching
-the live one. The two carry independent ``fetched_at`` stamps and so can differ in
-*freshness*, but that is benign: historical earnings dates are stable, and only the
-next (future) date moves — which the live pipeline reads from its own fresh cache.
-
-Merging the two layouts into one file is a possible future migration; it is deferred
-because it would change the backtest's cache source (a reproducibility shift) for
-little benefit now that the content source is already unified.
+Persists to ``data/earnings_history/{TICKER}.json``. The live pipeline uses a
+sectioned ``data/fundamentals/{TICKER}.json`` cache (``core.fetchers.earnings_history``).
+Both pipelines fetch through the same source
+(``earnings_history.fetch_earnings_dates_from_yfinance``), so only the on-disk
+layout differs — kept separate so the backtest populates its own cache without
+touching the live one. Independent ``fetched_at`` stamps mean freshness can differ,
+which is benign: historical dates are stable and only the next future date moves.
 
 Cache layout
     data/earnings_history/{TICKER}.json
@@ -105,16 +97,9 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
 
 def _fetch(ticker: str) -> list[date]:
     """
-    delegate to the single canonical fetcher in
-    ``core.fetchers.earnings_history.fetch_earnings_dates_from_yfinance``.
-
-    Both the live pipeline (sectioned-JSON cache under data/fundamentals/) and
-    the backtest pipeline (standalone-JSON cache under data/earnings_history/)
-    now fetch through the same function, eliminating the dual-yfinance-call
-    behaviour where the two caches could see different date lists on the same day.
-
-    Cache *layouts* still differ (tracked separately for future migration);
-    cache *content sources* are now unified.
+    Delegate to the canonical fetcher
+    ``core.fetchers.earnings_history.fetch_earnings_dates_from_yfinance``,
+    shared with the live pipeline so both caches see the same date list.
     """
     return fetch_earnings_dates_from_yfinance(ticker)
 

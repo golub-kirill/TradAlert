@@ -1,8 +1,8 @@
 """
-Walk-forward IS selection must never tune on a zero-trade/failed config (audit
-L1). When a whole window's sweep workers crash, every point is a zeroed _empty
-point; the old fallback picked an arbitrary one and silently corrupted the OOS
-leg. The selection now degrades to: floor-clearers -> any traded combo -> baseline.
+Walk-forward IS selection must never tune on a zero-trade/failed config. When a
+whole window's sweep workers crash, every point is a zeroed _empty point;
+selecting one would corrupt the OOS leg. Selection degrades through:
+floor-clearers -> any traded combo -> baseline.
 """
 
 from __future__ import annotations
