@@ -96,24 +96,24 @@ def fetch_boc_series(
                 "[boc] series %s returned HTTP %s — skipping (fail-open)",
                 series_id, status,
             )
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
     except (OSError, ValueError, RuntimeError) as exc:
         # Network failure (OSError), bad JSON (ValueError), or other runtime
         # error. Non-fatal: skip the series and fall back to cache/empty so a
         # single broken feed never pollutes the regime calculation. No stack
         # trace — this path is expected to fire on transient outages.
         logger.warning("[boc] fetch failed for %s: %s — skipping (fail-open)", series_id, exc)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     # BoC returns nested structure: {"observations": [{"d": "2024-01-01", "V39079": {"v": "5.0"}}]}
     observations = data.get("observations", [])
     if not observations:
         logger.warning("[boc] no observations returned for %s", series_id)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     df = _parse_boc_observations(observations, series_id)
     if df.empty:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     try:
         df.to_parquet(parquet_path)

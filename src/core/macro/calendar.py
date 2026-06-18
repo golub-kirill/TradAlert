@@ -15,20 +15,28 @@ FOMC dates are publicly published by the Federal Reserve a year in
 advance: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 CPI release dates follow the BLS calendar (~mid-month, ~08:30 ET).
 
-Consumed by ``main.py`` to seed ``FilterEngine._stop_dates`` so any new
-entry on these dates is blocked (held positions still exit normally —
-the gate is entry-only).
+Consumed by ``main.py`` two ways:
+  1. seeds ``FilterEngine._stop_dates`` so any new entry ON one of these dates
+     is blocked (held positions still exit normally — the gate is entry-only); and
+  2. ``event_risk_flag()`` surfaces an ADVISORY flag on a fresh entry when an event
+     falls within the next few days (``upcoming_event_risk``) — informational only,
+     it never gates or sizes a trade.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
+
+# Default look-ahead window (calendar days) for the advisory event-risk flag —
+# how far ahead of a fresh entry an FOMC/CPI/NFP is worth surfacing. Advisory
+# only (never gates/sizes); the entry-DAY block is the stop_dates gate.
+EVENT_RISK_WITHIN_DAYS = 5
 
 
 @dataclass(frozen=True)
@@ -129,6 +137,52 @@ def get_calendar_events(
             "extend the hard-coded list.", len(events), max(e.date for e in events))
 
     return events
+
+
+def upcoming_event_risk(
+        events: Iterable[CalendarEvent], today: date, *,
+        within_days: int = EVENT_RISK_WITHIN_DAYS,
+        categories: Iterable[str] | None = None,
+) -> CalendarEvent | None:
+    """Nearest scheduled macro event in ``[today, today + within_days]`` (inclusive), or None.
+
+    Pure + deterministic — ``today`` is passed explicitly (no ``date.today()``) and ``events`` is
+    a ``get_calendar_events()`` list, so it is unit-testable. ADVISORY ONLY: it never gates or
+    sizes a trade (the entry-DAY no-trade block is the ``stop_dates`` gate); this just lets the
+    live alert say "you are entering 2 days before FOMC". ``today`` is included so a same-day
+    event still reads (a fired entry on an event day is normally blocked, but the flag stays
+    honest if the block is ever disabled). Ties on the soonest date resolve to list order.
+    """
+    if within_days < 0:
+        return None
+    horizon = today + timedelta(days=within_days)
+    whitelist = {c.upper() for c in categories} if categories is not None else None
+    upcoming = [
+        e for e in events
+        if today <= e.date <= horizon
+        and (whitelist is None or e.category.upper() in whitelist)
+    ]
+    if not upcoming:
+        return None
+    return min(upcoming, key=lambda e: e.date)
+
+
+def event_risk_flag(
+        events: Iterable[CalendarEvent], today: date, *,
+        within_days: int = EVENT_RISK_WITHIN_DAYS,
+        categories: Iterable[str] | None = None,
+) -> str:
+    """Formatted advisory flag for the soonest upcoming macro event, or "" if none in window.
+
+    e.g. ``"FOMC today"``, ``"CPI in 1d (2026-02-11)"``, ``"FOMC in 3d (2026-03-18)"``. Thin
+    display wrapper over :func:`upcoming_event_risk` — the single source of the flag string.
+    """
+    evt = upcoming_event_risk(events, today, within_days=within_days, categories=categories)
+    if evt is None:
+        return ""
+    days = (evt.date - today).days
+    when = "today" if days == 0 else f"in {days}d ({evt.date.isoformat()})"
+    return f"{evt.category} {when}"
 
 
 def _load_yaml_calendar() -> list[CalendarEvent]:

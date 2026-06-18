@@ -3,8 +3,8 @@ TradAlert custom exception hierarchy.
 
     TradAlertError                  base class for the tree
     ├── ValidationError             DataFrame structure or content is invalid
-    │   ├── StaleDataError          cached file exceeds the staleness threshold
-    │   └── InsufficientDataError   too few rows for the requested operation
+    │   ├── InsufficientDataError   too few rows for the requested operation
+    │   └── DataStalenessError      live bar still behind the last session after refetch
     ├── FetchError                  data source returned unusable data
     └── ConfigError                 YAML config key missing or wrong type
 """
@@ -39,34 +39,6 @@ class ValidationError(TradAlertError):
         super().__init__(f"{prefix}{detail}")
 
 
-class StaleDataError(ValidationError):
-    """
-    Raised when a cache file is older than the configured staleness threshold.
-
-    Attributes
-    ----------
-    hours_old : float
-        How old the cache file is, in hours.
-    threshold : int
-        The staleness threshold that was exceeded, in hours.
-    ticker    : str
-        Ticker whose cache is stale.
-    """
-
-    def __init__(
-            self,
-            hours_old: float,
-            threshold: int,
-            ticker: str = "",
-    ) -> None:
-        self.hours_old = hours_old
-        self.threshold = threshold
-        detail = (
-            f"cache is {hours_old:.1f}h old — exceeds {threshold}h threshold"
-        )
-        super().__init__(detail=detail, ticker=ticker)
-
-
 class InsufficientDataError(ValidationError):
     """
     Raised when a DataFrame has too few rows for the requested operation.
@@ -88,9 +60,8 @@ class DataStalenessError(ValidationError):
     """
     Signals that a ticker's DATA (its most recent bar) is still behind the last completed
     exchange session AFTER a refetch attempt — the engine would otherwise evaluate a signal
-    on bars blind to one or more sessions (weekend/overnight news). Distinct from
-    :class:`StaleDataError` (cache *file* age in hours); this is the bar *timestamp* in
-    trading days, on the LIVE path only.
+    on bars blind to one or more sessions (weekend/overnight news). This is the bar
+    *timestamp* in trading days (not cache *file* age), on the LIVE path only.
 
     NOTE: the live scanner does NOT raise this today — a stale-after-refetch (or gapped) fire
     is DOWNGRADED to ``SignalResult.tier = "NEEDS_REVIEW"`` (``main._mark_review``) so it is

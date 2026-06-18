@@ -94,7 +94,7 @@ def fetch_naaim(
     return updated_df
 
 
-def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp]:
+def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp | None]:
     """
     Scrape the latest exposure index from the NAAIM website.
     Returns (exposure_value, date_of_survey). Date is approximated as the most

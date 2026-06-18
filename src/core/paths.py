@@ -27,12 +27,7 @@ EARNINGS_HISTORY_DIR: Path = DATA_DIR / "earnings_history"
 BEHAVIORAL_DIR: Path = DATA_DIR / "behavioral"
 MACRO_DIR: Path = DATA_DIR / "macro"
 SCREENSHOTS_DIR: Path = DATA_DIR / "screenshots"
-BACKTEST_OUT_DIR: Path = DATA_DIR / "backtest_out"
 
 SETTINGS_YAML: Path = CONFIG_DIR / "settings.yaml"
 FILTERS_YAML: Path = CONFIG_DIR / "filters.yaml"
 WATCHLIST_YAML: Path = CONFIG_DIR / "watchlist.yaml"
-SECRETS_ENV: Path = CONFIG_DIR / "secrets.env"
-SECTOR_MAP_YAML: Path = CONFIG_DIR / "sector_map.yaml"
-
-LOG_FILE: Path = DATA_DIR / "tradealert.log"

@@ -6,12 +6,8 @@ keys and types are checked once in ``parse()`` (raising ConfigError) rather than
 failing at scattered access sites. Defaults come from ``core.defaults.DEFAULTS``
 so there is still ONE source of truth; YAML values win when present.
 
-This is Phase 1 of the typed-config migration: the full tree is modelled here,
-but only the engine's trend + scan-gate reads consume it so far (the rest still
-read the raw dict via ``FilterEngine._cfg``). ``parse()`` accepts every config
-that ``FilterEngine._validate_config`` accepts — it adds coverage and type
-checks, never a new rejection of an otherwise-valid config. It is a pure
-representation of the dict, so behaviour is unchanged.
+``parse()`` is a pure representation of the validated dict — it adds coverage and
+type checks but never rejects an otherwise-valid config, so behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -232,8 +228,8 @@ class SignalsCfg:
 
 @dataclass(frozen=True)
 class EngineConfig:
-    """Typed view of filters.yaml. ``raw`` retains the source dict for blocks
-    not yet migrated off ``FilterEngine._cfg``."""
+    """Typed view of filters.yaml; ``raw`` retains the source dict for callers
+    that still need raw access."""
     price: PriceCfg
     liquidity: LiquidityCfg
     market_cap: MarketCapCfg

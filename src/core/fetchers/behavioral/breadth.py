@@ -61,7 +61,7 @@ def compute_sp500_breadth(
     constituents = get_sp500_constituents()
     if not constituents:
         logger.warning("[breadth] no S&P 500 constituents available")
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     # Survivorship bias (audit F3): this is the CURRENT membership applied to the
     # full price history — removed names are missing and present names are
@@ -91,7 +91,7 @@ def compute_sp500_breadth(
         above_by_ticker[ticker] = (df["close"] > ma200).astype(float)
 
     if not above_by_ticker:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     # Row-wise % of constituents above their MA200 across the union of dates.
     # Vectorised (replaces the per-date Python loop) so the full universe stays cheap;
@@ -142,13 +142,13 @@ def compute_sector_rotation(
             series[ticker] = cache_load(ticker)["close"]
         except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
             logger.warning("[sector] missing %s — %s", ticker, exc)
-            return _load_cached_or_empty(parquet_path)
+            return _load_cached_or_empty(parquet_path, staleness_hours)
 
     growth = series["XLI"].add(series["XLF"], fill_value=0).dropna()
     defensive = series["XLP"].add(series["XLU"], fill_value=0).dropna()
     common = growth.index.intersection(defensive.index)
     if len(common) < 60:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     ratio = (growth.loc[common] / defensive.loc[common]).dropna()
     normalized = ratio / ratio.rolling(252, min_periods=60).mean()

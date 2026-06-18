@@ -50,13 +50,3 @@ class TelegramNotifier:
                 parse_mode=self._pm, reply_markup=reply_markup,
             )
         return msg.message_id
-
-    async def edit_message_caption(self, message_id: int, *, caption: str,
-                                   reply_markup=None) -> None:
-        await self._bot.edit_message_caption(
-            chat_id=self._chat_id, message_id=message_id, caption=caption,
-            parse_mode=self._pm, reply_markup=reply_markup,
-        )
-
-    async def answer_callback(self, callback_query_id: str, *, text: str = "") -> None:
-        await self._bot.answer_callback_query(callback_query_id, text=text)

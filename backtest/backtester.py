@@ -714,8 +714,8 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     Return a copy of df with all standard indicator columns attached.
 
     Delegates to ``core.indicators.indicators.attach_indicators`` — the
-    single canonical implementation shared with the live pipeline.
-    Previously duplicated here without Bollinger Bands (BUG-03 in TODO).
+    single canonical implementation shared with the live pipeline (avoids a
+    divergent copy).
     """
     return attach_indicators(df)
 

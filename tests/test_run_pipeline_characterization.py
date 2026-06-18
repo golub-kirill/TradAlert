@@ -172,6 +172,37 @@ def test_run_pipeline_branches(pipeline):
     assert len(pipeline["maxhold"]) == 1  # only the held ticker reaches 7b
 
 
+def test_run_pipeline_stamps_event_risk(pipeline):
+    """A scan-wide upcoming macro event is stamped onto every fresh entry's signal."""
+    from core.macro.calendar import CalendarEvent
+    now = datetime(2025, 1, 16, 22, 0, tzinfo=timezone.utc)        # post-close of the last bar
+    events = [CalendarEvent(date(2025, 1, 18), "FOMC", "FOMC decision day")]
+    results = main._run_pipeline(["ENTRY"], _StubEngine(), settings={}, now=now,
+                                 cal_events=events)
+    by = {r.ticker: r for r in results}
+    assert by["ENTRY"].signal.event_risk == "FOMC in 2d (2025-01-18)"
+
+
+def test_run_pipeline_no_event_risk_without_calendar(pipeline):
+    """No cal_events → the advisory stays empty (and the backtest is unaffected anyway)."""
+    now = datetime(2025, 1, 16, 22, 0, tzinfo=timezone.utc)
+    results = main._run_pipeline(["ENTRY"], _StubEngine(), settings={}, now=now)
+    by = {r.ticker: r for r in results}
+    assert by["ENTRY"].signal.event_risk == ""
+
+
+def test_run_pipeline_event_risk_respects_settings_window(pipeline):
+    """An out-of-window event (8d out, window 5) leaves the advisory empty."""
+    from core.macro.calendar import CalendarEvent
+    now = datetime(2025, 1, 16, 22, 0, tzinfo=timezone.utc)
+    events = [CalendarEvent(date(2025, 1, 24), "CPI", "CPI release")]   # 8 days out
+    results = main._run_pipeline(
+        ["ENTRY"], _StubEngine(),
+        settings={"scanner": {"event_risk_within_days": 5}}, now=now, cal_events=events)
+    by = {r.ticker: r for r in results}
+    assert by["ENTRY"].signal.event_risk == ""
+
+
 def test_run_pipeline_empty_when_only_context():
     # No engine work, no positions: a context-only universe yields no results.
     import main as _m

@@ -244,21 +244,6 @@ class SweepPoint:
     # walk-forward OOS leg replays exactly this dict.
     mutations: dict | None = None
 
-    # ── helpers ───────────────────────────────────────────────────────────
-
-    def fmt_value(self, spec: ParamSpec | None = None) -> str:
-        if spec:
-            return spec.fmt.format(self.param_value)
-        try:
-            return f"{self.param_value:.3g}"
-        except (TypeError, ValueError):
-            return str(self.param_value)
-
-    @property
-    def label_with_value(self) -> str:
-        suffix = " * base" if self.is_baseline else ""
-        return f"{self.param_value}{suffix}"
-
 
 @dataclass
 class SweepReport:

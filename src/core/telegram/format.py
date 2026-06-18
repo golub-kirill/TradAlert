@@ -203,6 +203,9 @@ def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = 
     primary = [tgt_line, stop_line]
 
     detail = [f"⏳ hold {lo}–{hi}d   ·   📦 size {float(s.size_mult):.2f}×"]
+    event_risk = getattr(s, "event_risk", "")
+    if event_risk:
+        detail.append(f"🗓 event risk: {_esc(event_risk)}")
     if checklist:
         detail.append("🔎 " + _factor_line(checklist))
     if not is_long and (borrow_pct is not None or htb):

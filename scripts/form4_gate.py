@@ -213,7 +213,7 @@ def main() -> None:
     g = evaluate_gate(panel)
 
     print("\n" + "=" * 78)
-    print("  MILESTONE F4-1 — Form-4 insider-buying standalone predictive power")
+    print("  F4-1 — Form-4 insider-buying standalone predictive power")
     print("=" * 78)
     print("\n  IC bar (composite rank-IC vs fwd-21d, ACTIVE cells; pre-reg ≥0.03, t≥2, ≥60% +yrs)")
     print("  " + "─" * 74)

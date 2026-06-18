@@ -236,10 +236,8 @@ def classify_macro_state(
                 state.policy_stance_ca = "CUTTING"
             else:
                 state.policy_stance_ca = "HOLD"
-        else:
-            missing.append("policy_stance_ca")
-    else:
-        missing.append("policy_stance_ca")
+    # policy_stance_ca isn't a scored axis (absent from _DEFAULT_AXIS_WEIGHTS), so a
+    # missing BoC stance must not be counted in `missing` / penalize confidence.
 
     # Curve state (10y - 3m spread)
     dgs10 = _val("DGS10")

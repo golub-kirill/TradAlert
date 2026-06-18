@@ -1,12 +1,13 @@
 """scan_results write contract — the live-journal path that shipped untested (audit H4)
 and let the broken tier migration (C1) pass green.
 
-Locks three things that, together, would have caught C1:
+Locks the things that, together, would have caught C1:
   • the INSERT's column list, its %(name)s placeholders, and the dict _result_to_row
     builds are mutually consistent (no drift between SQL and code);
-  • every column the INSERT writes exists in the fresh schema (scan_schema.sql);
-  • the tier migration adds BOTH tier and review_reason (the bug: it added only
-    review_reason, AFTER a tier column that did not yet exist);
+  • every column the INSERT writes exists in the fresh schema (scan_schema.sql), which
+    defines BOTH tier and review_reason — the C1 bug shipped review_reason AFTER a tier
+    column that did not yet exist, so the fresh-schema guard below locks the end state
+    (the one-off upgrade .sql is owner-applied and no longer kept in the repo);
   • save_scan_results returns the rowcount on success and fails LOUD-but-open
     (logs ERROR, returns 0, never raises) when the INSERT errors.
 """
@@ -70,7 +71,7 @@ def test_every_placeholder_has_exactly_one_row_key():
     assert set(_insert_placeholders()) == set(row.keys())
 
 
-# ── schema / migration consistency (the C1-catching layer) ───────────────────
+# ── schema consistency (the C1-catching layer) ───────────────────────────────
 
 def test_insert_columns_all_exist_in_fresh_schema():
     schema = (_ROOT / "data" / "scan_schema.sql").read_text(encoding="utf-8")
@@ -83,12 +84,6 @@ def test_fresh_schema_defines_tier_and_review_reason():
     schema = (_ROOT / "data" / "scan_schema.sql").read_text(encoding="utf-8")
     cols = _create_block_columns(schema, "scan_results")
     assert {"tier", "review_reason"} <= cols
-
-
-def test_tier_migration_adds_both_columns():
-    mig = (_ROOT / "data" / "scan_results_tier_migration.sql").read_text(encoding="utf-8")
-    assert re.search(r"ADD COLUMN\s+tier\b", mig, re.I), "migration must create the tier column"
-    assert re.search(r"ADD COLUMN\s+review_reason\b", mig, re.I)
 
 
 # ── save_scan_results behaviour (fake cursor; no DB) ─────────────────────────

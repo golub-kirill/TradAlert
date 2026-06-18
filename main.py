@@ -243,7 +243,7 @@ def main() -> None:
         fetch_summary.succeeded, engine,
         settings=settings,
         macro_state=macro_state, behavioral_state=behavioral_state,
-        rp_ranks=rp_ranks,
+        rp_ranks=rp_ranks, cal_events=cal_events,
     )
 
     elapsed = time.perf_counter() - t0
@@ -260,7 +260,8 @@ def main() -> None:
     # breaks the scan (mirrors the optional-import pattern above).
     try:
         from core.telegram.push import send_alerts
-        send_alerts(results, settings, macro_state=macro_state)
+        send_alerts(results, settings, macro_state=macro_state,
+                    run_date=datetime.now(timezone.utc).date())
     except Exception as exc:
         logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 
@@ -433,6 +434,7 @@ def _run_pipeline(
         behavioral_state: object | None = None,
         rp_ranks: dict[str, float] | None = None,
         now: datetime | None = None,
+        cal_events: list | None = None,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal for every fetched ticker.
@@ -482,6 +484,19 @@ def _run_pipeline(
     # from the reference backtest's actual bars_held (p25-p75). Computed once per
     # scan and applied to every fired entry. Fail-open.
     expected_hold = _expected_hold_range(engine)
+    # Event-risk advisory (display-only): one scan-wide flag (FOMC/CPI/NFP within N days)
+    # stamped onto each fresh entry. Universe-wide, so computed once. now.date() is the UTC
+    # date — the scan runs post-close so it matches the trading date; advisory window
+    # tolerance makes any tz edge harmless. Fail-open (never blocks a scan).
+    event_risk = ""
+    if cal_events:
+        try:
+            from core.macro.calendar import event_risk_flag
+            _within = (settings.get("scanner") or {}).get("event_risk_within_days")
+            _kw = {"within_days": int(_within)} if _within is not None else {}
+            event_risk = event_risk_flag(cal_events, now.date(), **_kw)
+        except Exception as exc:
+            logger.debug("[calendar] event_risk_flag failed (skipping): %s", exc)
 
     for ticker in tickers:
         # ^VIX is context-only — not tradeable, not scanned or signalled.
@@ -494,7 +509,7 @@ def _run_pipeline(
             max_open_risk=max_open_risk, expected_hold=expected_hold,
             settings=settings, macro_state=macro_state,
             behavioral_state=behavioral_state, rp_ranks=rp_ranks,
-            now=now,
+            now=now, event_risk=event_risk,
         ))
 
     return results
@@ -574,6 +589,7 @@ def _process_ticker(
         behavioral_state: object | None,
         rp_ranks: dict[str, float] | None,
         now: datetime | None = None,
+        event_risk: str = "",
 ) -> TickerResult:
     """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
 
@@ -775,6 +791,9 @@ def _process_ticker(
         # Entries only — exits don't display a hold horizon.
         if signal.direction in ("long", "short"):
             signal.expected_hold_days = expected_hold
+            # Advisory only — flags a fresh entry landing near a scheduled FOMC/CPI/NFP.
+            # Never gates/sizes; "" when nothing is in the window.
+            signal.event_risk = event_risk
             # Downgrade to NEEDS_REVIEW if the data was stale-after-refetch or gapped > 2×ATR.
             _mark_review(ticker, signal, scan, stale_sessions)
 
@@ -1147,6 +1166,14 @@ def _print_report(
 
     # ── entries ───────────────────────────────────────────────────────────────
     logger.info(divider)
+    # Scan-wide event-risk advisory (set on every fresh entry; same string for all). Surfaced
+    # once here so the operator sees an upcoming FOMC/CPI/NFP before acting. "" when none.
+    event_risk = next(
+        (r.signal.event_risk for r in (entries + short_entries + review)
+         if r.signal is not None and getattr(r.signal, "event_risk", "")), "")
+    if event_risk and (entries or short_entries or review):
+        logger.info("⚠ EVENT RISK  %s — a fresh entry lands near a scheduled macro event",
+                    event_risk)
     if entries:
         logger.info("ENTRIES  %d alert(s)", len(entries))
         if n_open is not None:

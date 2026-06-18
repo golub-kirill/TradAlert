@@ -106,8 +106,6 @@ class FilterEngine:
         ("signals.stop_loss.min_rr", _NUMERIC),
     )
 
-    _EARNINGS_BUFFER_DAYS_DEFAULT: int = 5
-
     def __init__(
             self,
             config_path: Path | str = "config/filters.yaml",
@@ -1298,7 +1296,7 @@ class FilterEngine:
         return (earnings_date - self._today).days <= self._earnings_buffer_days()
 
     def _earnings_buffer_days(self) -> int:
-        """Return ``events.earnings_buffer_days``, falling back to the class default."""
+        """Return ``events.earnings_buffer_days`` as int."""
         return int(self.cfg.events.earnings_buffer_days)
 
     @staticmethod

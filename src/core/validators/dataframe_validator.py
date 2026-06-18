@@ -186,11 +186,15 @@ def _fix_volume_dtype(df: pd.DataFrame, tag: str) -> pd.DataFrame:
             "%s'volume' dtype is %s — casting to int64",
             tag, df["volume"].dtype,
         )
-        df["volume"] = (
-            pd.to_numeric(df["volume"], errors="coerce")
-            .round()
-            .astype("int64")
-        )
+        vol = pd.to_numeric(df["volume"], errors="coerce")
+        # Drop rows whose volume can't be parsed — int64 can't hold NaN, so
+        # astype would raise IntCastingNaNError on non-numeric provider values.
+        if vol.isna().any():
+            n = int(vol.isna().sum())
+            logger.warning("%sdropping %d row(s) with non-numeric volume", tag, n)
+            df = df.loc[vol.notna()].copy()
+            vol = vol.loc[df.index]
+        df["volume"] = vol.round().astype("int64")
     return df
 
 

@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS scan_results (
     score        DECIMAL(5,2) NULL,
     reason       VARCHAR(255) NULL,
     `close`      DOUBLE       NULL,
-    -- fired-signal geometry (see data/scan_results_recon_migration.sql); NULL for non-signals
+    -- fired-signal geometry (stop/target/etc.); NULL for non-signals
     stop_price   DOUBLE       NULL,
     target_price DOUBLE       NULL,
     signal_type  VARCHAR(24)  NULL,

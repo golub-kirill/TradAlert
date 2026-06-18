@@ -169,9 +169,8 @@ def _get_api_key() -> str | None:
         if settings_path.exists():
             cfg = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
             env_name = (cfg.get("macro", {}) or {}).get("fred_api_key_env", env_name)
-    except (OSError, AttributeError) as exc:
-        # YAML scanner errors surface as yaml.YAMLError (subclass of Exception).
-        # Keep settings.yaml read tolerant — fall through to default name.
+    except (OSError, AttributeError, yaml.YAMLError) as exc:
+        # Tolerant read — a malformed/unreadable settings.yaml falls through to the default name.
         logger.debug("[fred] reading settings.yaml failed (%s); using default env name", exc)
     return os.environ.get(env_name)
 

@@ -153,6 +153,11 @@ class SignalResult:
     # data is stale-after-refetch or the overnight gap breaches the ATR threshold.
     tier: str = "LIVE"
     review_reason: str = ""   # e.g. "gap 2.3×ATR · stale 1 session"
+    # ── live-only event-risk advisory (set by main.py from the macro calendar) ──
+    # A scheduled FOMC/CPI/NFP within N days of a FRESH entry — informational only: it never
+    # gates, sizes, or moves a stop (the entry-day block is the stop_dates gate). "" = nothing
+    # in the window. The engine/backtester never set it → the backtest stays byte-identical.
+    event_risk: str = ""      # e.g. "FOMC in 2d (2026-03-18)"
 
 
 # Typo-protected constants for signal types and directions.

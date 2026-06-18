@@ -69,7 +69,7 @@ def _window_mask(periods, months):
 
 
 def verdict_at(rows: list[dict], by: dict, k: float) -> dict:
-    """Evaluate the pre-registered Phase-1 PASS/MARGINAL/FAIL at risk-per-trade ``k``
+    """Evaluate the pre-registered benchmark-relative PASS/MARGINAL/FAIL at risk-per-trade ``k``
     (the 1R↔equity factor). Pure function of the per-window metric ``rows`` so it is
     import-safe and unit-testable without the heavy backtest.
 
@@ -97,7 +97,7 @@ def main() -> None:
             pass
 
     ap = argparse.ArgumentParser(
-        description="Phase 1 — benchmark-relative truth (strategy vs SPY)")
+        description="Benchmark-relative truth (strategy vs SPY)")
     ap.add_argument("--snapshot", default="data/snapshot_2026-06-10",
                     help="Frozen cache root (prices/ behavioral/ macro/ earnings_history/)")
     args = ap.parse_args()
@@ -124,7 +124,7 @@ def main() -> None:
     )
     print(f"  {uni.summary()}", flush=True)
     if uni.spy_df is None:
-        print("  ✗ SPY not loaded from snapshot — cannot run benchmark-relative phase.")
+        print("  ✗ SPY not loaded from snapshot — cannot run the benchmark-relative comparison.")
         return
 
     # ── run_id=15 leg (breakeven 1.0R) — byte-identical to the paired_ab breakeven leg ──

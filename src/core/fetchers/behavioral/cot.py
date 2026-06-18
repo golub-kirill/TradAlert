@@ -124,12 +124,12 @@ def fetch_cot(
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("[cot] fetch failed for %s: %s — excluding from score "
                        "(check TFF resource ID if 404)", contract, exc)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_days)
 
     df = _normalise_tff_rows(rows, contract_name)
     if df.empty:
         logger.warning("[cot] %s: empty result from CFTC TFF endpoint", contract)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_days)
 
     # ── 3. cache write ───────────────────────────────────────────────────
     try:

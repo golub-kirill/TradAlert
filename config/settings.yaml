@@ -47,6 +47,11 @@ scanner: # block: chart rendering
   chart: # block: chart rendering options
     signal_history: true                # render historical signal markers on charts
 
+  # Advisory event-risk flag: surface an upcoming FOMC/CPI/NFP on a fresh entry when it
+  # falls within this many calendar days. Display-only (never gates/sizes); [5]. The
+  # entry-DAY no-trade block is the separate events.stop_dates gate in filters.yaml.
+  event_risk_within_days: 5
+
 
 # ── MACRO DATA LAYER ──────────────────────────────────────────────
 # FRED, BoC Valet, and yfinance macro series.  Fetched once per pipeline run.
