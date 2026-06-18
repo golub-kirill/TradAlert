@@ -1,49 +1,33 @@
 """
 Per-ticker chronic-loser tracker.
 
-Purpose
-───────
-After 2+ consecutive losses on the same symbol within a rolling window,
-apply a size penalty (or full block) to new entries on that symbol.
-Targets emergent losers that appear after the watchlist has been pruned.
+After 2+ consecutive losses on the same symbol within a rolling window, apply a
+size penalty (or full block) to new entries on that symbol. Targets emergent
+losers that appear after the watchlist has been pruned.
 
 Design contract
 ───────────────
 - Stateful, in-memory ledger of closed trades, indexed by ticker.
-- ``record_trade`` is called when a trade closes; ``size_multiplier`` is
-  called before a new trade opens — never the other way round, so the
-  ledger contains only past trades from the caller's perspective.
-- The penalty is **per-ticker**, not portfolio-wide: a hot ticker can
-  trade full-size while a cold one is throttled.
-- Streak walks back from the most recent trade and stops at the first
-  win **or** at a trade older than ``lookback_days``. Stale losses age
-  off automatically; the policy is self-healing through time.
+- ``record_trade`` is called on close; ``size_multiplier`` before a new entry
+  opens — never the other way round, so the ledger holds only past trades.
+- Penalty is per-ticker, not portfolio-wide: a hot ticker trades full-size while
+  a cold one is throttled.
+- The streak walks back from the most recent trade and stops at the first win or
+  a trade older than ``lookback_days``; stale losses age off automatically.
 
-Backtest use
-────────────
-Each ``BarReplayBacktester.run()`` call instantiates one ``TickerHealth``
-shared across the bar walk. Trades record on close, lookups happen at
-the bar before a new entry opens. No cross-worker state needed because
-the policy is per-ticker.
-
-Live scan use
-─────────────
-``TickerHealth.from_csv(path)`` reads the production ``trades.csv``
-once at scanner startup; the same ``size_multiplier(ticker, today)``
-call yields the live penalty.
+Usage: the backtester instantiates one ``TickerHealth`` per ``run()``, shared
+across the bar walk (per-ticker, so no cross-worker state). The live scanner
+builds one via ``from_csv(path)`` over the production ``trades.csv`` at startup.
 
 Sliding-scale interpretation
 ────────────────────────────
-The default ``scale = {2: 0.5, 3: 0.25}`` (no hard block) means:
-    streak == 0 or 1   → 1.0 (no penalty)
-    streak == 2        → 0.5
-    streak >= 3        → 0.25 (floor)
+Default ``scale = {2: 0.5, 3: 0.25}`` (no hard block):
+    streak 0 or 1 → 1.0 (no penalty);  streak 2 → 0.5;  streak >= 3 → 0.25 (floor)
 
-For any streak ``k``, the multiplier is ``scale[max(j for j in scale if j <= k)]``,
-defaulting to 1.0 when no key fits. A ``4: 0.0`` entry would block entirely and
-remains configurable — it was removed from the default on 2026-06-03 because
-forward expectancy stays positive even after 4+ consecutive losses (see
-docs/triage_raw_notes_2026-06.md, Note 4).
+For streak ``k`` the multiplier is ``scale[max(j for j in scale if j <= k)]``,
+defaulting to 1.0 when no key fits. A ``4: 0.0`` entry blocks entirely and stays
+configurable; it is off by default because forward expectancy stays positive
+even after 4+ consecutive losses.
 """
 
 from __future__ import annotations
@@ -119,12 +103,9 @@ class TickerHealth:
         streak = 0
         for exit_date, r in reversed(trades):
             if exit_date > as_of_date:
-                # Future trade — should not occur in backtest; skip
-                # defensively rather than raise.
-                continue
+                continue  # future trade — skip defensively
             if exit_date < cutoff:
-                # Too old; older trades cannot extend the streak.
-                break
+                break  # too old; older trades cannot extend the streak
             if r >= 0:
                 break
             streak += 1
@@ -133,9 +114,8 @@ class TickerHealth:
     def size_multiplier(self, ticker: str, as_of_date: date) -> float:
         """Return the size multiplier ∈ [0.0, 1.0] for a fresh entry.
 
-        ``1.0`` means no penalty. ``0.0`` means block entirely (caller
-        should treat ``<= 0`` as do-not-trade, mirroring the existing
-        regime ``size_mult`` contract — see ``backtester.py:277``).
+        ``1.0`` means no penalty. ``0.0`` means block entirely; the caller treats
+        ``<= 0`` as do-not-trade, mirroring the regime ``size_mult`` contract.
         """
         if not self.enabled:
             return 1.0

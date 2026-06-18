@@ -1,5 +1,5 @@
 """
-Regression tests for audit-driven changes (2026-05-31):
+Regression tests for audit-driven changes:
   - signals.size_mult_gate blocks/allows entries by composite size multiplier.
   - Reporting (equity curve + stats) aggregates Trade.effective_r, so the
     macro/behavioral position-size multiplier and borrow drag reach the
@@ -146,50 +146,12 @@ def test_scan_requires_ma_slow_rows():
 def test_scan_blocks_nan_indicators_instead_of_passing():
     eng = _engine()
     df = _firing_df(260)
-    # Corrupt the last bar's ATR to NaN (warmup-like). Old behaviour: NaN
-    # comparisons silently pass the volatility gate. New: blocked.
+    # NaN ATR (warmup-like) must block, not silently pass the volatility gate.
     df = df.copy()
     df.loc[df.index[-1], "atr"] = np.nan
     res = eng.scan("X", df)
     assert res.passed is False
     assert "warmup" in res.reason.lower()
-
-
-# ── insider/short_interest weight guard (documented ConfigError) ──────────────
-
-def test_scorer_rejects_unvalidated_subscore_weight():
-    import pytest as _pytest
-    from core.scoring import SignalScorer
-    from exceptions import ConfigError
-    for key in ("insider_buying", "short_interest"):
-        with _pytest.raises(ConfigError):
-            SignalScorer({"scanner": {"weights": {key: 2}}}, {})
-
-
-def test_scorer_allows_zero_or_absent_subscore_weight():
-    from core.scoring import SignalScorer
-    SignalScorer({"scanner": {"weights": {"insider_buying": 0, "trend_up": 3}}}, {})
-    SignalScorer({"scanner": {"weights": {"trend_up": 3}}}, {})  # absent → fine
-
-
-# ── behavioral sentiment z-score uses a trailing 52-week window ───────────────
-
-def test_sentiment_zscore_uses_trailing_52w_not_full_series():
-    from core.behavioral import _classify_sentiment
-    hist = [1.0] * 148  # high bullish history
-    recent = [0.45, 0.55] * 25 + [0.50, 0.50]  # 52 wks, mean 0.50, latest 0.50
-    spread = hist + recent
-    idx = pd.date_range("2020-01-01", periods=len(spread), freq="W-WED")
-    aaii = pd.DataFrame({"spread": spread}, index=idx)
-
-    # Rolling-52w: latest == recent-window mean → z ≈ 0 → NORMAL.
-    assert _classify_sentiment(aaii) == "NORMAL"
-
-    # The old full-series path would have diverged (latest far below the
-    # long-run mean → z < −1 → FEAR), confirming the window actually changed.
-    s = pd.Series(spread, dtype=float)
-    z_full = (s.iloc[-1] - s.mean()) / s.std()
-    assert z_full < -1.0
 
 
 # ── COT positioning: lev_net (TFF) consumer + fail-open on schema mismatch ─────

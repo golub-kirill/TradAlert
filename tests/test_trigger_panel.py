@@ -195,9 +195,7 @@ def test_format_entry_renders_factor_line():
     assert "TREND ✅" in text and "MOM ▫️" in text and "RISK ❌" in text
 
 
-# ── chart render (headless) ───────────────────────────────────────────────────
-
-# ── live risk-budget + size_mult surfacing (P1 #1) ────────────────────────────
+# ── live risk-budget + size_mult surfacing ────────────────────────────────────
 
 def test_panel_includes_size_row():
     eng = _engine()
@@ -221,6 +219,8 @@ def test_live_context_budget_row_flags_over_budget():
     b2 = next(c for c in under.checks if c.name == "Budget")
     assert b2.passed is True                                # 2 < 5R → room
 
+
+# ── chart render (headless) ───────────────────────────────────────────────────
 
 @pytest.mark.parametrize("direction", ["long", "short"])
 def test_chart_renders_trigger_panel(tmp_path, direction):

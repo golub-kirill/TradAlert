@@ -28,11 +28,13 @@ def _load_cfg() -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
-def _engine(*, allow_shorts: bool = True) -> FilterEngine:
+def _engine(*, allow_shorts: bool = True, exits: dict | None = None) -> FilterEngine:
     cfg = _load_cfg()
     cfg["signals"]["allow_shorts"] = allow_shorts
     cfg["signals"]["gap_risk"] = {"enabled": False}
     cfg["signals"]["sector_gate"] = {"enabled": False}
+    if exits is not None:
+        cfg["signals"]["exits"] = exits
     cfg["events"] = {"earnings_buffer_days": 0, "stop_dates": []}
     eng = FilterEngine.from_dict(cfg)
     eng._today = date(2025, 6, 15)
@@ -324,12 +326,11 @@ def test_signal_exit_short_regime_flip():
 
 def test_signal_exit_short_no_trigger_returns_hold():
     """All exits off, regime still BEAR → no exit fires."""
-    eng = _engine(allow_shorts=True)
-    eng._cfg["signals"]["exits"] = {
+    eng = _engine(allow_shorts=True, exits={
         "regime_flip_short": False,
         "short_cover_pop": False,
         "short_cover_oversold": False,
-    }
+    })
     rows = [_row(close=100.0, macd_hist=-0.10, rsi=45.0)] * 220
     df = pd.DataFrame(rows, index=pd.date_range("2024-01-01", periods=220, freq="B"))
     regime = MarketRegime(trend="BEAR", volatility="LOW")

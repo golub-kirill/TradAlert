@@ -4,6 +4,12 @@ S&P 500 breadth and sector rotation fetchers.
 Computes:
 - pct_above_ma200 : % of S&P 500 constituents trading above their MA200.
 - sector_rotation : (XLI + XLF) / (XLP + XLU) growth-vs-defensive ratio.
+
+SURVIVORSHIP CAVEAT (audit F3): ``pct_above_ma200`` uses the CURRENT S&P 500
+membership across each name's full price history, so removed names are absent and
+today's members are projected backward — early-history breadth reads bullish. Fix
+needs a date-stamped historical-membership source; until then the fetcher WARNs on
+every recompute.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from core.paths import BEHAVIORAL_DIR
 
 import pandas as pd
 
+from core.fetchers import cache_meta
 from core.fetchers.sp500_constituents import get_sp500_constituents
 from persistence.cache import load as cache_load
 
@@ -52,12 +59,20 @@ def compute_sp500_breadth(
     constituents = get_sp500_constituents()
     if not constituents:
         logger.warning("[breadth] no S&P 500 constituents available")
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
-    # Full S&P 500 universe — no truncation. The old ``constituents[:100]`` skewed
-    # breadth toward alphabetically-early (A–C) names and baked in a fixed count,
-    # violating the universe-agnostic rule (NORTH STAR #2). Tickers without at least
-    # 200 cached bars are skipped.
+    # Survivorship bias (audit F3): CURRENT membership applied to full history
+    # biases early-history breadth bullish; flag it loudly until a date-stamped
+    # historical-membership feed exists.
+    logger.warning(
+        "[breadth] computed from CURRENT S&P 500 membership (%d names) across full "
+        "history — survivorship bias; early-history breadth reads optimistic "
+        "(audit F3, needs date-stamped membership).",
+        len(constituents),
+    )
+
+    # Full S&P 500 universe — no truncation (universe-agnostic, NORTH STAR #2).
+    # Tickers without at least 200 cached bars are skipped.
     above_by_ticker: dict[str, pd.Series] = {}
     for ticker in constituents:
         try:
@@ -71,12 +86,10 @@ def compute_sp500_breadth(
         above_by_ticker[ticker] = (df["close"] > ma200).astype(float)
 
     if not above_by_ticker:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     # Row-wise % of constituents above their MA200 across the union of dates.
-    # Vectorised (replaces the per-date Python loop) so the full universe stays cheap;
-    # ``skipna`` drops dates a ticker didn't trade, matching the prior semantics
-    # (MA200-warmup bars stay counted as below, exactly as before).
+    # ``skipna`` drops dates a ticker didn't trade; MA200-warmup bars count as below.
     above_df = pd.DataFrame(above_by_ticker)
     pct = (100.0 * above_df.mean(axis=1, skipna=True)).dropna()
     out = pd.DataFrame({"pct_above_ma200": pct})
@@ -122,13 +135,13 @@ def compute_sector_rotation(
             series[ticker] = cache_load(ticker)["close"]
         except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
             logger.warning("[sector] missing %s — %s", ticker, exc)
-            return _load_cached_or_empty(parquet_path)
+            return _load_cached_or_empty(parquet_path, staleness_hours)
 
     growth = series["XLI"].add(series["XLF"], fill_value=0).dropna()
     defensive = series["XLP"].add(series["XLU"], fill_value=0).dropna()
     common = growth.index.intersection(defensive.index)
     if len(common) < 60:
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_hours)
 
     ratio = (growth.loc[common] / defensive.loc[common]).dropna()
     normalized = ratio / ratio.rolling(252, min_periods=60).mean()
@@ -160,10 +173,21 @@ def _write_meta(meta_path: Path) -> None:
     meta_path.write_text(json.dumps(meta))
 
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_hours: float = _DEFAULT_STALENESS_HOURS) -> pd.DataFrame:
+    """Serve cached parquet (fail-open) when a fresh read fails; WARN with cache age
+    when past the staleness window so a stale cache can't masquerade as fresh."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_hours * 3600:
+                logger.warning(
+                    "[breadth] serving STALE cache for %s — %.1f h old (> %g h "
+                    "window); fresh read failed, value may be outdated.",
+                    parquet_path.stem, age / 3600.0, staleness_hours,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[breadth] cached parquet read failed at %s: %s", parquet_path, exc)
     return pd.DataFrame()

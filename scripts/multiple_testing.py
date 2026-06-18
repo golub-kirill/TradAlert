@@ -103,6 +103,16 @@ def main() -> None:
     ap.add_argument("--max-hold-days", type=int, default=25)
     ap.add_argument("--max-hold-mode", default="if_not_profit")
     ap.add_argument("--max-open-risk", type=float, default=5.0)
+    ap.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
+                    help="Breakeven stop trigger for the grid's base config. "
+                         "Default comes from execution.breakeven_trigger_r in "
+                         "filters.yaml (shipped: 1.0); pass 0 to disable.")
+    ap.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
+                    help="With --breakeven-trigger-r: buffer in ATR multiples.")
+    ap.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
+                    help="Run the whole grid with the ATR trailing stop enabled.")
+    ap.add_argument("--trail-activate-r", type=float, default=None, metavar="R",
+                    help="With --trail-atr-mult: MFE (in R) before trailing starts.")
     ap.add_argument("--start", default=None, metavar="YYYY-MM-DD",
                     help="First entry date (inclusive). Default: earliest bar.")
     ap.add_argument("--end", default=None, metavar="YYYY-MM-DD",
@@ -139,9 +149,25 @@ def main() -> None:
         "max_hold_days": int(args.max_hold_days),
         "max_hold_mode": str(args.max_hold_mode).replace("-", "_"),
     }
+    # Breakeven default comes from execution.breakeven_trigger_r in filters.yaml
+    # (the shipped config the DSR must deflate against); CLI overrides, 0 disables.
+    be_trigger = exec_cfg.get("breakeven_trigger_r")
+    be_buffer = exec_cfg.get("breakeven_buffer_atr")
+    if args.breakeven_trigger_r is not None:
+        be_trigger = args.breakeven_trigger_r
+    if args.breakeven_buffer_atr is not None:
+        be_buffer = args.breakeven_buffer_atr
+    if be_trigger:
+        base_port["breakeven_trigger_r"] = float(be_trigger)
+        if be_buffer:
+            base_port["breakeven_buffer_atr"] = float(be_buffer)
+    if args.trail_atr_mult is not None:
+        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
+        if args.trail_activate_r is not None:
+            base_port["trail_activate_r"] = float(args.trail_activate_r)
 
     engine = SweepEngine(uni, base_cfg=base_cfg, base_port_cfg=base_port,
-                         n_workers=args.workers, use_scoring=False)
+                         n_workers=args.workers)
 
     grid = _build_grid(args.quick)
     port_grid = PORTFOLIO_GRID if not args.quick else _quick_portfolio_grid()
@@ -181,7 +207,7 @@ def main() -> None:
     if baseline_idx is None or n_valid < 2:
         print("\n  ✗ Not enough valid configs to run the correction "
               f"(valid={n_valid}, excluded={excluded}).")
-        return
+        sys.exit(1)  # void run — non-zero so a wrapper/CI doesn't read it as a pass
 
     # Build the zero-filled contiguous monthly matrix ONCE, then derive every
     # config's Sharpe from those same columns. This keeps the DSR inputs and the
@@ -196,7 +222,7 @@ def main() -> None:
     if n_finite < 2:
         print("\n  ✗ Too few configs with non-degenerate monthly variance to deflate "
               f"(finite Sharpes={n_finite} of {n_valid}).")
-        return
+        sys.exit(1)  # void run — non-zero so a wrapper/CI doesn't read it as a pass
 
     # ── deflated Sharpe: headline + empirical best ────────────────────────────
     dsr_headline = deflated_sharpe_ratio(matrix[:, baseline_idx], all_sharpes, n_trials=n_finite)
@@ -219,9 +245,17 @@ def main() -> None:
     print("\n" + "=" * 74)
     print("  Phase D — Multiple-Testing Correction")
     print("  " + "-" * 70)
-    print(f"  Universe : {uni.n_tradeable} names | scoring OFF | "
+    exit_desc = ""
+    if base_port.get("breakeven_trigger_r") is not None:
+        exit_desc += f" | breakeven@{base_port['breakeven_trigger_r']:g}R"
+        if base_port.get("breakeven_buffer_atr") is not None:
+            exit_desc += f"+{base_port['breakeven_buffer_atr']:g}ATR"
+    if base_port.get("trail_atr_mult") is not None:
+        exit_desc += f" | trail {base_port['trail_atr_mult']:g}×ATR"
+    print(f"  Universe : {uni.n_tradeable} names | "
           f"{base_port['max_hold_days']}d {base_port['max_hold_mode']} | "
-          f"budget {base_port['max_open_risk']:g} | slip {base_port['entry_slippage_pct']:g}")
+          f"budget {base_port['max_open_risk']:g} | slip {base_port['entry_slippage_pct']:g}"
+          + exit_desc)
     print(f"  Trials   : N={n_finite} configs entering deflation "
           f"({n_valid} valid, {excluded} excluded <2 months, {n_valid - n_finite} degenerate) | "
           f"T={dsr_headline.n_periods} months")
@@ -243,9 +277,11 @@ def main() -> None:
     print(f"    p-value     : {rc.p_value:.4f}   "
           f"[{_verdict(rc.p_value < 0.05)}  (<0.05)]")
     print("  " + "-" * 70)
-    # White's RC is the primary snooping test (does the best of N beat cash?);
-    # the headline DSR is the conservative confidence that the SHIPPED config's
-    # Sharpe beats the chance-maximum over N trials. Read them together.
+    # White's RC is the PRIMARY snooping test (does the best of N beat cash?,
+    # preserving cross-config correlation). The headline DSR is a SECONDARY
+    # diagnostic — the confidence that the SHIPPED config's Sharpe beats the
+    # chance-maximum over the (narrow, correlated OFAT) trial set; see the caveat
+    # below on why that DSR reads optimistic. Read them together.
     rc_pass = rc.p_value < 0.05
     if rc_pass and dsr_headline.dsr > 0.95:
         verdict = "edge SURVIVES the haircut — best config beats cash (RC) AND headline clears the chance-max (DSR)"
@@ -255,9 +291,14 @@ def main() -> None:
     else:
         verdict = "edge does NOT clearly survive the snooping correction (RC p≥0.05)"
     print(f"  Verdict  : {verdict}")
-    print("  Caveat   : OFAT trials are highly correlated (each differs from the")
-    print("             headline by one knob), so the effective number of independent")
-    print("             trials < N — the DSR hurdle is, if anything, conservative.")
+    print("  Caveat   : the DSR/RC inputs are THIS OFAT sweep — a narrow, highly")
+    print("             correlated slice of the actual multi-parameter search that")
+    print("             selected the headline (slippage, exit mode, watchlist, budget,")
+    print("             scoring, ...). Both the trial-Sharpe variance (SR0 ∝ √Var) and")
+    print("             the trial count therefore UNDERSTATE the true search breadth, so")
+    print("             the DSR reads OPTIMISTIC (an upper bound on survival), not")
+    print("             conservative. Treat a pass as necessary, not sufficient; White's")
+    print("             RC (correlation-preserving) is the more robust primary gate.")
     print("=" * 74 + "\n")
 
 

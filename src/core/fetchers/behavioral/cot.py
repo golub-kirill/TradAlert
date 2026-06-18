@@ -103,12 +103,15 @@ def fetch_cot(
                            contract, exc, exc_info=True)
 
     # ── 2. live fetch via Socrata ────────────────────────────────────────
-    # 260 records ≈ 5 years of weekly data. Use substring matching on
-    # contract_market_name to tolerate whitespace or minor differences.
+    # Use substring matching on contract_market_name to tolerate whitespace
+    # or minor differences; _normalise_tff_rows then keeps only the exact
+    # contract. The limit is applied server-side BEFORE that filter, and the
+    # substring can also match derivative listings (e.g. the Micro E-mini),
+    # so fetch 2× the 260 weeks (≈5 years) we want to keep post-filter.
     params = {
         "$where": f"upper(contract_market_name) like upper('%{contract_name}%')",
         "$order": "report_date_as_yyyy_mm_dd DESC",
-        "$limit": "260",
+        "$limit": "520",
     }
     try:
         resp = request_with_retry(
@@ -121,12 +124,12 @@ def fetch_cot(
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("[cot] fetch failed for %s: %s — excluding from score "
                        "(check TFF resource ID if 404)", contract, exc)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_days)
 
-    df = _normalise_tff_rows(rows)
+    df = _normalise_tff_rows(rows, contract_name)
     if df.empty:
         logger.warning("[cot] %s: empty result from CFTC TFF endpoint", contract)
-        return _load_cached_or_empty(parquet_path)
+        return _load_cached_or_empty(parquet_path, staleness_days)
 
     # ── 3. cache write ───────────────────────────────────────────────────
     try:
@@ -144,17 +147,41 @@ def fetch_cot(
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _normalise_tff_rows(rows: list[dict]) -> pd.DataFrame:
+def _normalise_tff_rows(
+        rows: list[dict],
+        contract_name: str | None = None,
+) -> pd.DataFrame:
     """Convert raw TFF Socrata records into a typed, date-indexed DataFrame.
 
     Socrata returns strings for every field. We coerce the date and the
     three leveraged‑fund positions to numeric, derive ``lev_net``, and
     discard rows where the date can't be parsed.
+
+    ``contract_name`` keeps only rows whose ``contract_market_name`` matches
+    it exactly (case/whitespace-insensitive). The substring ``$where`` query
+    also matches derivative listings — e.g. ``MICRO E-MINI S&P 500 INDEX``
+    contains ``E-MINI S&P 500`` — and mixing contracts interleaves duplicate
+    report dates with incomparable position sizes, corrupting the
+    positioning percentile. If no row matches exactly (CFTC renamed the
+    contract), all rows are kept and a warning names what came back.
     """
     if not rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
+
+    if contract_name is not None and "contract_market_name" in df.columns:
+        names = df["contract_market_name"].astype(str)
+        norm = names.str.upper().str.split().str.join(" ")
+        wanted = " ".join(contract_name.upper().split())
+        exact = norm == wanted
+        if exact.any():
+            df = df[exact]
+        else:
+            logger.warning(
+                "[cot] no exact match for %r in TFF result (got: %s) — "
+                "keeping all rows; verify the contract name",
+                contract_name, sorted(names.unique()))
 
     # Date column – TFF uses report_date_as_yyyy_mm_dd
     date_col = None
@@ -191,10 +218,22 @@ def _normalise_tff_rows(rows: list[dict]) -> pd.DataFrame:
     return df[["lev_long", "lev_short", "lev_net"]].dropna(subset=["lev_net"])
 
 
-def _load_cached_or_empty(parquet_path: Path) -> pd.DataFrame:
+def _load_cached_or_empty(parquet_path: Path,
+                          staleness_days: float = _DEFAULT_STALENESS_DAYS) -> pd.DataFrame:
+    """Serve the cached parquet (fail-open) when a fetch fails, but WARN with the
+    cache age when it is past the staleness window — an unbounded-stale cache must
+    not masquerade as a fresh feed (mirrors the macro fetchers)."""
     if parquet_path.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            df = pd.read_parquet(parquet_path)
+            age = cache_meta.age_seconds(parquet_path)
+            if age is not None and age > staleness_days * 86400:
+                logger.warning(
+                    "[cot] serving STALE cache for %s — %.1f d old (> %g d "
+                    "window); upstream fetch failed, value may be outdated.",
+                    parquet_path.stem, age / 86400.0, staleness_days,
+                )
+            return df
         except (OSError, ValueError) as exc:
             logger.debug("[cot] cached parquet read failed at %s: %s",
                          parquet_path, exc)

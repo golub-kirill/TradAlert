@@ -10,11 +10,12 @@ R rather than being discarded.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop"]
+ExitReason = Literal["stop", "target", "engine_exit", "open_eod", "time_stop",
+                     "trail_stop", "breakeven_stop"]
 
 
 @dataclass
@@ -43,10 +44,9 @@ class Trade:
                      Always reported, even on losers.
     market_regime  : Regime label at entry, e.g. 'BULL_NORMAL'.
     ticker_trend   : 'UPTREND' | 'DOWNTREND' | 'CHOP' at entry.
-    entry_score    : SignalScorer confidence score 0–100 at entry bar.
-                     0.0 when the backtester ran without a scorer.
-    entry_score_components : Sub-score breakdown dict (component → 0–1).
-                     Empty dict when scorer was not attached.
+    entry_score    : Always 0.0 for new trades. Kept (with its
+                     backtest_trades column) so historical journaled rows
+                     from the retired entry scorer still carry real values.
     """
     ticker: str
     signal_type: str
@@ -63,18 +63,73 @@ class Trade:
     market_regime: str = ""
     ticker_trend: str = ""
     entry_score: float = 0.0
-    entry_score_components: dict[str, float] = field(default_factory=dict)
     # Portfolio-level size multiplier from macro/behavioral regime.
     # The raw r_multiple is the per-unit-risk strategy edge; effective_r
     # below is what actually contributes to portfolio cumulative R.
     size_mult: float = 1.0
-    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr).
-    # 0.0 (default) = no borrow drag, so longs and pre-v2 runs are unchanged.
-    # Set at entry from signals.borrow.*; folded into effective_r as a
-    # per-trade R drag proportional to bars_held (see borrow_drag_r).
+    # Annual stock-borrow rate for SHORTS (e.g. 0.03 = 3%/yr). 0.0 (default) =
+    # no borrow drag, so longs are unchanged. Set at entry from signals.borrow.*;
+    # folded into effective_r as a per-trade R drag scaled by bars_held.
     borrow_annual_rate: float = 0.0
 
+    # ── exit-quality instrumentation (Phase 0; no behavior change) ────────────
+    # Running intrabar extremes over the held bars, finalized to mfe_r/mae_r at
+    # close. R uses the SAME initial-stop denominator as compute_r, so a future
+    # dynamic stop never changes these. None until the first update_excursion.
+    highest_high: float | None = None
+    lowest_low: float | None = None
+    mfe_r: float = 0.0          # max favorable excursion in R (>= 0)
+    mae_r: float = 0.0          # max adverse excursion in R (<= 0)
+    exit_vs_mfe: float | None = None  # r_multiple / mfe_r (capture fraction); None if mfe_r <= 0
+    # Dynamic stop level (None → use initial_stop). A trailing/breakeven rule moves
+    # this in the trade's favor only; initial_stop stays frozen so R is unchanged.
+    current_stop: float | None = None
+    # Which rule last moved current_stop ("trail_stop" | "breakeven_stop") — used as
+    # the exit reason when the dynamic stop fills, so the leak table distinguishes them.
+    current_stop_reason: str | None = None
+
     # ── helpers ────────────────────────────────────────────────────────────
+
+    def update_excursion(self, bar_high: float, bar_low: float) -> None:
+        """Accumulate the intrabar extremes for one held bar.
+
+        Call once per bar the trade is open (including the entry bar). Pure
+        running max/min — look-ahead-free (only the current bar's H/L).
+        """
+        h, l = float(bar_high), float(bar_low)
+        self.highest_high = h if self.highest_high is None else max(self.highest_high, h)
+        self.lowest_low = l if self.lowest_low is None else min(self.lowest_low, l)
+
+    def current_mfe_r(self) -> float:
+        """Running max-favorable-excursion in R from the accumulated extremes (>=0).
+
+        Used live during the walk for trailing-stop activation; the finalized form
+        is ``mfe_r`` (set by compute_excursion_r at close)."""
+        risk = self.risk_per_share
+        fav = self.highest_high if self._sign > 0 else self.lowest_low
+        if risk <= 0 or fav is None:
+            return 0.0
+        return max(0.0, self._sign * (fav - self.entry_price) / risk)
+
+    def compute_excursion_r(self) -> None:
+        """Finalize mfe_r / mae_r / exit_vs_mfe from the accumulated extremes.
+
+        Uses the INITIAL-stop risk denominator (identical to compute_r), so these
+        agree with r_multiple and never move under a dynamic stop. MFE is clamped
+        >= 0 and MAE <= 0 (excursion is 0 at entry by convention). No-op when no
+        bars were seen or risk is non-positive. Call AFTER r_multiple is set
+        (exit_vs_mfe references it)."""
+        risk = self.risk_per_share
+        if risk <= 0 or self.highest_high is None or self.lowest_low is None:
+            self.mfe_r = 0.0
+            self.mae_r = 0.0
+            self.exit_vs_mfe = None
+            return
+        favorable = self.highest_high if self._sign > 0 else self.lowest_low
+        adverse = self.lowest_low if self._sign > 0 else self.highest_high
+        self.mfe_r = max(0.0, self._sign * (favorable - self.entry_price) / risk)
+        self.mae_r = min(0.0, self._sign * (adverse - self.entry_price) / risk)
+        self.exit_vs_mfe = (self.r_multiple / self.mfe_r) if self.mfe_r > 0 else None
 
     @property
     def is_closed(self) -> bool:
@@ -112,9 +167,9 @@ class Trade:
             drag_R = fee_per_share_per_day × bars_held / risk_per_share
 
         252 (trading days/yr) keeps the unit consistent with ``bars_held``
-        (trading bars). Returns 0.0 for longs, a non-positive rate, an
-        open trade, or non-positive risk. v1 uses a single rate; a real
-        per-symbol borrow source is a follow-on (see TODO).
+        (trading bars). Returns 0.0 for longs, a non-positive rate, an open
+        trade, or non-positive risk. Uses a single flat rate (no per-symbol
+        borrow source).
         """
         if (self.direction != "short" or self.borrow_annual_rate <= 0
                 or not self.is_closed):
@@ -129,10 +184,13 @@ class Trade:
     def effective_r(self) -> float:
         """R-multiple scaled by position-size multiplier, net of borrow cost.
 
-        ``borrow_drag_r()`` is 0.0 for longs and when ``borrow_annual_rate``
-        is unset, so this is identical to ``r_multiple × size_mult`` for the
-        long-only baseline."""
-        return self.r_multiple * self.size_mult - self.borrow_drag_r()
+        Both the strategy return and the borrow drag scale with position size, so
+        size_mult multiplies the net (r_multiple − borrow_drag_r): a reduced-size
+        short borrows proportionally fewer shares and so pays proportionally less
+        borrow. ``borrow_drag_r()`` is 0.0 for longs and when ``borrow_annual_rate``
+        is unset, so this equals ``r_multiple × size_mult`` for the long-only
+        baseline."""
+        return (self.r_multiple - self.borrow_drag_r()) * self.size_mult
 
     def compute_r(self) -> float:
         """
@@ -145,14 +203,16 @@ class Trade:
         backtester always populates exit_price first, so this is safe to
         call as the last step of close_trade().
 
-        Gap-through entries (risk ≤ 0) are scored 0R *by design* — this is NOT a
-        hidden left-tail loss. When the T+1 open gaps past the stop, the same-bar
-        stop logic fills the exit at that same open, so exit ≈ entry and the only
-        realized cost is entry/exit slippage. Measured 2026-06-04: 7 of ~1098
-        trades gap through, ≈ −0.25R total — roughly 1% of the headline's bootstrap
-        SE (±~26R), i.e. immaterial. Booking the true slippage loss would require
-        threading the *intended* (signal-based) risk through the close path; not
-        worth the added surface area for 0.25R (see TODO).
+        Gap-through entries (risk ≤ 0) are scored 0R *by design* — NOT a hidden
+        left-tail loss. When the T+1 open gaps past the stop, the same-bar stop
+        logic fills the exit at that same open, so exit ≈ entry and the only
+        realized cost is entry/exit slippage. On the frozen headline (run_id=15,
+        213-universe) only 6 of 1622 trades gap through (all the 2016-06-24
+        Brexit gap), booked −0.005R each (commission only); the unbooked slippage
+        is immaterial (well under 1% of the bootstrap SE ±~30R). Booking the true
+        slippage would mean threading the intended (signal-based) risk through the
+        close path — not worth the surface area. ``tests/test_gap_through.py``
+        locks the 0R accounting and the immateriality bound.
 
         Same-bar pessimism (not a bug): when a single bar's H/L spans BOTH
         the stop and the target, the backtester records the STOP fill (the

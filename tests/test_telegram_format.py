@@ -61,6 +61,27 @@ def test_entry_escapes_ticker():
     assert "A&B" not in out  # raw ampersand never leaks into the HTML
 
 
+def test_entry_surfaces_event_risk():
+    tr = _entry()
+    tr.signal.event_risk = "FOMC in 2d (2026-03-18)"
+    out = fmt.format_entry(tr, risk_on=0.75, n_open=4)
+    p = _plain(out)
+    assert "event risk" in p and "FOMC in 2d (2026-03-18)" in p
+    assert len(out) <= fmt.CAPTION_LIMIT
+
+
+def test_entry_no_event_risk_line_when_absent():
+    assert "event risk" not in _plain(fmt.format_entry(_entry()))
+
+
+def test_entry_escapes_event_risk():
+    tr = _entry()
+    tr.signal.event_risk = "FOMC <b>now</b> & soon"
+    out = fmt.format_entry(tr)
+    assert "&lt;b&gt;" in out and "&amp;" in out
+    assert "<b>now</b> &" not in out  # raw markup never leaks
+
+
 def test_entry_checklist_renders_factor_line():
     out = _plain(fmt.format_entry(_entry(), checklist=[("TREND", True), ("LOC", None), ("RISK", False)]))
     assert "TREND ✅" in out and "LOC ▫️" in out and "RISK ❌" in out
@@ -86,7 +107,7 @@ def test_determinism():
     assert a == b
 
 
-# ── exit / watch / header / stand-down ───────────────────────────────────────────
+# ── exit / header / stand-down ───────────────────────────────────────────────────
 
 def test_exit_render():
     out = _plain(fmt.format_exit(_exit(), entry_price=232.77, held_days=18,
@@ -104,12 +125,6 @@ def test_cover_label():
 def test_caption_cap_truncates():
     out = fmt.format_exit(_exit(), reason="x" * 4000)
     assert len(out) <= fmt.CAPTION_LIMIT
-
-
-def test_watch_only():
-    s = SignalResult(passed=True, direction="long", signal_type="momentum", score=58.0)
-    out = _plain(fmt.format_watch_only(TickerResult("AMD", ScanResult(passed=True, close=142.10), s), gate=65))
-    assert "👀" in out and "AMD" in out and "score 58" in out and "not alerting" in out
 
 
 def test_daily_header_and_stand_down():

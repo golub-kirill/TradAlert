@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     effective_r     DECIMAL(10,4) NULL,            -- r_multiple × size_mult − borrow_drag; sums to backtest_runs.total_r
     size_mult       DECIMAL(6,4)  NULL,            -- macro × behavioral position-size multiplier at entry
     borrow_annual_rate DECIMAL(8,5) NULL,          -- short stock-borrow rate (0 for longs)
+    mfe_r           DECIMAL(10,4) NULL,            -- max favorable excursion in R (initial-stop denominator)
+    mae_r           DECIMAL(10,4) NULL,            -- max adverse excursion in R (<= 0)
     market_regime   VARCHAR(32)   NULL,
     ticker_trend    VARCHAR(16)   NULL,
     entry_score     DECIMAL(5,1)  NULL,
@@ -64,3 +66,9 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
 --     ADD COLUMN effective_r        DECIMAL(10,4) NULL AFTER r_multiple,
 --     ADD COLUMN size_mult          DECIMAL(6,4)  NULL AFTER effective_r,
 --     ADD COLUMN borrow_annual_rate DECIMAL(8,5)  NULL AFTER size_mult;
+--
+-- Excursion columns (exit-quality ledger; writer journals without them when
+-- absent). Run once on tables created before mfe_r/mae_r existed:
+--   ALTER TABLE backtest_trades
+--     ADD COLUMN mfe_r DECIMAL(10,4) NULL AFTER borrow_annual_rate,
+--     ADD COLUMN mae_r DECIMAL(10,4) NULL AFTER mfe_r;

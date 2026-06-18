@@ -75,10 +75,8 @@ def rsi(close: Series, period: int = 14) -> Series:
     Edge cases
     ----------
     avg_loss == 0 AND avg_gain > 0 → 100 (asymmetric rally, no losses)
-    avg_loss == 0 AND avg_gain == 0 → 50 (flat market, no momentum either way)
-    previously returned 100 on a flat series — that bias caused
-    the exit-scorer's rsi_overbought sub-score to fire (rsi=100 > 60+10)
-    on quiescent OTC-style series with multiple identical closes in a row.
+    avg_loss == 0 AND avg_gain == 0 → 50 (flat market — without this guard a
+        constant-price series reads RSI=100 and wrongly trips rsi_overbought)
     avg_loss is NaN (warmup) → NaN
     """
     delta = close.diff()
@@ -92,9 +90,8 @@ def rsi(close: Series, period: int = 14) -> Series:
     eps = 1e-10
     rs = avg_gain / avg_loss.where(avg_loss > eps, np.nan)
     rsi_value = 100 - 100 / (1 + rs)
-    # distinguish "no losses but real gains" (→100) from "no losses
-    # AND no gains" (flat → 50). Without this guard, a constant price
-    # series silently registered RSI=100 ("maximally overbought").
+    # Distinguish "no losses but real gains" (→100) from "no losses and no
+    # gains" (flat → 50, avoiding a spurious maximally-overbought reading).
     rsi_value = rsi_value.where(
         ~((avg_loss <= eps) & (avg_gain > eps)), 100.0,
     )
@@ -200,12 +197,9 @@ def attach_indicators(
     bb_mid, bb_upper, bb_lower, bb_bw, bb_z,
     ma_fast, ma_slow, weekly_sma10
 
-    ``ma_fast``, ``ma_slow`` and ``weekly_sma10`` were previously
-    re-computed inside every per-bar engine call via
-    ``df["close"].rolling(N).mean.iloc[-1]``. In a single sweep cell that
-    is hundreds of thousands of rolling calls (per bar × per ticker × twice
-    per signal). Now they live as columns: the hot path reads
-    ``row["ma_fast"]`` in O(1).
+    ``ma_fast``, ``ma_slow`` and ``weekly_sma10`` are precomputed here as
+    columns so the per-bar engine hot path reads ``row["ma_fast"]`` in O(1)
+    instead of re-running ``rolling(N).mean()`` on every call.
 
     Defaults (50 / 200) match the canonical ``filters.yaml::trend`` block.
     Callers that use non-default MA periods (e.g. the sweep engine when
@@ -240,7 +234,7 @@ def attach_indicators(
     df["bb_bw"] = bb["bb_bw"]
     df["bb_z"] = bb["bb_z"]
 
-    # precomputed rolling means consumed by engine/scoring hot loops.
+    # precomputed rolling means consumed by engine hot loops.
     close = df["close"]
     df["ma_fast"] = close.rolling(ma_fast, min_periods=ma_fast).mean()
     df["ma_slow"] = close.rolling(ma_slow, min_periods=ma_slow).mean()

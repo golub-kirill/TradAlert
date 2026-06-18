@@ -1,48 +1,40 @@
 """
-backtest/walk_forward.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Rolling walk-forward validation for the TradAlert backtest system.
 
-Strategy
-────────
 Split the full date range into overlapping IS/OOS windows:
 
     |←──── IS (3yr) ────→|←─ OOS (1yr) ─→|
                       |←──── IS (3yr) ────→|←─ OOS (1yr) ─→|
-                                        ...
 
-With 8 years of data and a 6-month step, this yields ~9 windows,
-each with an independent OOS period.
+~9 windows from 8 years of data at a 6-month step, each with an
+independent OOS period.
 
 Walk-forward modes
 ──────────────────
-  baseline (re_tune=False):  Run the *current* config on IS and OOS.
-      Validates temporal stability but does not defeat parameter-tuning
+  baseline (re_tune=False):  Run the current config on IS and OOS.
+      Tests temporal stability only; does not defeat parameter-tuning
       data-snooping.
 
-  re-tune (re_tune=True):  For each IS window, run an OFAT sweep
-      via SweepEngine.run_ofat(), pick the best-by-E[R] config, then
-      apply *that* config to the OOS window.  The OOS cell is then a
-      true "if I had only seen up to IS_end, what would I have shipped"
-      test.  Sweep results are cached in-memory for fast re-runs.
+  re-tune (re_tune=True):  Per IS window, run an OFAT sweep, pick the
+      best-by-E[R] config, apply it to OOS — a true "if I had only seen
+      up to IS_end, what would I have shipped" test. Sweeps cached in-memory.
 
-The key insight: the pre-loaded UniverseData is reused across every
-window.  Only the PortfolioConfig date-window changes, so no I/O
-occurs after initial data load.
+  joint re-tune (re_tune=True, joint_samples>0):  Same protocol with
+      SweepEngine.run_random_joint() — N seeded multi-knob configs instead
+      of one-factor-at-a-time. OFAT ships one knob per window and so
+      understates multi-parameter overfitting; joint mode reproduces that
+      selection with an explicit per-window trial count (the input a
+      deflated-Sharpe correction needs).
+
+The pre-loaded UniverseData is reused across every window; only the
+PortfolioConfig date-window changes, so no I/O occurs after initial load.
 
 Public API
 ──────────
-    WalkForwardEngine(universe, base_cfg, base_port_cfg,
-                      is_years, oos_years, step_months, re_tune, grid)
-        .run(progress)  → WalkForwardReport
-
-    WalkForwardReport
-        .windows        list[WFWindow]
-        .is_stats        pd.DataFrame  (one row per window, IS metrics)
-        .oos_stats       pd.DataFrame  (one row per window, OOS metrics)
-        .degradation     float          IS_avg_er − OOS_avg_er
-        .oos_positive    float          fraction of OOS windows with E[R]>0
-        .summary_lines() list[str]
+    WalkForwardEngine(universe, base_cfg, base_port_cfg, ...).run(progress)
+        → WalkForwardReport
+    WalkForwardReport: .results, .to_dataframe(), .degradation,
+        .pct_oos_positive, .summary_lines()
 """
 
 from __future__ import annotations
@@ -59,6 +51,21 @@ from backtest.loader import UniverseData
 from backtest.sweep import SweepEngine, SweepPoint, PARAM_GRID, ParamSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _advance_months(d: date, months: int) -> date:
+    """Add ``months`` to ``d``, clamping the day to the target month's length.
+
+    ``date.replace(month=...)`` keeps the original day, so a 29/30/31 start date
+    landing on a shorter month would raise ValueError. Clamping makes window
+    stepping safe for any start date; days <= 28 are unchanged.
+    """
+    import calendar
+    month_idx = d.month - 1 + months
+    year = d.year + month_idx // 12
+    month = month_idx % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
 
 
 # ── window descriptor ─────────────────────────────────────────────────────────
@@ -114,7 +121,9 @@ class WalkForwardReport:
     is_years: float
     oos_years: float
     step_months: int
-    re_tune: bool = False  # whether re-tuning was used
+    re_tune: bool = False      # whether re-tuning was used
+    joint_samples: int = 0     # >0 → randomized multi-knob re-tune (N per window)
+    joint_seed: int = 0        # sampler seed (surfaced so seed-shopping stays visible)
 
     @property
     def oos_er_values(self) -> list[float]:
@@ -169,7 +178,13 @@ class WalkForwardReport:
         return pd.DataFrame(rows)
 
     def summary_lines(self) -> list[str]:
-        mode_tag = " [RE-TUNE]" if self.re_tune else ""
+        if self.re_tune and self.joint_samples:
+            mode_tag = (f" [RE-TUNE/JOINT ×{self.joint_samples} "
+                        f"seed={self.joint_seed}]")
+        elif self.re_tune:
+            mode_tag = " [RE-TUNE]"
+        else:
+            mode_tag = ""
         lines = [
             f"  Walk-Forward{mode_tag}: {len(self.results)} windows  "
             f"({self.is_years:.0f}yr IS / {self.oos_years:.0f}yr OOS / "
@@ -212,6 +227,13 @@ class WalkForwardReport:
                     lines.append(
                         f"    W{r.window.index:02d} tuned: {params_str}"
                     )
+                else:
+                    # Surface silent baseline wins: the baseline competes in IS
+                    # selection, and "no candidate beat it" is itself a result.
+                    lines.append(
+                        f"    W{r.window.index:02d} tuned: baseline retained "
+                        f"(no candidate beat it in-sample)"
+                    )
         return lines
 
 
@@ -238,18 +260,26 @@ class WalkForwardEngine:
     """
 
     # Trade-count floor for IS parameter selection: a combo must clear this many
-    # IS trades to be eligible as "best", so a tiny-sample fluke E[R] cannot win
-    # selection. Falls back to the full set when no combo clears it (sparse window).
+    # IS trades to be eligible as "best", so a tiny-sample fluke E[R] cannot win.
     _MIN_IS_TRADES: int = 20
 
     @staticmethod
     def _select_best_is(points, min_trades: int):
         """Pick the highest-E[R] sweep point that clears the trade-count floor.
 
-        Falls back to the unfiltered set if the floor would leave nothing, so a
-        window with few trades still yields a selection.
+        Fallback ladder: combos clearing the floor → any combo that actually
+        traded → the baseline. Never selects a 0-trade point, so a window whose
+        workers all crashed (every point zeroed) degrades to baseline-config OOS
+        rather than tuning the OOS leg on a junk config.
         """
-        eligible = [p for p in points if p.stats.trades_count >= min_trades] or list(points)
+        if not points:
+            return None
+        eligible = [p for p in points if p.stats.trades_count >= min_trades]
+        if not eligible:
+            eligible = [p for p in points if p.stats.trades_count > 0]
+        if not eligible:
+            baseline = next((p for p in points if getattr(p, "is_baseline", False)), None)
+            return baseline if baseline is not None else points[0]
         return max(eligible, key=lambda p: p.stats.expectancy_r)
 
     def __init__(
@@ -263,7 +293,9 @@ class WalkForwardEngine:
             re_tune: bool = False,
             grid: list[ParamSpec] | None = None,
             n_workers: int = 0,
-            use_scoring: bool = False,
+            joint_samples: int = 0,
+            joint_knobs: int = 3,
+            joint_seed: int = 1337,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
@@ -272,11 +304,15 @@ class WalkForwardEngine:
         self._oos_years = oos_years
         self._step_months = step_months
         self._re_tune = re_tune
-        self._use_scoring = use_scoring
         self._grid = grid if grid is not None else PARAM_GRID
-        # Parallel workers for the per-window re-tune sweep (re_tune=True).
-        # 0/1 = sequential. The baseline (re_tune=False) path runs single
-        # _run_one calls and does not use the pool.
+        # Joint re-tune: >0 replaces the per-window OFAT sweep with N seeded
+        # multi-knob samples (joint_knobs mutated per sample). Seed is offset
+        # by window index so each window draws its own reproducible candidates.
+        self._joint_samples = max(0, int(joint_samples))
+        self._joint_knobs = max(1, int(joint_knobs))
+        self._joint_seed = int(joint_seed)
+        # Parallel workers for the per-window re-tune sweep. 0/1 = sequential.
+        # The baseline (re_tune=False) path runs single _run_one calls, no pool.
         self._n_workers = n_workers
 
         # In-memory sweep cache keyed by (is_start, is_end)
@@ -288,7 +324,6 @@ class WalkForwardEngine:
             base_cfg=base_cfg,
             base_port_cfg=base_port_cfg,
             n_workers=0,
-            use_scoring=use_scoring,
         )
 
     # ── public ────────────────────────────────────────────────────────────────
@@ -323,11 +358,8 @@ class WalkForwardEngine:
             ))
             idx += 1
 
-            # Advance cursor by step_months
-            month = cursor.month - 1 + self._step_months
-            new_year = cursor.year + month // 12
-            new_month = month % 12 + 1
-            cursor = cursor.replace(year=new_year, month=new_month)
+            # Advance cursor by step_months (day clamped to the target month).
+            cursor = _advance_months(cursor, self._step_months)
 
         return windows
 
@@ -381,6 +413,8 @@ class WalkForwardEngine:
             oos_years=self._oos_years,
             step_months=self._step_months,
             re_tune=self._re_tune,
+            joint_samples=self._joint_samples if self._re_tune else 0,
+            joint_seed=self._joint_seed if self._re_tune else 0,
         )
 
     # ── private ───────────────────────────────────────────────────────────────
@@ -412,7 +446,8 @@ class WalkForwardEngine:
             progress: Callable[[str], None] | None = None,
     ) -> tuple[SweepPoint, SweepPoint, dict]:
         """
-        Run OFAT sweep on IS, pick best config, apply to OOS.
+        Run the IS sweep (OFAT, or randomized joint when joint_samples>0),
+        pick the best config, apply it to OOS.
 
         Returns (is_point, oos_point, tuned_params_dict).
         The IS point is the best-tuned config's in-sample result; the OOS point is
@@ -424,16 +459,15 @@ class WalkForwardEngine:
         if cache_key in self._sweep_cache:
             best_is = self._sweep_cache[cache_key]
         else:
-            # Run OFAT sweep restricted to IS date window
+            # Run the IS-restricted sweep
             if progress:
-                progress(f"    Sweing IS {window.is_start}→{window.is_end}...")
+                progress(f"    Sweeping IS {window.is_start}→{window.is_end}...")
 
             sweep_engine = SweepEngine(
                 universe=self._universe,
                 base_cfg=copy.deepcopy(self._base_cfg),
                 base_port_cfg=dict(self._base_port_cfg),
                 n_workers=self._n_workers,
-                use_scoring=self._use_scoring,
             )
 
             # Override port params to restrict to IS window
@@ -442,65 +476,87 @@ class WalkForwardEngine:
             sweep_engine._base_port["start_date"] = window.is_start
             sweep_engine._base_port["end_date"] = window.is_end
 
-            sweep_report = sweep_engine.run_ofat(
-                grid=self._grid,
-                port_grid=[],
-                progress=None,  # suppress individual sweep progress
-            )
+            if self._joint_samples > 0:
+                sweep_report = sweep_engine.run_random_joint(
+                    n_samples=self._joint_samples,
+                    knobs=self._joint_knobs,
+                    seed=self._joint_seed + window.index,
+                    grid=self._grid,
+                    port_grid=[],
+                    progress=None,  # suppress individual sweep progress
+                )
+            else:
+                sweep_report = sweep_engine.run_ofat(
+                    grid=self._grid,
+                    port_grid=[],
+                    progress=None,
+                )
 
             # Pick best by E[R], subject to a trade-count floor (no fluke wins).
             all_pts = sweep_report.all_points
             best_is = self._select_best_is(all_pts, self._MIN_IS_TRADES)
             self._sweep_cache[cache_key] = best_is
 
-        # Extract tuned params from the best sweep point
-        tuned_params = {}
+        # Tuned mutation set from the best sweep point: joint points carry the
+        # full multi-knob dict; OFAT points carry their single knob; the
+        # baseline carries nothing (OOS replays base config).
+        tuned_params: dict = {}
         if not best_is.is_baseline:
-            tuned_params[best_is.param_name] = best_is.param_value
+            if getattr(best_is, "mutations", None):
+                tuned_params = dict(best_is.mutations)
+            else:
+                tuned_params[best_is.param_name] = best_is.param_value
 
         # Run OOS with the best-tuned config
-        oos_pt = self._run_window_with_config(
-            window.oos_start, window.oos_end, window,
-            best_is.param_name, best_is.param_value,
+        oos_pt = self._run_window_with_mutations(
+            window.oos_start, window.oos_end, window, tuned_params,
         )
 
-        # IS point: the SAME tuned config's in-sample result (best_is is the IS
-        # sweep point that was selected). Reporting tuned-IS vs tuned-OOS makes
-        # degradation an honest overfitting measure — the old baseline-IS-vs-
-        # tuned-OOS understated it (different configs on each side).
+        # IS point = the SAME tuned config's in-sample result (best_is is the
+        # selected IS sweep point). Tuned-IS vs tuned-OOS keeps degradation an
+        # honest overfitting measure (same config on both sides).
         is_pt = best_is
 
         return is_pt, oos_pt, tuned_params
 
-    def _run_window_with_config(
+    def _run_window_with_mutations(
             self,
             start: date,
             end: date,
             window: WFWindow,
-            param_name: str,
-            param_value: object,
+            mutations: dict,
     ) -> SweepPoint:
-        """Run OOS with a specific parameter mutation."""
+        """Run a date-window with a ``{dotted: value}`` mutation set applied.
+
+        An empty dict replays the unmodified base config (the IS winner was
+        the baseline).
+        """
         from backtest.sweep import _set_nested
 
         cfg = copy.deepcopy(self._base_cfg)
-        if not param_name.startswith("portfolio."):
-            _set_nested(cfg, param_name, param_value)
-
         port_params = dict(self._base_port_cfg)
+
+        for param_name, param_value in mutations.items():
+            if param_name.startswith("portfolio."):
+                port_params[param_name[len("portfolio."):]] = param_value
+            else:
+                _set_nested(cfg, param_name, param_value)
+
         port_params["start_date"] = start
         port_params["end_date"] = end
 
-        if param_name.startswith("portfolio."):
-            key = param_name[len("portfolio."):]
-            port_params[key] = param_value
+        desc = ", ".join(f"{k}={v}" for k, v in mutations.items()) or "baseline"
 
         return self._engine._run_one(
             cfg=cfg,
             port_params=port_params,
             param_name="wf_tuned",
-            param_value=f"{param_name}={param_value}",
+            param_value=desc,
             param_label=f"W{window.index:02d}-tuned",
             group="walk_forward",
             is_baseline=False,
+            # Route every knob through the settings channel too; otherwise
+            # settings-resident winners (e.g. behavioral.size_mult_floor) replay
+            # baseline settings on the OOS leg.
+            mutations=mutations,
         )

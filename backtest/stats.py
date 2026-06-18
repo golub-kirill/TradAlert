@@ -141,3 +141,49 @@ def group_by(
             continue
         buckets.setdefault(keyfn(t), []).append(t)
     return {k: compute_stats(v) for k, v in buckets.items()}
+
+
+# ── exit-quality diagnostics (exit-logic Phase 0) ────────────────────────────
+
+
+@dataclass
+class ExitQuality:
+    """Per-exit-reason MFE/MAE read — 'where do exits leak'.
+
+    capture       = avg(r_multiple) / avg(mfe_r): fraction of the average peak
+                    favorable excursion actually realized (low → cutting winners /
+                    giving back open profit).
+    pct_gave_back = share of trades that reached MFE >= 1R but closed below half
+                    their own peak (open profit handed back).
+    """
+    exit_reason: str
+    n: int
+    avg_r: float
+    avg_mfe_r: float
+    avg_mae_r: float
+    capture: float
+    pct_gave_back: float
+
+
+def exit_quality_by_reason(trades: Iterable[Trade]) -> list[ExitQuality]:
+    """Bucket closed trades by exit_reason and summarise MFE/MAE capture."""
+    from collections import defaultdict
+
+    groups: dict[str, list[Trade]] = defaultdict(list)
+    for t in trades:
+        if t.is_closed:
+            groups[t.exit_reason or "<none>"].append(t)
+
+    rows: list[ExitQuality] = []
+    for reason, ts in groups.items():
+        n = len(ts)
+        avg_r = sum(t.r_multiple for t in ts) / n
+        avg_mfe = sum(t.mfe_r for t in ts) / n
+        avg_mae = sum(t.mae_r for t in ts) / n
+        capture = (avg_r / avg_mfe) if avg_mfe > 0 else float("nan")
+        gave_back = sum(1 for t in ts if t.mfe_r >= 1.0 and t.r_multiple < 0.5 * t.mfe_r)
+        rows.append(ExitQuality(
+            exit_reason=reason, n=n, avg_r=avg_r, avg_mfe_r=avg_mfe,
+            avg_mae_r=avg_mae, capture=capture, pct_gave_back=gave_back / n,
+        ))
+    return sorted(rows, key=lambda x: -x.n)

@@ -104,6 +104,9 @@ def fetch_earnings_dates_from_yfinance(ticker: str) -> list[date]:
         out: list[date] = []
         for ts in df.index:
             try:
+                # yfinance indexes earnings_dates in the exchange timezone, so
+                # ts.date() is the exchange-local calendar date — the correct key
+                # for the buffer gate, matching the bar/date comparison side.
                 d = ts.date() if hasattr(ts, "date") else None
                 if isinstance(d, date):
                     out.append(d)

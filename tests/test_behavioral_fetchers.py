@@ -1,5 +1,5 @@
 """
-Contract tests for the six behavioral / macro fetchers.
+Contract tests for the behavioral / macro fetchers.
 
 All fetchers must:
   1. Return the documented shape even when network is unreachable.
@@ -51,31 +51,6 @@ def test_calendar_categories_case_insensitive():
     assert len(upper) == len(lower)
 
 
-# ─── short_interest.py ───────────────────────────────────────────────────────
-
-
-def test_short_interest_fail_open(tmp_path: Path):
-    from core.fetchers.behavioral.short_interest import fetch_short_interest
-    out = fetch_short_interest("XYZ_BOGUS", data_dir=tmp_path)
-    assert isinstance(out, dict)
-    assert "short_percent_of_float" in out
-    # Either None (fetch failed) or a float (cached unexpectedly) — both OK.
-    val = out["short_percent_of_float"]
-    assert val is None or isinstance(val, (int, float))
-
-
-def test_short_interest_reads_cache(tmp_path: Path):
-    """Pre-populate cache; fetch should return it without network."""
-    from core.fetchers.behavioral.short_interest import fetch_short_interest
-    cache_path = tmp_path / "AAPL.json"
-    cache_path.write_text(json.dumps({
-        "short_percent_of_float": 0.043,
-        "fetched_at": "2026-05-27T00:00:00",
-    }))
-    out = fetch_short_interest("AAPL", data_dir=tmp_path)
-    assert out["short_percent_of_float"] == 0.043
-
-
 # ─── cot.py ──────────────────────────────────────────────────────────────────
 
 
@@ -103,77 +78,45 @@ def test_cot_fail_open(tmp_path: Path):
 
 
 def test_cot_normalise_handles_empty():
-    # cot.py moved Disaggregated → TFF; the normaliser is now _normalise_tff_rows.
     from core.fetchers.behavioral.cot import _normalise_tff_rows
     assert _normalise_tff_rows([]).empty
     assert _normalise_tff_rows([{}]).empty  # no date column
 
 
-# ─── form4.py ────────────────────────────────────────────────────────────────
-
-
-def test_form4_fail_open_shape(tmp_path: Path):
-    from core.fetchers.behavioral.form4 import fetch_form4, _ZERO
-    out = fetch_form4("XYZ_BOGUS", data_dir=tmp_path)
-    assert isinstance(out, dict)
-    # All required scoring keys present.
-    for k in _ZERO:
-        assert k in out, f"missing required key {k}"
-    # Types match scoring expectations.
-    assert isinstance(out["buys_30d"], int)
-    assert isinstance(out["buys_90d"], int)
-    assert isinstance(out["sells_90d"], int)
-    assert isinstance(out["buy_value_30d"], (int, float))
-    assert isinstance(out["sell_value_90d"], (int, float))
-    assert isinstance(out["cluster_buy_30d"], bool)
-
-
-def test_form4_zero_dict_complete():
-    """The _ZERO fallback must satisfy SignalScorer._score_insider_buying."""
-    from core.fetchers.behavioral.form4 import _ZERO
-    required = {
-        "buys_30d", "buys_90d", "sells_90d",
-        "buy_value_30d", "sell_value_90d",
-        "distinct_insiders_30d", "cluster_buy_30d",
+def _tff_row(date: str, name: str, long_: int, short_: int) -> dict:
+    return {
+        "report_date_as_yyyy_mm_dd": date,
+        "contract_market_name": name,
+        "lev_money_positions_long_all": str(long_),
+        "lev_money_positions_short_all": str(short_),
     }
-    assert required.issubset(_ZERO.keys())
 
 
-def test_form4_summarise_empty():
-    """Empty transactions DataFrame → zero-filled summary."""
-    from core.fetchers.behavioral.form4 import _summarise_transactions, _ZERO
-    df = pd.DataFrame(columns=["Start Date", "Transaction"])
-    out = _summarise_transactions(df)
-    for k in _ZERO:
-        assert out[k] == _ZERO[k]
+def test_cot_normalise_filters_to_exact_contract():
+    """The substring $where also matches MICRO E-MINI S&P 500 INDEX — those
+    rows must be dropped or they interleave duplicate dates with ~10x-smaller
+    positions and corrupt the positioning percentile."""
+    from core.fetchers.behavioral.cot import _normalise_tff_rows
+    rows = [
+        _tff_row("2026-05-26", "MICRO E-MINI S&P 500 INDEX", 110_536, 126_887),
+        _tff_row("2026-05-26", "E-MINI S&P 500", 149_287, 607_067),
+        _tff_row("2026-05-19", "MICRO E-MINI S&P 500 INDEX", 116_779, 124_358),
+        _tff_row("2026-05-19", " e-mini  s&p 500 ", 164_096, 565_650),
+    ]
+    df = _normalise_tff_rows(rows, "E-MINI S&P 500")
+    assert len(df) == 2
+    assert not df.index.duplicated().any()
+    assert df["lev_net"].tolist() == [164_096 - 565_650, 149_287 - 607_067]
 
 
-# ─── aaii.py ─────────────────────────────────────────────────────────────────
-
-
-def test_aaii_fail_open(tmp_path: Path):
-    from core.fetchers.behavioral.aaii import fetch_aaii
-    df = fetch_aaii(data_dir=tmp_path)
-    # No network in sandbox → empty DataFrame, never raises.
-    assert isinstance(df, pd.DataFrame)
-
-
-def test_aaii_reads_cache(tmp_path: Path):
-    """Pre-populate parquet + meta; fetch returns cached data."""
-    from core.fetchers.behavioral.aaii import fetch_aaii
-    # Build a minimal cache.
-    cached = pd.DataFrame(
-        {"bullish": [0.4, 0.42], "bearish": [0.3, 0.28], "spread": [0.1, 0.14]},
-        index=pd.to_datetime(["2026-05-20", "2026-05-27"]),
-    )
-    cached.index.name = "date"
-    parquet = tmp_path / "aaii.parquet"
-    meta = tmp_path / "aaii.meta.json"
-    cached.to_parquet(parquet)
-    meta.write_text(json.dumps({"fetched_at": "2026-05-27T00:00:00"}))
-    df = fetch_aaii(data_dir=tmp_path)
-    assert not df.empty
-    assert "spread" in df.columns
+def test_cot_normalise_no_exact_match_keeps_all():
+    """If CFTC renames the contract, fail open (keep rows, warn) rather than
+    silently dropping the whole positioning axis."""
+    from core.fetchers.behavioral.cot import _normalise_tff_rows
+    rows = [_tff_row("2026-05-26", "E-MINI S&P 500 (RENAMED)", 1, 2)]
+    df = _normalise_tff_rows(rows, "E-MINI S&P 500")
+    assert len(df) == 1
+    assert df["lev_net"].iloc[0] == -1
 
 
 # ─── naaim.py ────────────────────────────────────────────────────────────────
@@ -199,6 +142,42 @@ def test_naaim_reads_cache(tmp_path: Path):
     df = fetch_naaim(data_dir=tmp_path)
     assert not df.empty
     assert "exposure" in df.columns
+
+
+class _Resp:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+def test_naaim_rejects_out_of_range_scrape(monkeypatch):
+    # A 3-digit number lifted off the page (e.g. an unrelated "999") must be
+    # rejected, not cached as an exposure reading (audit M2).
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Exposure Index: 999"))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value is None
+
+
+def test_naaim_accepts_in_range_scrape(monkeypatch):
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Exposure Index: 87.5"))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value == 87.5
+
+
+def test_naaim_ignores_unlabelled_percentage(monkeypatch):
+    # A bare "NN%" with no Exposure/NAAIM label must NOT be scraped as the value
+    # (the loose fallback pattern was removed) — a failed parse returns None.
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Advisors are 50% bullish this week."))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value is None
 
 
 if __name__ == "__main__":

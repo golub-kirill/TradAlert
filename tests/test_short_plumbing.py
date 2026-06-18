@@ -1,12 +1,9 @@
 """
-Plumbing tests — exercise the sign-of helper, the symmetric
-Trade math, the short-side fill helpers, and the direction-aware
-adjust_target_for_slippage.
+Plumbing tests — the sign-of helper, symmetric Trade math, the
+short-side fill helpers, and the direction-aware adjust_target_for_slippage.
 
-These tests must pass while ``signals.allow_shorts`` is still False —
-the plumbing is in place but the backtester does not fire short trades
-yet. The goal here is to lock down the math contract so the
-integration layer can build on a stable foundation.
+These lock the math contract and must pass while ``signals.allow_shorts``
+is False (the plumbing exists before the backtester fires short trades).
 """
 
 from __future__ import annotations

@@ -8,28 +8,26 @@ from core.telegram.config import load_telegram_config
 from core.types import TickerResult
 
 
-def _tr(direction="long", ticker="JNJ", watch=False):
+def _tr(direction="long", ticker="JNJ"):
     s = SignalResult(passed=True, direction=direction, signal_type="momentum",
                      stop_price=221.85, target_price=260.07, min_rr=2.5, size_mult=0.8,
-                     market_regime="BULL_NORMAL", watch_only=watch, reason="x",
+                     market_regime="BULL_NORMAL", reason="x",
                      expected_hold_days=(10, 15))
     return TickerResult(ticker, ScanResult(passed=True, close=232.77), s)
 
 
 def _results():
-    return [_tr("long", "JNJ"), _tr("long", "AMD", watch=True),
-            _tr("exit_long", "KO"), _tr("long", "TSLA")]
+    return [_tr("long", "JNJ"), _tr("exit_long", "KO"), _tr("long", "TSLA")]
 
 
 _ENABLED = {"telegram": {"enabled": True, "mute": ["TSLA"]}}
 
 
-def test_select_excludes_watch_only_and_muted():
+def test_select_excludes_muted():
     sel = push._select(_results(), load_telegram_config(_ENABLED))
     tickers = [tr.ticker for tr, _ in sel]
     kinds = [k for _, k in sel]
     assert "JNJ" in tickers and "KO" in tickers
-    assert "AMD" not in tickers   # watch_only excluded
     assert "TSLA" not in tickers  # muted excluded
     assert "long_entry" in kinds and "exit_long" in kinds
 
@@ -96,3 +94,46 @@ def test_fail_open_swallows_send_errors(monkeypatch):
     from core import position_manager
     monkeypatch.setattr(position_manager, "load_open_positions", lambda: {})
     push.send_alerts(_results(), _ENABLED)  # must NOT raise
+
+
+# ── _render: NEEDS_REVIEW banner + caption-length guard ──────────────────────
+
+def _entry_tr(ticker="JNJ", tier="LIVE", review_reason=""):
+    s = SignalResult(passed=True, direction="long", signal_type="momentum",
+                     stop_price=221.85, target_price=260.07, min_rr=2.5, size_mult=0.8,
+                     market_regime="BULL_NORMAL", reason="x",
+                     expected_hold_days=(10, 15), tier=tier, review_reason=review_reason)
+    return TickerResult(ticker, ScanResult(passed=True, close=232.77), s)
+
+
+def test_render_prepends_needs_review_banner_html_escaped(monkeypatch):
+    monkeypatch.setattr(push, "_latest_chart", lambda t: None)
+    monkeypatch.setattr(push.fmt, "format_entry", lambda tr, **k: "BODY")
+    tr = _entry_tr(tier="NEEDS_REVIEW", review_reason="gap 2.3×ATR & <stale>")
+    text, _ = push._render(tr, "long_entry", risk_on=None, n_open=0)
+    assert text.startswith("⚠ <b>NEEDS REVIEW</b>")
+    assert "BODY" in text
+    assert "&lt;stale&gt;" in text and "&amp;" in text  # review_reason escaped
+
+
+def test_render_no_banner_for_clean_live_entry(monkeypatch):
+    monkeypatch.setattr(push, "_latest_chart", lambda t: None)
+    monkeypatch.setattr(push.fmt, "format_entry", lambda tr, **k: "BODY")
+    text, _ = push._render(_entry_tr(tier="LIVE"), "long_entry", risk_on=None, n_open=0)
+    assert "NEEDS REVIEW" not in text
+
+
+def test_render_drops_chart_when_caption_would_overflow(monkeypatch):
+    monkeypatch.setattr(push, "_latest_chart", lambda t: "fake/chart.webp")
+    monkeypatch.setattr(push.fmt, "format_entry", lambda tr, **k: "x" * 1100)
+    tr = _entry_tr(tier="NEEDS_REVIEW", review_reason="stale 1 session")
+    text, chart = push._render(tr, "long_entry", risk_on=None, n_open=0)
+    assert len(text) > push._CAPTION_LIMIT
+    assert chart is None  # dropped → sent as a full message, never truncated
+
+
+def test_render_keeps_chart_within_caption_limit(monkeypatch):
+    monkeypatch.setattr(push, "_latest_chart", lambda t: "fake/chart.webp")
+    monkeypatch.setattr(push.fmt, "format_entry", lambda tr, **k: "short body")
+    text, chart = push._render(_entry_tr(tier="LIVE"), "long_entry", risk_on=None, n_open=0)
+    assert chart == "fake/chart.webp"

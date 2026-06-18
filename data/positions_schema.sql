@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS positions (
     side        ENUM('long','short') NOT NULL DEFAULT 'long',
     entry_price DECIMAL(12,4) NOT NULL,
     entry_date  DATE          NOT NULL,
-    stop_price  DECIMAL(12,4) DEFAULT NULL,
+    stop_price  DECIMAL(12,4) DEFAULT NULL,            -- current stop (may trail)
+    initial_stop DECIMAL(12,4) DEFAULT NULL,           -- stop at open; risk denominator (never moved)
     exit_price  DECIMAL(12,4) DEFAULT NULL,
     exit_date   DATE          DEFAULT NULL,            -- NULL while open
     notes       VARCHAR(255)  DEFAULT NULL,

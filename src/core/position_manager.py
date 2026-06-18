@@ -107,7 +107,11 @@ class Position:
     side        : 'long' or 'short'.
     entry_price : Average entry price.
     entry_date  : Date the position was opened.
-    stop_price  : Hard stop level, or None when unset.
+    stop_price  : Current/hard stop level, or None when unset. May be moved by
+                  update_stop (e.g. trailing).
+    initial_stop: The stop recorded at OPEN. Never updated, so it is the stable
+                  risk denominator for realized-R reconciliation. Falls back to
+                  stop_price for rows opened before this column existed.
     exit_price  : Fill on close, or None while open.
     exit_date   : Close date, or None while open.
     notes       : Free-text annotation.
@@ -118,6 +122,7 @@ class Position:
     entry_price: float
     entry_date: date
     stop_price: float | None = None
+    initial_stop: float | None = None
     exit_price: float | None = None
     exit_date: date | None = None
     notes: str = ""
@@ -136,6 +141,7 @@ _SELECT_OPEN_SQL = """
                           entry_price,
                           entry_date,
                           stop_price,
+                          initial_stop,
                           exit_price,
                           exit_date,
                           notes
@@ -151,6 +157,7 @@ _SELECT_ALL_SQL = """
                          entry_price,
                          entry_date,
                          stop_price,
+                         initial_stop,
                          exit_price,
                          exit_date,
                          notes
@@ -165,6 +172,7 @@ _SELECT_BY_ID_SQL = """
                            entry_price,
                            entry_date,
                            stop_price,
+                           initial_stop,
                            exit_price,
                            exit_date,
                            notes
@@ -173,9 +181,10 @@ _SELECT_BY_ID_SQL = """
                     """
 
 _INSERT_SQL = """
-              INSERT INTO positions (ticker, side, entry_price, entry_date, stop_price, notes)
+              INSERT INTO positions (ticker, side, entry_price, entry_date,
+                                     stop_price, initial_stop, notes)
               VALUES (%(ticker)s, %(side)s, %(entry_price)s, %(entry_date)s,
-                      %(stop_price)s, %(notes)s) \
+                      %(stop_price)s, %(initial_stop)s, %(notes)s) \
               """
 
 _CLOSE_SQL = """
@@ -195,6 +204,24 @@ _UPDATE_STOP_SQL = """
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+
+def db_reachable() -> bool:
+    """True iff a DB connection can be opened.
+
+    Used to NOTIFY the operator when a scan ran with the positions table
+    unreadable (open-position awareness lost, scan not journaled) — the scan
+    itself still proceeds fail-open; this is detection for an alert, not a guard.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        return bool(conn.is_connected())
+    except (MySQLError, ConfigError):
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
 
 def load_open_positions() -> dict[str, Position]:
     """
@@ -282,6 +309,9 @@ def open_position(
         "entry_price": entry_price,
         "entry_date": entry_date,
         "stop_price": stop_price,
+        # initial_stop is frozen at open == the stop at entry; update_stop never
+        # touches it, so it stays the stable risk denominator for reconciliation.
+        "initial_stop": stop_price,
         "notes": notes or None,
     }
     conn = None
@@ -382,6 +412,7 @@ def _row_to_position(r: dict) -> Position:
         entry_price=float(r["entry_price"]),
         entry_date=r["entry_date"],
         stop_price=float(r["stop_price"]) if r["stop_price"] is not None else None,
+        initial_stop=float(r["initial_stop"]) if r.get("initial_stop") is not None else None,
         exit_price=float(r["exit_price"]) if r["exit_price"] is not None else None,
         exit_date=r["exit_date"],
         notes=r["notes"] or "",

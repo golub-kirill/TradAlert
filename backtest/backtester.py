@@ -52,10 +52,9 @@ from typing import Optional
 import pandas as pd
 
 from backtest.trade import Trade
-from core.exits import max_hold_exit_due
+from core.exits import breakeven_stop_level, max_hold_exit_due, trailing_stop_level
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
-from core.scoring import SignalScorer
 from core.ticker_health import TickerHealth
 from core.ticker_store import TickerStore, next_earnings_from
 from exceptions import InsufficientDataError
@@ -71,11 +70,8 @@ def apply_stop_fill(initial_stop: float, bar_open: float) -> float:
     Gap-through model: if the bar opened *below* the stop (overnight news,
     gap-down), the stop-market order executes at ``bar_open`` — potentially
     much worse than ``initial_stop``. If triggered intraday (``bar_open >=
-    stop > bar_low``), executes at ``initial_stop``.
-
-    This is the primary mechanism by which real stops produce losses worse
-    than −1 R. Without it every stop reports exactly −1 R regardless of how
-    badly price gapped.
+    stop > bar_low``), executes at ``initial_stop``. This is the mechanism by
+    which real stops produce losses worse than −1 R.
 
     Args:
         initial_stop: Stop level set at signal time. Never changes.
@@ -93,11 +89,8 @@ def apply_target_fill(initial_target: float, bar_open: float) -> float:
     Gap-through model: if the bar opened *above* the target (overnight news,
     gap-up), the target-as-limit order executes at ``bar_open`` — better
     than ``initial_target``. If triggered intraday (``bar_open <= target
-    <= bar_high``), executes at ``initial_target``.
-
-    Without this, gap-up days are silently truncated to the configured R:R,
-    understating realised edge. Symmetric to the loss-side gap model so
-    headline R-multiple isn't biased by direction.
+    <= bar_high``), executes at ``initial_target``. Symmetric to the loss-side
+    gap model so the headline R-multiple isn't biased by direction.
 
     Args:
         initial_target: Target level set at signal time. Never changes.
@@ -144,21 +137,14 @@ def adjust_target_for_slippage(
 ) -> float:
     """Re-anchor the target to the slipped entry so realised R matches configured.
 
-    Long-side rationale (existing): ``FilterEngine`` sets
-    ``target_price = close + (close - stop) * min_rr`` using the
-    *pre-slippage* close. The backtester then fills at
-    ``close * (1 + entry_slippage_pct)``. ``Trade.compute_r`` computes
-    ``risk_per_share`` from the slipped entry, so a target hit on the
-    pre-slippage target reports r ≈ min_rr − slippage_pct × close / risk
-    — silently below configured min_rr.
+    Long side: ``FilterEngine`` sets
+    ``target_price = close + (close - stop) * min_rr`` from the *pre-slippage*
+    close, but the backtester fills at ``close * (1 + entry_slippage_pct)`` and
+    ``Trade.compute_r`` derives ``risk_per_share`` from the slipped entry — so a
+    pre-slippage-target hit reports r below configured min_rr. Short side
+    mirrors with opposite sign (stop above entry, target below).
 
-    Short-side mirror: stop sits above entry, target below. Slippage
-    pushes the slipped sell-entry below the close, so the pre-slippage
-    target (also below close) is *closer* than min_rr × slipped_risk
-    away. Same drift, opposite sign.
-
-    The ``direction`` parameter selects the sign. Default ``"long"`` so
-    existing callers stay unchanged.
+    The ``direction`` parameter selects the sign (default ``"long"``).
 
     Returns ``configured_target`` unchanged when ``min_rr <= 0`` (exit
     signals) or when ``real_risk`` is non-positive (degenerate trade —
@@ -198,18 +184,25 @@ class BacktestConfig:
     end_date: Optional[date] = None
     earnings_aware: bool = True
     close_open_at_eod: bool = True
-    # Chronic-loser soft-penalty. When None (default), the policy is off
-    # and the backtester reproduces baseline behavior exactly. Pass an
-    # instance (typically ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``)
-    # to apply the sliding-scale size penalty on a per-ticker basis.
+    # Chronic-loser soft-penalty. None (default) → off, baseline behavior exact.
+    # Pass an instance (typically
+    # ``TickerHealth.from_config(cfg["chronic_loser_penalty"])``) to apply the
+    # sliding-scale per-ticker size penalty.
     ticker_health: Optional["TickerHealth"] = None
-    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
-    # baseline replays bit-identically. Mirrors PortfolioConfig.max_hold_days:
-    # a still-open trade closes at the bar CLOSE once held this many bars.
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF (baseline
+    # bit-identical). Mirrors PortfolioConfig.max_hold_days: a still-open trade
+    # closes at the bar CLOSE once held this many bars.
     #   mode "hard"          → always exit at the cap.
     #   mode "if_not_profit" → exit at the cap only when not in profit.
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
+    # ATR trailing stop. None → OFF (baseline bit-identical). Mirrors
+    # PortfolioConfig; see core.exits.trailing_stop_level. R stays off the
+    # initial stop — the trail changes only the exit price/reason.
+    trail_atr_mult: Optional[float] = None
+    trail_activate_r: Optional[float] = None
+    breakeven_trigger_r: Optional[float] = None
+    breakeven_buffer_atr: Optional[float] = None
 
 
 @dataclass
@@ -247,8 +240,6 @@ class BarReplayBacktester:
     engine : Constructed FilterEngine. Its _today attribute is rewritten on
              every signal call and restored in a finally clause.
     cfg    : BacktestConfig.
-    scorer : Optional SignalScorer. When supplied, entry scores are computed
-             point-in-time and stamped on every Trade.
     store  : Optional TickerStore. Used for OHLCV load and earnings history.
     """
 
@@ -256,12 +247,10 @@ class BarReplayBacktester:
             self,
             engine: FilterEngine,
             cfg: BacktestConfig,
-            scorer: SignalScorer | None = None,
             store: TickerStore | None = None,
     ):
         self._engine = engine
         self._cfg = cfg
-        self._scorer = scorer
         self._store = store
 
     # ── public API ────────────────────────────────────────────────────────
@@ -301,7 +290,7 @@ class BarReplayBacktester:
             logger.warning("[%s] %s", ticker, result.skipped_reason)
             return result
 
-        ma_slow = self._engine._cfg["trend"]["ma_slow"]
+        ma_slow = self._engine.cfg.trend.ma_slow
 
         # Drop leading rows where any indicator column is NaN — engine.signal
         # cannot evaluate gates on bars with NaN macd_hist / rsi.
@@ -429,16 +418,24 @@ class BarReplayBacktester:
                 b_open = float(bar["open"])
                 b_low = float(bar["low"])
                 b_high = float(bar["high"])
+                open_trade.update_excursion(b_high, b_low)  # exit-quality instrumentation
 
                 # Same-bar pessimistic: if BOTH touched, stop wins.
                 # Long  : stop hit when bar_low <= stop (price falling)
                 # Short : stop hit when bar_high >= stop (price rallying)
-                stop_hit = (b_high >= stop) if is_short else (b_low <= stop)
+                # Effective stop = trailing/dynamic stop once set, else initial. Set
+                # at the PREVIOUS bar's end (look-ahead-free); R stays off the
+                # initial stop.
+                eff_stop = open_trade.current_stop if open_trade.current_stop is not None else stop
+                stop_reason = ((open_trade.current_stop_reason or "stop")
+                               if open_trade.current_stop is not None and open_trade.current_stop != stop
+                               else "stop")
+                stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
                 if stop_hit:
-                    fill = (apply_stop_fill_short(stop, b_open)
+                    fill = (apply_stop_fill_short(eff_stop, b_open)
                             if is_short
-                            else apply_stop_fill(stop, b_open))
-                    _close_trade(open_trade, today, fill, "stop",
+                            else apply_stop_fill(eff_stop, b_open))
+                    _close_trade(open_trade, today, fill, stop_reason,
                                  df.index, T)
                     trades.append(open_trade)
                     self._record_close(ticker, open_trade)
@@ -490,6 +487,18 @@ class BarReplayBacktester:
                 )
                 if signal.passed and signal.direction in ("exit_long", "exit_short"):
                     pending_exit = True
+                # Still open → ratchet the dynamic stop (trail/breakeven) for the NEXT
+                # bar (the level checked above was the previous bar's — look-ahead-free).
+                if (self._cfg.trail_atr_mult or self._cfg.breakeven_trigger_r is not None) \
+                        and open_trade is not None:
+                    _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
+                    _apply_dynamic_stop(
+                        open_trade, _atr, is_short,
+                        trail_atr_mult=self._cfg.trail_atr_mult,
+                        trail_activate_r=self._cfg.trail_activate_r,
+                        breakeven_trigger_r=self._cfg.breakeven_trigger_r,
+                        breakeven_buffer_atr=self._cfg.breakeven_buffer_atr,
+                    )
                 continue
 
             # ── 3. Flat: look for entry signal ───────────────────────────
@@ -523,10 +532,8 @@ class BarReplayBacktester:
     # ── ledger helper ─────────────────────────────────────────────────────
 
     def _record_close(self, ticker: str, trade: Trade) -> None:
-        """Forward a closed trade to the chronic-loser tracker, if enabled.
-
-        Safe to call when ``cfg.ticker_health`` is None — no-op in that
-        case. Pulled into a helper so the four close sites stay one-liners.
+        """Forward a closed trade to the chronic-loser tracker (no-op when
+        ``cfg.ticker_health`` is None).
         """
         if self._cfg.ticker_health is None or trade.exit_date is None:
             return
@@ -603,6 +610,44 @@ class BarReplayBacktester:
 
 # ── module-level helpers ──────────────────────────────────────────────────────
 
+def _apply_dynamic_stop(
+        trade: Trade,
+        atr: float | None,
+        is_short: bool,
+        *,
+        trail_atr_mult,
+        trail_activate_r,
+        breakeven_trigger_r,
+        breakeven_buffer_atr,
+) -> None:
+    """Ratchet ``trade.current_stop`` via the trailing and/or breakeven rules (in the
+    trade's favor only) and tag ``current_stop_reason``.
+
+    Call at the END of each held bar; the resulting level is checked on the NEXT bar
+    (look-ahead-free). Shared by both backtesters so single == portfolio.
+    """
+    side = "short" if is_short else "long"
+    mfe = trade.current_mfe_r()
+    if trail_atr_mult:
+        new = trailing_stop_level(
+            side=side, highest_high=trade.highest_high, lowest_low=trade.lowest_low,
+            atr=atr, trail_atr_mult=trail_atr_mult, prev_stop=trade.current_stop,
+            initial_stop=trade.initial_stop, mfe_r=mfe, activate_r=trail_activate_r)
+        if new is not None and new != trade.current_stop:
+            trade.current_stop = new
+            if new != trade.initial_stop:
+                trade.current_stop_reason = "trail_stop"
+    if breakeven_trigger_r is not None:
+        new = breakeven_stop_level(
+            side=side, entry_price=trade.entry_price, atr=atr,
+            breakeven_trigger_r=breakeven_trigger_r, breakeven_buffer_atr=breakeven_buffer_atr,
+            prev_stop=trade.current_stop, initial_stop=trade.initial_stop, mfe_r=mfe)
+        if new is not None and new != trade.current_stop:
+            trade.current_stop = new
+            if new != trade.initial_stop:
+                trade.current_stop_reason = "breakeven_stop"
+
+
 def _close_trade(
         trade: Trade,
         exit_date: date,
@@ -634,6 +679,7 @@ def _close_trade(
         trade.bars_held = 0
 
     trade.r_multiple = trade.compute_r() - commission_r
+    trade.compute_excursion_r()  # finalize MFE/MAE (after r_multiple is set)
 
 
 def _load_ohlcv_fallback(ticker: str) -> pd.DataFrame:
@@ -653,8 +699,8 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     Return a copy of df with all standard indicator columns attached.
 
     Delegates to ``core.indicators.indicators.attach_indicators`` — the
-    single canonical implementation shared with the live pipeline.
-    Previously duplicated here without Bollinger Bands (BUG-03 in TODO).
+    single canonical implementation shared with the live pipeline (avoids a
+    divergent copy).
     """
     return attach_indicators(df)
 

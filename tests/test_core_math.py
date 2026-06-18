@@ -126,10 +126,9 @@ def test_sharpe_is_rf_zero_scale_invariant():
 def test_sortino_downside_deviation_is_over_N():
     # dd must average squared shortfall over ALL months (/N), not just down-months.
     series = [1.0, 1.0, 1.0, -1.0]            # one down-month of -1.0, N = 4
-    dd = math.sqrt(((-1.0) ** 2) / 4)          # /N: 0.5  (the old /n_down gave 1.0)
+    dd = math.sqrt(((-1.0) ** 2) / 4)          # /N gives 0.5; /n_down would give 1.0
     expected = (np.mean(series)) / dd * math.sqrt(12)
     assert sortino_ratio(series) == pytest.approx(expected)
-    # Down-month dominates: /N is strictly more generous than the old /n_down form.
     assert sortino_ratio(series) > 0
 
 

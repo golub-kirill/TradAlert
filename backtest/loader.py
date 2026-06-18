@@ -46,9 +46,8 @@ INDICATOR_COLS = ["atr", "rsi", "macd", "macd_signal", "macd_hist"]
 
 # Behavioral parquet files are named by source (sp500_breadth, sector_ratios),
 # but classify_behavioral_state reads canonical axis keys (breadth,
-# sector_rotation) — the same keys the live fetch_all_behavioral emits. Map stems
-# to those keys so backtests feed the classifier the same contract as live;
-# without it breadth/sector silently go missing and default to NEUTRAL.
+# sector_rotation) — the keys live fetch_all_behavioral emits. Map stems to those
+# keys; without it breadth/sector silently go missing and default to NEUTRAL.
 _BEHAVIORAL_KEY_ALIASES = {
     "sp500_breadth": "breadth",
     "sector_ratios": "sector_rotation",
@@ -160,8 +159,7 @@ def load_universe(
 
     Steps per ticker
     ----------------
-    1. Read parquet with PyArrow (handles both 343-bar stale files and
-       fresh 2000-bar files; skips corrupted ones gracefully).
+    1. Read parquet with PyArrow (skips corrupted files gracefully).
     2. Attach ATR / RSI / MACD indicators.
     3. Drop leading NaN rows (indicator warm-up).
     4. Require >= ma_slow + 2 bars after warm-up.
@@ -352,10 +350,9 @@ def _load_parquet(ticker: str, cache_dir: Path) -> pd.DataFrame | None:
             )
             return None
 
-    # At this point one of the two strategies populated df; the else-branch
-    # of the outer try/except returns None above. The assert documents the
-    # invariant and lets the type checker drop the ``| None`` for the rest
-    # of this function — fixes 5 PyCharm None-deref flags in this block.
+    # One of the two strategies populated df (the failure path returns None
+    # above). The assert documents the invariant and narrows the type for the
+    # rest of this function.
     assert df is not None
     # Normalise index
     if not isinstance(df.index, pd.DatetimeIndex):

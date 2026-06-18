@@ -62,7 +62,15 @@ def fetch_naaim(
     # 2. Fetch the latest index value from the website
     latest_exposure, latest_date = _fetch_latest_naaim()
     if latest_exposure is None:
-        logger.warning("[naaim] could not fetch current value — returning cached data")
+        age = cache_meta.age_seconds(parquet_path)
+        if age is not None and age > staleness_days * 86400:
+            logger.warning(
+                "[naaim] could not fetch current value — serving STALE cache "
+                "(%.1f d old, > %g d window); value may be outdated.",
+                age / 86400.0, staleness_days,
+            )
+        else:
+            logger.warning("[naaim] could not fetch current value — returning cached data")
         return cached_df if not cached_df.empty else pd.DataFrame()
 
     # 3. Append to cache if newer
@@ -86,7 +94,7 @@ def fetch_naaim(
     return updated_df
 
 
-def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp]:
+def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp | None]:
     """
     Scrape the latest exposure index from the NAAIM website.
     Returns (exposure_value, date_of_survey). Date is approximated as the most
@@ -103,14 +111,14 @@ def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp]:
         logger.warning("[naaim] fetch failed: %s", exc)
         return None, None
 
-    # Use regex to find a number between 0 and 200 near "Exposure Index"
-    # Common patterns: "Exposure Index: 87.2" or "Current Exposure: 112.5"
+    # Match the NAAIM exposure value only when LABELLED (Exposure Index / Current
+    # Exposure / NAAIM Number) — no bare "NN%" fallback (it grabs unrelated page
+    # percentages); a failed parse returns None (fail-open).
     text = resp.text
     patterns = [
         r"Exposure\s*Index[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"Current\s*Exposure[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"NAAIM\s*Number[:\s]*(\d{1,3}(?:\.\d+)?)",
-        r"(\d{1,3}(?:\.\d+)?)\s*%",
     ]
     value = None
     for pat in patterns:
@@ -120,6 +128,16 @@ def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp]:
             break
     if value is None:
         logger.warning("[naaim] could not parse exposure value from HTML")
+        return None, None
+
+    # Sanity-bound the scrape: the NAAIM Exposure Index runs roughly 0–200 (the
+    # regex only captures positives), so a value outside ~[0, 250] is almost
+    # certainly an unrelated number lifted off the page — discard it rather than
+    # cache a bogus reading that a later backtest would read back from parquet.
+    if not (0.0 <= value <= 250.0):
+        logger.warning(
+            "[naaim] parsed exposure %.1f outside sane range [0, 250] — likely a "
+            "mis-scrape; discarding.", value)
         return None, None
 
     # Survey date: use last Wednesday (if today is Wednesday, use today)

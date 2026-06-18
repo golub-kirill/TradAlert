@@ -1,29 +1,18 @@
 """
-Portfolio-aware bar-replay backtester with concurrent-position cap.
+Portfolio-aware bar-replay backtester with an open-risk budget cap.
 
-    Slippage apply_stop_fill() from backtester.py handles gap-through
-            stops. Entry slippage applied as PortfolioConfig.entry_slippage_pct.
-
-    Scoring When a SignalScorer is injected, it enriches each entry signal
-            before the signal is queued. The entry-fill step then sorts
-            contested signals by score descending — highest-confidence
-            trade wins the slot when the portfolio is at cap.
-            No scorer → score defaults to 0.0 for all → alphabetical
-            tiebreak preserved.
-
-    Regime  Computed once per bar from market_t / vix_t and reused
-            across all per-bar engine calls. Saves N engine._market_regime
-            calls per bar.
-
-    Commission commission_r subtracted from r_multiple in _close_trade.
+Slippage   : apply_stop_fill() (backtester.py) handles gap-through stops; entry
+             slippage applied as PortfolioConfig.entry_slippage_pct.
+Regime     : computed once per bar from market_t / vix_t and reused across all
+             per-bar engine calls.
+Commission : commission_r subtracted from r_multiple in _close_trade.
 
 Per-bar pipeline (in order)
 ────────────────────────────────
     1  Pending exits fill at open (frees slots before entries compete).
-    2  Pending entries fill at open, highest-score first, cap respected.
+    2  Pending entries fill at open in queue (scan) order, cap respected.
     3  Stop/target check on held trades against bar H/L.
     4  Engine.signal at close — queues exits and entries for next bar.
-             Entry signals enriched with scorer before queuing.
 """
 
 from __future__ import annotations
@@ -36,6 +25,7 @@ from typing import TYPE_CHECKING, Optional
 import pandas as pd
 
 from backtest.backtester import (
+    _apply_dynamic_stop,
     _attach_indicators,
     _close_trade,
     adjust_target_for_slippage,
@@ -45,17 +35,13 @@ from backtest.backtester import (
     apply_target_fill_short,
     call_engine_slice,
 )
-from backtest.earnings_history import (
-    get_earnings_history,
-    next_earnings_from,
-)
+from backtest.earnings_history import get_earnings_history
 from backtest.trade import Trade
 from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
 
 if TYPE_CHECKING:
-    from core.scoring import SignalScorer
     from core.ticker_health import TickerHealth
 
 logger = logging.getLogger(__name__)
@@ -71,13 +57,12 @@ class PortfolioConfig:
     Attributes
     ----------
     max_open_risk        : Aggregate open-risk budget, in size_mult units. Each
-                           open position consumes its own ``size_mult`` (a full-size
-                           position = 1.0; a regime/chronic-reduced 0.25× position =
-                           0.25). A new entry is dropped when it would push total open
-                           risk past this budget. This is a risk control, so it is
-                           intentionally universe-agnostic (independent of watchlist
-                           size). Must be > 0. Replaces the old raw-count cap
-                           ``max_concurrent`` (budget B ≈ B full-size positions).
+                           open position consumes its own ``size_mult`` (full-size =
+                           1.0; a regime/chronic-reduced 0.25× position = 0.25). A new
+                           entry is dropped when it would push total open risk past
+                           this budget. Universe-agnostic risk control (independent of
+                           watchlist size). Must be > 0. Budget B ≈ B full-size
+                           positions.
     start_date           : Earliest entry date. None → warmup end.
     end_date             : Latest entry date. None → end of data.
     earnings_aware       : Reconstruct historical earnings for buffer gate.
@@ -97,20 +82,31 @@ class PortfolioConfig:
     entry_slippage_pct: float = 0.0
     commission_r: float = 0.0
     max_drawdown_r: Optional[float] = None
-    # Chronic-loser tracker (see core.ticker_health.TickerHealth). When None,
-    # the policy is off and the backtester replays baseline behavior exactly.
-    # The tracker's penalty multiplies into signal.size_mult at entry.
+    # Chronic-loser tracker (see core.ticker_health.TickerHealth). None → off,
+    # baseline behavior exact. The penalty multiplies into signal.size_mult at entry.
     ticker_health: Optional["TickerHealth"] = None
-    # Time-based max-hold exit (swing-horizon enforcement). None → OFF, so the
-    # baseline replays bit-identically. When set, a still-open trade is closed
-    # at the bar's CLOSE once it has been held ``max_hold_days`` trading bars
-    # (same bar-count convention as Trade.bars_held = exit_idx - entry_idx).
-    # Stop/target on the same bar take precedence (checked first, pessimistic).
+    # Time-based max-hold exit (swing-horizon enforcement). None → OFF (baseline
+    # bit-identical). When set, a still-open trade closes at the bar's CLOSE once
+    # held ``max_hold_days`` bars (same convention as Trade.bars_held = exit_idx -
+    # entry_idx). Same-bar stop/target take precedence (checked first, pessimistic).
     #   mode "hard"          → always exit at the cap.
-    #   mode "if_not_profit" → exit at the cap only when the position is not in
-    #                          profit at that close (lets winners run to target).
+    #   mode "if_not_profit" → exit at the cap only when not in profit at that close
+    #                          (lets winners run to target).
     max_hold_days: Optional[int] = None
     max_hold_mode: str = "hard"
+    # ATR trailing stop. None → OFF (baseline bit-identical). When set, current_stop
+    # = highest_high − ATR×trail_atr_mult (long; short mirrors), computed at END of
+    # each bar and checked on the NEXT bar (look-ahead-free). trail_activate_r: only
+    # start trailing once MFE reaches this R (None → trail from entry). The R
+    # denominator stays the INITIAL stop — the trail changes only exit price/reason.
+    trail_atr_mult: Optional[float] = None
+    trail_activate_r: Optional[float] = None
+    # Breakeven stop. None → OFF. Once the trade reaches breakeven_trigger_r of
+    # favorable excursion, move the stop to entry ± breakeven_buffer_atr×ATR —
+    # protects the downside WITHOUT capping the upside (does not trail further). R
+    # denominator stays the INITIAL stop.
+    breakeven_trigger_r: Optional[float] = None
+    breakeven_buffer_atr: Optional[float] = None
 
 
 @dataclass
@@ -238,31 +234,23 @@ class PortfolioBacktester:
     ----------
     engine  : FilterEngine. Its _today is mutated per call via try/finally.
     cfg     : PortfolioConfig with max_open_risk > 0.
-    scorer  : Optional SignalScorer from scoring.py. When provided, every
-              queued entry signal is enriched in-place (score, components,
-              description) and the entry-fill step selects by highest score first.
-              When None, score defaults to 0.0 and order is alphabetical.
     """
 
     def __init__(
             self,
             engine: FilterEngine,
             cfg: PortfolioConfig,
-            scorer: SignalScorer | None = None,
     ):
         if cfg.max_open_risk <= 0:
             raise ValueError(f"max_open_risk must be > 0, got {cfg.max_open_risk}")
         self._engine = engine
         self._cfg = cfg
-        self._scorer = scorer
 
     # ── ticker-health helper ──────────────────────────────────────────────
 
     def _record_close(self, trade: Trade) -> None:
-        """Forward a closed trade to the chronic-loser tracker, if enabled.
-
-        Safe to call when ``cfg.ticker_health`` is None — no-op. Pulled
-        into a helper so the four close sites stay one-liners.
+        """Forward a closed trade to the chronic-loser tracker (no-op when
+        ``cfg.ticker_health`` is None).
         """
         if self._cfg.ticker_health is None or trade.exit_date is None:
             return
@@ -282,15 +270,17 @@ class PortfolioBacktester:
         Reads ``signals.borrow.{per_ticker, annual_rate_default}`` off the
         engine config. Defaults to 0.0 — so the long-only baseline and any
         config without a ``borrow`` block are unchanged. ``getattr`` guards
-        stub engines that have no ``_cfg``.
+        stub engines that have no typed ``cfg``.
         """
         if direction != "short":
             return 0.0
-        cfg = getattr(self._engine, "_cfg", {}) or {}
-        b = (cfg.get("signals", {}) or {}).get("borrow", {}) or {}
-        per = b.get("per_ticker", {}) or {}
+        cfg = getattr(self._engine, "cfg", None)
+        if cfg is None:
+            return 0.0
+        b = cfg.signals.borrow
+        per = b.per_ticker or {}
         try:
-            return float(per.get(ticker, b.get("annual_rate_default", 0.0)) or 0.0)
+            return float(per.get(ticker, b.annual_rate_default) or 0.0)
         except (TypeError, ValueError):
             return 0.0
 
@@ -381,25 +371,20 @@ class PortfolioBacktester:
                 pending_exits.discard(ticker)
                 closed_this_bar.add(ticker)
 
-            # Pending entries at open, score-ranked
+            # Pending entries at open, in queue (scan) order. The iteration
+            # order is pending_entries insertion order — the order signals were
+            # queued on the previous bar — which decides who wins the last
+            # budget slot on a contested bar. Do not re-sort.
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
             if dd_gate.blocked:
                 # Skip entry fills but still process exits
-                for ticker in sorted(
-                        [tk for tk in pending_entries if D in date_sets[tk]],
-                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
-                        reverse=True,
-                ):
+                for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
                     result.capped_signals.append(
                         CappedSignal(D_date, ticker, pending_entries.pop(ticker))
                     )
             else:
-                for ticker in sorted(
-                        [tk for tk in pending_entries if D in date_sets[tk]],
-                        key=lambda tk: getattr(pending_entries[tk], "score", 0.0),
-                        reverse=True,
-                ):
+                for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
                     if ticker in closed_this_bar:
                         pending_entries.pop(ticker, None)
                         continue
@@ -444,8 +429,6 @@ class PortfolioBacktester:
                         market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
                         size_mult=final_mult,  # regime × chronic-loser
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
-                        entry_score=signal.score,
-                        entry_score_components=dict(signal.score_components),
                     )
 
             # Stop / target on held trades
@@ -456,13 +439,22 @@ class PortfolioBacktester:
                 bar = prepped[ticker].df.loc[D]
                 t_idx = int(prepped[ticker].df.index.get_loc(D))
                 b_open, b_low, b_high = float(bar["open"]), float(bar["low"]), float(bar["high"])
+                trade.update_excursion(b_high, b_low)  # exit-quality instrumentation
                 is_short = (trade.direction == "short")
-                stop_hit = (b_high >= trade.initial_stop) if is_short else (b_low <= trade.initial_stop)
+                # Effective stop = the trailing/dynamic stop once set, else the
+                # initial. This level was set at the PREVIOUS bar's end, so checking
+                # it against this bar is look-ahead-free. The R denominator stays the
+                # initial stop — a trail changes only the exit price/reason.
+                eff_stop = trade.current_stop if trade.current_stop is not None else trade.initial_stop
+                stop_reason = ((trade.current_stop_reason or "stop")
+                               if trade.current_stop is not None and trade.current_stop != trade.initial_stop
+                               else "stop")
+                stop_hit = (b_high >= eff_stop) if is_short else (b_low <= eff_stop)
                 if stop_hit:
-                    fill = (apply_stop_fill_short(trade.initial_stop, b_open)
+                    fill = (apply_stop_fill_short(eff_stop, b_open)
                             if is_short
-                            else apply_stop_fill(trade.initial_stop, b_open))
-                    _close_trade(trade, D_date, fill, "stop",
+                            else apply_stop_fill(eff_stop, b_open))
+                    _close_trade(trade, D_date, fill, stop_reason,
                                  prepped[ticker].df.index, t_idx, self._cfg.commission_r)
                     closed = open_trades.pop(ticker)
                     result.trades.append(closed)
@@ -505,6 +497,21 @@ class PortfolioBacktester:
                         dd_gate.record(closed.effective_r)
                         closed_this_bar.add(ticker)
 
+                # Still open after all exit checks → ratchet the trailing stop for
+                # the NEXT bar from this bar's accumulated extremes (the level checked
+                # above was set at the previous bar — look-ahead-free). Off when
+                # trail_atr_mult is None, so the baseline replays unchanged.
+                if (self._cfg.trail_atr_mult or self._cfg.breakeven_trigger_r is not None) \
+                        and ticker in open_trades:
+                    _atr = float(bar["atr"]) if pd.notna(bar["atr"]) else None
+                    _apply_dynamic_stop(
+                        trade, _atr, is_short,
+                        trail_atr_mult=self._cfg.trail_atr_mult,
+                        trail_activate_r=self._cfg.trail_activate_r,
+                        breakeven_trigger_r=self._cfg.breakeven_trigger_r,
+                        breakeven_buffer_atr=self._cfg.breakeven_buffer_atr,
+                    )
+
             # Engine signal at close
             for ticker in active:
                 if ticker in closed_this_bar:
@@ -527,27 +534,6 @@ class PortfolioBacktester:
                 if held and signal.direction in ("exit_long", "exit_short"):
                     pending_exits.add(ticker)
                 elif not held and signal.direction in ("long", "short"):
-                    # Enrich with scorer + apply min_score_to_alert gate
-                    if self._scorer is not None:
-                        next_earn = (
-                            next_earnings_from(
-                                prepped[ticker].earnings_history, D_date
-                            )
-                            if prepped[ticker].earnings_history else None
-                        )
-                        try:
-                            self._scorer.enrich(
-                                signal=signal,
-                                df=df_t,
-                                regime=regime,
-                                earnings_date=next_earn,
-                                ticker=ticker,
-                            )
-                        except Exception as exc:
-                            logger.debug("[%s] scorer.enrich failed: %s",
-                                         ticker, exc)
-                        if signal.watch_only:
-                            continue  # below min_score_to_alert -- skip entry
                     pending_entries[ticker] = signal
 
         # Force-close remaining open trades

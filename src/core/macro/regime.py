@@ -51,7 +51,7 @@ class MacroState:
     wcs_spread_state: WcsSpreadState = "NORMAL"
     earnings_breadth: EarningsBreadth = "STABLE"
 
-    risk_on_score: float = 0.5  # was 0.7 (risk-on by default)
+    risk_on_score: float = 0.5  # neutral by default
     confidence: float = 1.0
     missing_axes: list[str] = field(default_factory=list)
     # derived position-size multiplier — set by classify_macro_state.
@@ -96,11 +96,17 @@ _DEFAULT_AXIS_WEIGHTS = {
     "earnings_breadth": 2,
 }
 
-# classify_macro_state was called once per bar in the portfolio
-# backtester (~6000 bars per cell × N cells). Most underlying series are
-# monthly (FRED CPI/PCE) or weekly (COT). The actual classified state
-# changes maybe 20× per year. Cache results keyed by (as_of-date, series
-# fingerprint).
+# FRED monthly series are dated at the reference month start but published the
+# following month. Treat a monthly print for month M as KNOWN only from the start
+# of M+2 — conservative (never before CPI/PCE/FEDFUNDS actually release), so a
+# backtest replaying a past as_of cannot see an unpublished figure. Daily/weekly
+# series publish same/next day and need no shift.
+_MONTHLY_FRED = frozenset({"PCEPILFE", "CPIAUCSL", "CPILFESL", "CPIAUCNS", "FEDFUNDS"})
+_MONTHLY_PUBLISH_LAG = pd.DateOffset(months=2)
+
+# classify_macro_state runs once per bar in the portfolio backtester, but the
+# classified state changes only ~20×/yr (most inputs are monthly/weekly). Cache
+# results keyed by (as_of-date, series fingerprint).
 _MACRO_STATE_CACHE: dict[tuple, "MacroState"] = {}
 _MACRO_STATE_CACHE_MAX: int = 4096  # safety bound (LRU-ish via clear)
 
@@ -152,14 +158,20 @@ def classify_macro_state(
     state = MacroState()
     missing: list[str] = []
 
-    # Slice series to as_of
+    # Slice each series to as_of, pushing monthly FRED prints back to their
+    # release date so an unpublished figure can't leak into a past decision.
+    def _eff_asof(sid: str):
+        if as_of is None:
+            return None
+        return (as_of - _MONTHLY_PUBLISH_LAG) if sid in _MONTHLY_FRED else as_of
+
     def _val(sid: str) -> float | None:
         df = series.get(sid)
         if df is None or df.empty:
             return None
         s = df["value"]
         if as_of is not None:
-            s = s.loc[:as_of]
+            s = s.loc[:_eff_asof(sid)]
         if s.empty:
             return None
         v = s.iloc[-1]
@@ -171,7 +183,7 @@ def classify_macro_state(
             return None
         s = df["value"]
         if as_of is not None:
-            s = s.loc[:as_of]
+            s = s.loc[:_eff_asof(sid)]
         return s if not s.empty else None
 
     def _val_ago(sid: str, months: int) -> float | None:
@@ -222,10 +234,8 @@ def classify_macro_state(
                 state.policy_stance_ca = "CUTTING"
             else:
                 state.policy_stance_ca = "HOLD"
-        else:
-            missing.append("policy_stance_ca")
-    else:
-        missing.append("policy_stance_ca")
+    # policy_stance_ca isn't a scored axis (absent from _DEFAULT_AXIS_WEIGHTS), so a
+    # missing BoC stance must not be counted in `missing` / penalize confidence.
 
     # Curve state (10y - 3m spread)
     dgs10 = _val("DGS10")
@@ -241,8 +251,8 @@ def classify_macro_state(
             was_inverted = was_spread < 0
 
         if spread < 0:
-            # Inverted now — fresh or sustained. The old `and was_inverted` let a
-            # fresh inversion (not yet inverted 2 months ago) fall through to FLAT.
+            # Inverted now, fresh or sustained (gating on was_inverted would
+            # misclassify a fresh inversion as FLAT).
             state.curve_state = "INVERTED"
         elif was_inverted:
             state.curve_state = "STEEPENING_FROM_INVERTED"
@@ -259,9 +269,8 @@ def classify_macro_state(
         current = hy_oas.iloc[-1]
         # 5-year window, frequency-agnostic
         hist = _series_ago("BAMLH0A0HYM2", 60)
-        # Require ≥ ~1 year of actual history by date span. `len >= 12` meant "12
-        # monthly points", but HY OAS is a daily series — 12 rows there is 12 days,
-        # which would compute the percentile band off a tiny, unreliable window.
+        # Require ≥ ~1 year of history by date span (HY OAS is daily, so a row
+        # count would let a 12-day window compute the percentile band).
         if hist is not None and len(hist) >= 2 and (hist.index[-1] - hist.index[0]).days >= 330:
             pct_80 = hist.quantile(0.8)
             pct_20 = hist.quantile(0.2)
@@ -318,9 +327,9 @@ def classify_macro_state(
     pce = _series("PCEPILFE")
     pce_12m_ago = _val_ago("PCEPILFE", 12)
     if pce is not None and pce_12m_ago is not None and pce_12m_ago > 0:
-        # True 12-month YoY via a time-based lookback. iloc[-12] spanned only 11
-        # months on monthly data, mismatched against the 12-month yoy_6mo_ago leg
-        # below → it could flip STABLE/ACCELERATING on the span mismatch alone.
+        # True 12-month YoY via time-based lookback, so the span matches the
+        # yoy_6mo_ago leg below (a positional iloc[-12] would span only 11 months
+        # on monthly data and flip the state on the mismatch alone).
         yoy = (pce.iloc[-1] / pce_12m_ago - 1) * 100
         # YoY 6 months ago
         pce_6m_ago = _val_ago("PCEPILFE", 6)
@@ -391,9 +400,8 @@ def classify_macro_state(
     wcs = _series("BZ=F")
     wti_val = _val("CL=F")
     if wcs is not None and wti_val is not None and not wcs.empty:
-        # BZ=F (Brent) is a rough proxy. Brent−WTI is normally a small POSITIVE
-        # premium, so the old `< -25` (a $25 Brent discount to WTI) was unreachable
-        # → WIDE never fired. Flag an abnormally wide Brent−WTI premium instead.
+        # BZ=F (Brent) is a rough WCS proxy. Brent−WTI is normally a small
+        # positive premium; flag an abnormally wide premium (> 10) as WIDE.
         spread = wcs.iloc[-1] - wti_val
         if spread > 10:
             state.wcs_spread_state = "WIDE"
@@ -401,8 +409,8 @@ def classify_macro_state(
             state.wcs_spread_state = "NORMAL"
     # WCS is not a missing axis — it's optional
 
-    # Earnings breadth — placeholder (needs tier_a earnings data)
-    # Default to STABLE until provides actual breadth data
+    # Earnings breadth — placeholder; defaults to STABLE until tier_a earnings
+    # data feeds actual breadth.
     state.earnings_breadth = "STABLE"
 
     # ── composite risk_on_score ──────────────────────────────────────────────

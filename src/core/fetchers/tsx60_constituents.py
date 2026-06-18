@@ -1,9 +1,9 @@
 """
-TSX 60 (S&P/TSX Composite Index) constituent list from Wikipedia.
+S&P/TSX 60 constituent list from Wikipedia.
 
-Scrapes the current TSX 60 constituents table from Wikipedia and caches
-the result for 7 days. Returns a list of ticker strings with ``.TO``
-suffix for Yahoo Finance compatibility.
+Scrapes the current TSX 60 constituents table (~60 large-cap Canadian names)
+from the 60-name index page and caches the result for 7 days. Returns ticker
+strings with ``.TO`` suffix for Yahoo Finance compatibility.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index"
+_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
 _CACHE_FILE = FUNDAMENTALS_DIR / "tsx60_constituents.json"
 _CACHE_DAYS = 7
 
@@ -95,13 +95,15 @@ def get_tsx60_constituents(
         logger.error("[tsx60] no tickers parsed from table — HTML schema may have changed")
         return _load_cached_or_empty(cache_path)
 
-    # TSX 60 should produce 55-65 members.
-    _MIN_EXPECTED = 55
-    if len(tickers) < _MIN_EXPECTED:
+    # The S&P/TSX 60 has ~60 members; allow a small band for footnote/drift rows.
+    # An out-of-band count means the scrape grabbed the wrong table (e.g. the
+    # ~220-name Composite) — reject rather than adopt a wrong universe.
+    _MIN_EXPECTED, _MAX_EXPECTED = 55, 70
+    if not (_MIN_EXPECTED <= len(tickers) <= _MAX_EXPECTED):
         logger.error(
-            "[tsx60] parsed only %d tickers (< %d expected) — Wikipedia HTML "
-            "likely changed; refusing to overwrite cache.",
-            len(tickers), _MIN_EXPECTED,
+            "[tsx60] parsed %d tickers (expected %d–%d) — wrong table or Wikipedia "
+            "HTML changed; refusing to overwrite cache.",
+            len(tickers), _MIN_EXPECTED, _MAX_EXPECTED,
         )
         return _load_cached_or_empty(cache_path)
 

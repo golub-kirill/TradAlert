@@ -3,8 +3,8 @@ TradAlert custom exception hierarchy.
 
     TradAlertError                  base class for the tree
     ├── ValidationError             DataFrame structure or content is invalid
-    │   ├── StaleDataError          cached file exceeds the staleness threshold
-    │   └── InsufficientDataError   too few rows for the requested operation
+    │   ├── InsufficientDataError   too few rows for the requested operation
+    │   └── DataStalenessError      live bar still behind the last session after refetch
     ├── FetchError                  data source returned unusable data
     └── ConfigError                 YAML config key missing or wrong type
 """
@@ -39,34 +39,6 @@ class ValidationError(TradAlertError):
         super().__init__(f"{prefix}{detail}")
 
 
-class StaleDataError(ValidationError):
-    """
-    Raised when a cache file is older than the configured staleness threshold.
-
-    Attributes
-    ----------
-    hours_old : float
-        How old the cache file is, in hours.
-    threshold : int
-        The staleness threshold that was exceeded, in hours.
-    ticker    : str
-        Ticker whose cache is stale.
-    """
-
-    def __init__(
-            self,
-            hours_old: float,
-            threshold: int,
-            ticker: str = "",
-    ) -> None:
-        self.hours_old = hours_old
-        self.threshold = threshold
-        detail = (
-            f"cache is {hours_old:.1f}h old — exceeds {threshold}h threshold"
-        )
-        super().__init__(detail=detail, ticker=ticker)
-
-
 class InsufficientDataError(ValidationError):
     """
     Raised when a DataFrame has too few rows for the requested operation.
@@ -81,6 +53,32 @@ class InsufficientDataError(ValidationError):
         self.got = got
         self.need = need
         detail = f"need at least {need} rows, got {got}"
+        super().__init__(detail=detail, ticker=ticker)
+
+
+class DataStalenessError(ValidationError):
+    """
+    Ticker's most recent bar is still behind the last completed exchange session
+    AFTER a refetch — the engine would otherwise evaluate a signal blind to one or
+    more sessions (weekend/overnight news). Measures bar *timestamp* in trading
+    days (not cache *file* age), LIVE path only.
+
+    NOTE: the live scanner does NOT raise this — a stale-after-refetch (or gapped)
+    fire is downgraded to ``SignalResult.tier = "NEEDS_REVIEW"``
+    (``main._mark_review``) rather than dropped. Retained for callers that prefer
+    to treat staleness as a hard error.
+
+    Attributes
+    ----------
+    last_bar        : date  Most recent bar present in the data.
+    sessions_behind : int   Completed sessions the data is behind the last close (>= 1).
+    """
+
+    def __init__(self, last_bar, sessions_behind: int, ticker: str = "") -> None:
+        self.last_bar = last_bar
+        self.sessions_behind = sessions_behind
+        detail = (f"data ends {last_bar} — {sessions_behind} completed session(s) behind the "
+                  f"last close (still stale after refetch)")
         super().__init__(detail=detail, ticker=ticker)
 
 

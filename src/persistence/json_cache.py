@@ -34,8 +34,7 @@ logger = logging.getLogger(__name__)
 # ── constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_CACHE_DIR: Path = FUNDAMENTALS_DIR
-# Absolute path so this resolves correctly regardless of the working directory
-# at import time, regardless of the current working directory.
+# Absolute path so it resolves regardless of CWD at import time.
 _SETTINGS_PATH: Path = SETTINGS_YAML
 
 
@@ -169,21 +168,17 @@ def save_section(
     Write failures are logged at WARNING and swallowed. The atomic tmp+replace
     keeps a kill mid-write from corrupting the file.
 
-    Concurrency contract: one writer per ticker file at a time. Guaranteed by the
-    fetch model — the watchlist fetch submits one task per ticker
-    (``ThreadPoolExecutor`` keyed by ticker), so a given ``{TICKER}.json`` is only
-    ever written by its own task; different tickers are different files. This is
-    NOT safe against two writers updating the same file at once (see below).
+    Concurrency contract: one writer per ticker file at a time, guaranteed by the
+    fetch model (one ThreadPoolExecutor task per ticker, keyed by ticker). NOT safe
+    against two writers racing the same file — their read-modify-write cycles can
+    lose each other's update, so no lock is taken.
     """
     path = _cache_path(ticker, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read-modify-write: read the current file so writing this section preserves
-    # the others. This holds across SEQUENTIAL section writes only (e.g. "info"
-    # then "earnings_history" for the same ticker). It is NOT safe against two
-    # overlapping writers to the same file — their RMW cycles can lose each other's
-    # update. The single-writer-per-ticker-file model (see docstring) makes that
-    # not occur, so no lock is taken.
+    # Read-modify-write so writing this section preserves the others. Safe for
+    # sequential section writes to one ticker file; the single-writer model (see
+    # docstring) rules out overlapping writers.
     if path.exists():
         try:
             payload = json.loads(path.read_text())
@@ -204,9 +199,8 @@ def save_section(
     }
 
     try:
-        # Atomic write so a kill mid-write doesn't corrupt the file
-        # (json_cache.load_fresh_section would otherwise quarantine the whole
-        # file, losing all sections, not just the one we were writing).
+        # Atomic tmp+replace: a kill mid-write would otherwise corrupt the file
+        # and quarantine all sections, not just this one.
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         os.replace(tmp, path)

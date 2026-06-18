@@ -1,7 +1,8 @@
 """
-Volume-by-Price (VBP) histogram for exit placement.
+Volume-by-Price (VBP) histogram.
 
-Used ONLY for exit scoring on held longs. Computes a price-level volume
+Used by the entry-gate trigger panel (filter_engine) to check whether a
+high-volume node blocks the path to target. Computes a price-level volume
 profile over a lookback window and identifies high-volume nodes that act
 as support / resistance.
 

@@ -2,17 +2,14 @@
 Smoke test — short path end-to-end through the public
 ``FilterEngine.signal()`` API on synthetic BEAR data.
 
-Distinct from ``test_short_signals.py``: those tests call the private
-trigger methods directly or monkeypatch them to True. Here the *real*
-``_momentum_short_entry`` must fire from a hand-built MACD-hist
-down-cross, driven purely by the ``signals.allow_shorts`` config switch
-— this is the smoke test for the 10.5 CLI plumbing (``--allow-shorts``
-sets exactly this config key).
+Distinct from ``test_short_signals.py`` (which calls/monkeypatches the
+private trigger methods): here the real ``_momentum_short_entry`` must
+fire from a hand-built MACD-hist down-cross, driven purely by the
+``signals.allow_shorts`` switch (the key set by ``--allow-shorts``).
 
-The market regime is still stubbed to BEAR/LOW because regime
-classification needs index data we don't have in-sandbox; everything
-downstream of that (trigger evaluation, short SignalResult
-construction, stop/target geometry) runs for real.
+Regime is stubbed to BEAR/LOW (classification needs index data absent
+in-sandbox); everything downstream — trigger evaluation, short
+SignalResult construction, stop/target geometry — runs for real.
 """
 
 from __future__ import annotations

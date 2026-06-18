@@ -22,16 +22,16 @@ from exceptions import ValidationError
 logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR: Path = PRICES_DIR
-# Absolute path so this resolves correctly regardless of the working directory
-# at import time, regardless of the current working directory.
+# Absolute path so _SETTINGS_PATH resolves regardless of CWD at import time.
 _SETTINGS_PATH: Path = SETTINGS_YAML
 
 
 def load_default_staleness_h() -> int:
-    """Return ``storage.staleness_hours`` from settings.yaml, else 12."""
+    """Return ``storage.staleness_hours`` (int) from settings.yaml, else 12."""
     if _SETTINGS_PATH.exists():
-        settings = yaml.safe_load(_SETTINGS_PATH.read_text(encoding="utf-8"))
-        return settings.get("storage", {}).get("staleness_hours", 12)
+        settings = yaml.safe_load(_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
+        val = (settings.get("storage") or {}).get("staleness_hours", 12)
+        return int(val) if val is not None else 12
     return 12
 
 
@@ -191,7 +191,14 @@ def get_or_fetch(
 # ── internals ─────────────────────────────────────────────────────────────────
 
 def _path(ticker: str, cache_dir: Path | str) -> Path:
-    return Path(cache_dir) / f"{ticker.upper()}.parquet"
+    # Reject path-traversal before the ticker becomes a filename. Legit symbols
+    # (^VIX, BRK.B, CL=F, ATD.TO, TEST.1) contain none of these, so blocking
+    # separators / parent refs is defense in depth on the Telegram chart path
+    # that flows a user-supplied ticker here.
+    t = str(ticker).upper()
+    if (not t) or ("/" in t) or ("\\" in t) or (".." in t) or ("\x00" in t):
+        raise ValidationError(f"invalid ticker for cache path: {ticker!r}")
+    return Path(cache_dir) / f"{t}.parquet"
 
 
 def _trim(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame:

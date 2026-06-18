@@ -104,14 +104,19 @@ def fetch(
 
         except Exception as exc:
             last_exception = exc
-            error_msg = str(exc).lower()
-            # Retry on transient errors (including timezone, rate limit, connection)
-            if any(phrase in error_msg for phrase in
-                   ["timezone", "delisted", "connection", "timeout", "rate limit", "404"]):
-                if attempt < retries:
-                    sleep_s = backoff * (2 ** attempt)
-                    time.sleep(sleep_s)
-                    continue
+            msg = str(exc).lower()
+            # Retry transient failures: yfinance flakiness (timezone/delisted on a
+            # bad session), network, rate-limit, and 5xx — matched broadly because
+            # yfinance surfaces them as free text, not typed errors.
+            transient = (
+                "timezone", "delisted", "connection", "timeout", "timed out",
+                "rate limit", "too many requests", "429",
+                "500", "502", "503", "504", "server error", "temporarily",
+                "remote end closed", "404",
+            )
+            if attempt < retries and any(p in msg for p in transient):
+                time.sleep(backoff * (2 ** attempt))
+                continue
             break
 
     raise FetchError(

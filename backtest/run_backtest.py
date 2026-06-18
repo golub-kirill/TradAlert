@@ -13,8 +13,7 @@ Usage
     python backtest/run_backtest.py --tickers MSFT GOOGL TSLA  # subset
     python backtest/run_backtest.py --walk-forward          # IS/OOS validation
     python backtest/run_backtest.py --mean-rev-tune         # mean-rev sweep
-    python backtest/run_backtest.py --scoring-sweep         # scorer thresholds + weights
-    python backtest/run_backtest.py --workers=8             # parrallel running
+    python backtest/run_backtest.py --workers=8             # parallel
 """
 
 from __future__ import annotations
@@ -33,9 +32,8 @@ for _p in [str(_ROOT), str(_ROOT / "src")]:
         sys.path.insert(0, _p)
 
 # Load secrets.env so DB_* (journaling) and FRED_API_KEY (macro) reach
-# os.environ. This entry point must load it explicitly (as main.py does at
-# import); without it --journal fails with "DB env vars not set" even when
-# config/secrets.env is populated.
+# os.environ. This entry point must load it explicitly; without it journaling
+# fails with "DB env vars not set" even when config/secrets.env is populated.
 try:
     from dotenv import load_dotenv
 
@@ -64,9 +62,9 @@ def main() -> None:
     from backtest.loader import load_universe
     from backtest.report import (
         print_baseline, print_report, save_html, save_csv,
-        print_walk_forward, print_mean_rev_tune,
+        print_walk_forward, print_mean_rev_tune, print_exit_quality,
     )
-    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID, SCORING_GRID
+    from backtest.sweep import SweepEngine, PORTFOLIO_GRID, MEAN_REV_GRID
     from backtest.equity_curve import build_curve, attribution_table
     from backtest.stats_utils import bootstrap_all, kelly_fraction, consecutive_loss_stats, monte_carlo_drawdown
     from backtest.walk_forward import WalkForwardEngine
@@ -114,10 +112,9 @@ def main() -> None:
     uni = load_universe(
         tickers,
         ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
-        earnings_aware=True,  # always load history; earnings_buffer_days sweep
-        # has zero effect when this is False because
-        # prepped[ticker].earnings_history stays [] and
-        # next_earn is always None inside call_engine_slice
+        earnings_aware=True,  # always load history; when False the
+        # earnings_buffer_days sweep is a no-op (earnings_history stays [],
+        # next_earn always None in call_engine_slice)
         cache_dir=_ROOT / "data" / "prices",
         earnings_dir=_ROOT / "data" / "earnings_history",
         start_date=start_date,
@@ -140,8 +137,8 @@ def main() -> None:
 
     exec_cfg = base_cfg.get("execution", {})
     base_port = {
-        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size positions);
-        # risk-adjusted optimum from the 2026-06-04 budget sweep (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
+        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size
+        # positions); risk-adjusted optimum (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
         "earnings_aware": True,  # must match load_universe(earnings_aware=True);
         # run_all() calls _prepare() which respects this flag
         "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
@@ -149,14 +146,12 @@ def main() -> None:
         "close_open_at_eod": True,
     }
 
-    # Chronic-loser penalty (--chronic-penalty). We pass the raw config
-    # *dict* through base_port; each sweep worker constructs its own
-    # TickerHealth so per-run ledgers stay isolated. When the flag is off,
-    # the key is absent and PortfolioConfig.ticker_health stays None.
+    # Chronic-loser penalty (--chronic-penalty). Pass the raw config dict through
+    # base_port; each sweep worker builds its own TickerHealth so per-run ledgers
+    # stay isolated. Flag off → key absent, PortfolioConfig.ticker_health=None.
     if args.chronic_penalty:
         chronic_cfg = base_cfg.get("chronic_loser_penalty", {}) or {}
-        # Force enabled even if YAML default is False (the CLI flag is the
-        # operator's explicit opt-in).
+        # Force enabled even if YAML default is False (the flag is opt-in).
         chronic_cfg = {**chronic_cfg, "enabled": True}
         base_port["chronic_loser_cfg"] = chronic_cfg
         print(f"  ▸ Chronic-loser penalty: ENABLED  "
@@ -189,11 +184,10 @@ def main() -> None:
         print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
               "short entries fire in BEAR regimes)")
 
-    # Time-based max-hold exit (--max-hold-days). Enforces a swing-trading
-    # horizon: a held trade is force-closed at the bar's CLOSE once it has
-    # been held N trading bars. Off by default (key absent in base_port) so
-    # the baseline replays bit-identically. `execution.max_hold_days` in
-    # filters.yaml supplies the default; the CLI flag overrides it.
+    # Time-based max-hold exit (--max-hold-days): force-close a held trade at the
+    # bar's CLOSE once held N trading bars. Off by default (key absent) so the
+    # baseline replays bit-identically. Default from execution.max_hold_days in
+    # filters.yaml; the CLI flag overrides it.
     mh_days = exec_cfg.get("max_hold_days")
     mh_mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
     if args.max_hold_days is not None:
@@ -206,6 +200,35 @@ def main() -> None:
         print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
               f"held trades close at the swing horizon — baseline is OFF)")
 
+    # ATR trailing stop. Off by default → baseline identical.
+    if args.trail_atr_mult is not None:
+        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
+        if args.trail_activate_r is not None:
+            base_port["trail_activate_r"] = float(args.trail_activate_r)
+        print(f"  ▸ ATR trailing stop: ENABLED  (mult={args.trail_atr_mult:g}"
+              + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
+              + "; ratchets the stop in the trade's favor — baseline is OFF)")
+
+    # Breakeven stop. `execution.breakeven_trigger_r` in filters.yaml supplies the
+    # shipped default (ADR-004); the CLI flag overrides it, and 0 disables.
+    be_trigger = exec_cfg.get("breakeven_trigger_r")
+    be_buffer = exec_cfg.get("breakeven_buffer_atr")
+    be_source = "filters.yaml" if be_trigger else None
+    if args.breakeven_trigger_r is not None:
+        be_trigger = args.breakeven_trigger_r
+        be_source = "CLI"
+    if args.breakeven_buffer_atr is not None:
+        be_buffer = args.breakeven_buffer_atr
+    if be_trigger:  # 0/absent → off
+        base_port["breakeven_trigger_r"] = float(be_trigger)
+        if be_buffer:
+            base_port["breakeven_buffer_atr"] = float(be_buffer)
+        print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{float(be_trigger):g}R"
+              + (f", buffer={float(be_buffer):g}×ATR" if be_buffer else "")
+              + f"; moves stop to breakeven, upside uncapped — {be_source})")
+    elif args.breakeven_trigger_r is not None:
+        print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
+
     # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
     if args.max_open_risk is not None:
@@ -213,18 +236,11 @@ def main() -> None:
         print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
               f"(size_mult units; default 5.0)")
 
-    # Scoring is OFF by default (the entry score is non-predictive of R and its
-    # score-ranked budget fill selects weaker trades). --scoring turns it back on;
-    # --scoring-sweep needs it on to tune the scorer.
-    use_scoring = bool(args.scoring or args.scoring_sweep)
-    if use_scoring:
-        print("  ▸ Scoring: ON (min_score_to_alert gate + score-ranked budget fill)")
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
         base_port_cfg=base_port,
         n_workers=max(args.workers, 0),
-        use_scoring=use_scoring,
     )
 
     def _progress(msg: str) -> None:
@@ -241,19 +257,6 @@ def main() -> None:
             print(f"  Saved: {sp}")
         if not args.no_html:
             hp = save_html(report, out_dir / "mean_rev_report.html")
-            print(f"  Saved: {hp}")
-
-    # ── scoring system focused sweep ───────────────────────────────────────
-    elif args.scoring_sweep:
-        print(f"\n  Scoring system sweep: {len(SCORING_GRID)} params\n")
-        report = engine.run_ofat(grid=SCORING_GRID, port_grid=[], progress=_progress)
-        print_report(report)
-        if not args.no_csv:
-            sp, tp = save_csv(report, out_dir)
-            print(f"  Saved: {sp}")
-            print(f"  Saved: {tp}")
-        if not args.no_html:
-            hp = save_html(report, out_dir / "scoring_report.html")
             print(f"  Saved: {hp}")
 
     # ── baseline only ──────────────────────────────────────────────────────
@@ -279,9 +282,15 @@ def main() -> None:
         if args.walk_forward:
             re_tune = not args.wf_no_retune
             _wf_workers = max(args.workers, 0)
+            if re_tune and args.wf_joint > 0:
+                mode_desc = (f"joint re-tune: {args.wf_joint} random "
+                             f"{args.wf_joint_knobs}-knob configs per IS window")
+            elif re_tune:
+                mode_desc = "re-tune sweep per IS window"
+            else:
+                mode_desc = "fixed-config temporal stability"
             print(f"\n  Running walk-forward validation…  "
-                  f"({'re-tune sweep per IS window' if re_tune else 'fixed-config temporal stability'}"
-                  f", workers={_wf_workers})")
+                  f"({mode_desc}, workers={_wf_workers})")
             wfe = WalkForwardEngine(
                 universe=uni,
                 base_cfg=base_cfg,
@@ -291,20 +300,22 @@ def main() -> None:
                 step_months=6,
                 re_tune=re_tune,            # --wf-no-retune flips this off (much faster)
                 n_workers=_wf_workers,      # --workers now reaches the per-window sweep
-                use_scoring=use_scoring,    # default OFF — matches the scoring default
+                joint_samples=args.wf_joint,
+                joint_knobs=args.wf_joint_knobs,
+                joint_seed=args.wf_seed,
             )
             wf_report = wfe.run(progress=_progress)
 
         print_baseline(pt, equity=ec, bootstrap=boots,
                        kelly=kel, attribution=attr, streaks=stks,
                        mc_dd=mc_dd)
+        print_exit_quality(trades)  # exit-logic Phase 0 — where do exits leak
         if wf_report:
             print_walk_forward(wf_report)
 
         # ── SQL journaling (ON by default — policy; --no-journal to skip) ──
         if not args.no_journal:
-            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni,
-                              use_scoring=use_scoring)
+            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni)
         else:
             print("  ▸ Journaling: OFF (--no-journal) — this run leaves no DB record")
 
@@ -409,7 +420,6 @@ def main() -> None:
                 report.baseline, report.baseline.trades,
                 base_cfg, start_date, end_date, uni,
                 notes=f"sweep baseline ({len(report.points)} variants run)",
-                use_scoring=use_scoring,
             )
 
         if not args.no_csv:
@@ -467,16 +477,26 @@ def _parse_args() -> argparse.Namespace:
                         "parameter) for a fast pass.")
     p.add_argument("--mean-rev-tune", action="store_true",
                    help="Focused mean-reversion parameter sweep")
-    p.add_argument("--scoring", action="store_true",
-                   help="Enable the SignalScorer (min_score_to_alert gate + "
-                        "score-ranked budget fill). OFF by default — the entry "
-                        "score is non-predictive of R (corr -0.03) and its ranking "
-                        "selects weaker trades under the open-risk budget.")
-    p.add_argument("--scoring-sweep", action="store_true",
-                   help="SignalScorer thresholds + weights sweep (settings.yaml). "
-                        "Forces --scoring on.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Rolling 3yr IS / 1yr OOS walk-forward validation")
+    p.add_argument("--wf-joint", type=int, default=0, metavar="N",
+                   help="With --walk-forward re-tune: replace the per-window OFAT "
+                        "sweep with N randomized multi-knob configs (seeded, "
+                        "reproducible). OFAT mutates one knob per config and so "
+                        "understates multi-parameter overfitting; joint sampling "
+                        "reproduces a multi-knob selection with an explicit trial "
+                        "count per window. 0 = keep OFAT. NOTE: degradation is "
+                        "only comparable across runs with the same mode and N "
+                        "(OFAT runs ~90 trials/window; pick N accordingly).")
+    p.add_argument("--wf-joint-knobs", type=int, default=3, metavar="K",
+                   help="With --wf-joint: knobs mutated per sampled config "
+                        "(default 3).")
+    p.add_argument("--wf-seed", type=int, default=1337, metavar="S",
+                   help="Seed for the --wf-joint sampler (offset per window; the "
+                        "same seed reproduces the same candidate sets). The seed "
+                        "is printed in the report tag — re-running with several "
+                        "seeds and quoting the prettiest degradation reintroduces "
+                        "the selection bias this mode exists to measure.")
     p.add_argument("--wf-no-retune", action="store_true",
                    help="With --walk-forward: skip the per-window re-tune sweep and "
                         "run the FIXED current config on each IS/OOS window "
@@ -539,6 +559,25 @@ def _parse_args() -> argparse.Namespace:
                         "at the cap; 'if-not-profit' exits at the cap only when "
                         "the position is not in profit (lets winners run to "
                         "target).")
+    p.add_argument("--trail-atr-mult", type=float, default=None, metavar="M",
+                   help="ATR trailing stop: ratchet the stop to "
+                        "highest_high − ATR×M (long; short mirrors), in the trade's "
+                        "favor only. Off by default so the baseline replays "
+                        "identically. R stays off the INITIAL stop — the trail changes "
+                        "only the exit price/reason.")
+    p.add_argument("--trail-activate-r", type=float, default=None, metavar="R",
+                   help="With --trail-atr-mult: only start trailing once the trade has "
+                        "reached this MFE in R (default: trail from entry).")
+    p.add_argument("--breakeven-trigger-r", type=float, default=None, metavar="R",
+                   help="Breakeven stop: once the trade reaches this MFE in R, move "
+                        "the stop to breakeven — protects the downside WITHOUT "
+                        "capping the upside (does not trail further). Default comes "
+                        "from execution.breakeven_trigger_r in filters.yaml "
+                        "(shipped: 1.0, ADR-004); pass 0 to disable. R stays off "
+                        "the INITIAL stop.")
+    p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
+                   help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
+                        "profit past entry (default 0 = exact breakeven).")
     p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
                    help="Aggregate open-risk budget in size_mult units (default "
                         "5.0). Each open position consumes its own size_mult, so a "
@@ -553,6 +592,14 @@ def _parse_args() -> argparse.Namespace:
 def _setup_logging(level: str) -> None:
     logging.basicConfig(level=getattr(logging, level),
                         format="  %(levelname)-8s %(name)s — %(message)s")
+    # Defensive: mask anything resembling an API key (e.g. a leaked FRED key in
+    # a URL) before it reaches the log, same as main.py. The filter lives on the
+    # handlers — not the root logger — so it also catches records propagated up
+    # from child loggers.
+    from core.fetchers.http import mask_api_keys_filter
+    _mask = mask_api_keys_filter()
+    for _h in logging.getLogger().handlers:
+        _h.addFilter(_mask)
     for noisy in ("yfinance", "urllib3", "peewee", "PIL"):
         logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
@@ -565,7 +612,6 @@ def _journal_baseline(
         end_date,
         uni,
         notes: str | None = None,
-        use_scoring: bool | None = None,
 ) -> None:
     """
     Write one baseline run + all its closed trades to MySQL.
@@ -586,9 +632,10 @@ def _journal_baseline(
             "start_date": str(start_date) if start_date else None,
             "end_date": str(end_date) if end_date else None,
             "universe": uni.summary(),
-            # Run provenance: the reconcilers prefer the latest scoring-OFF run as
-            # the expectancy reference (matches the live default) — see #9a.
-            "use_scoring": bool(use_scoring) if use_scoring is not None else None,
+            # backtest.db.reference_run selects the expectancy reference on
+            # `use_scoring is False`. All runs are scoring-OFF now; writing the
+            # constant keeps older scoring-ON rows distinguishable (and skipped).
+            "use_scoring": False,
         }
 
         run_id = save_backtest_run(

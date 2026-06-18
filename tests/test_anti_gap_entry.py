@@ -3,18 +3,12 @@ Tests for the anti-gap entry confirmation gate.
 
 The gate fires inside ``FilterEngine._signal_entry`` after
 ``_evaluate_entry`` returns a long signal: if the trigger bar T closed
-below its own open (red bar), the T+1 entry is blocked. Targets the 11
-fast stop-outs from the 2026-05-27 postmortem (1-3 bars held, -12.9R
-total, all firing on red bars).
+below its own open (red bar), the T+1 entry is blocked — targeting the
+fast stop-outs that fired on red bars.
 
-This test exercises the gate at the engine level by monkey-patching the
-underlying ``_evaluate_entry`` to return a forced long signal, then
-varying only the trigger-bar OHLC. That isolates the gate from the
-rest of the entry pipeline.
-
-Run with::
-
-    pytest tests/test_anti_gap_entry.py -v
+Exercises the gate at the engine level by monkey-patching
+``_evaluate_entry`` to return a forced long signal, then varying only
+the trigger-bar OHLC, isolating the gate from the rest of the pipeline.
 """
 
 from __future__ import annotations
@@ -56,12 +50,11 @@ def _stub_long_signal(eng: FilterEngine, signal_type: str = "momentum") -> None:
 
 
 def _make_df(trigger_open: float, trigger_close: float, *, n_warmup: int = 220) -> pd.DataFrame:
-    """DataFrame long enough to clear ``trend.ma_slow=200`` row gate.
+    """DataFrame long enough to clear the ``trend.ma_slow=200`` row gate.
 
     Trailing two rows are the prev (neutral) and trigger (with given OC).
-    All warmup rows are flat at 100 to keep indicators stable; the test
-    monkey-patches ``_evaluate_entry`` anyway so indicator values don't
-    matter, only OHLC on the last row.
+    Warmup rows are flat at 100; only the last row's OHLC matters since
+    ``_evaluate_entry`` is monkey-patched.
     """
     rows = []
     for _ in range(n_warmup):
@@ -108,7 +101,7 @@ def test_gate_blocks_red_trigger_bar_momentum():
 
 
 def test_gate_blocks_red_trigger_bar_mean_reversion():
-    """Gate applies to mean-reversion too — postmortem flagged both signal types."""
+    """Gate applies to mean-reversion too, not just momentum."""
     eng = _engine(require_trigger_up=True)
     _stub_long_signal(eng, "mean_reversion")
     df = _make_df(trigger_open=102.0, trigger_close=99.0)

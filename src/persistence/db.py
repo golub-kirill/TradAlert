@@ -53,6 +53,8 @@ _INSERT_SCAN_RESULT_SQL = """
                                                     ticker,
                                                     passed,
                                                     signal_kind,
+                                                    tier,
+                                                    review_reason,
                                                     score,
                                                     reason,
                                                     close,
@@ -72,6 +74,8 @@ _INSERT_SCAN_RESULT_SQL = """
                                   %(ticker)s,
                                   %(passed)s,
                                   %(signal_kind)s,
+                                  %(tier)s,
+                                  %(review_reason)s,
                                   %(score)s,
                                   %(reason)s,
                                   %(close)s,
@@ -190,7 +194,15 @@ def save_scan_results(
             inserted, run_id,
         )
     except (MySQLError, ConfigError) as exc:
-        logger.warning("scan_results bulk insert skipped — %s", exc)
+        # Loud, not a warning: a failed insert means the scan fired alerts but
+        # journaled nothing, so reconcile_live is blind to those fires. Fail-open
+        # (return 0, never abort the scan) but make the loss visible to the
+        # operator. Common cause: a missing tier/review_reason column.
+        logger.error(
+            "scan_results bulk insert FAILED for run_id=%d — live journal is "
+            "INCOMPLETE; reconciliation will be blind to this scan's fires: %s",
+            run_id, exc,
+        )
     finally:
         if conn and conn.is_connected():
             conn.close()
@@ -224,7 +236,13 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         "ticker": r.ticker,
         "passed": int(scan.passed),
         "signal_kind": signal_kind,
-        "score": sig.score if sig and sig.score > 0 else None,
+        # live data-freshness tier — NEEDS_REVIEW marks a fire on stale/gapped data so
+        # reconcile_live.py can exclude it; LIVE (the default) for non-fired/errored rows.
+        "tier": sig.tier if sig else "LIVE",
+        "review_reason": (sig.review_reason or None) if sig else None,
+        # scan_results.score column retained for historical rows; nothing
+        # writes a score anymore, so new rows journal NULL.
+        "score": None,
         "reason": scan.reason or None,
         "close": scan.close,
         "stop_price": stop_price,

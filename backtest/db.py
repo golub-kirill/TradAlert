@@ -48,6 +48,23 @@ _INSERT_TRADE_SQL = """
                                                  entry_date, entry_price, initial_stop, initial_target,
                                                  exit_date, exit_price, exit_reason, bars_held, r_multiple,
                                                  effective_r, size_mult, borrow_annual_rate,
+                                                 mfe_r, mae_r,
+                                                 market_regime, ticker_trend, entry_score)
+                    VALUES (%(run_id)s, %(ticker)s, %(signal_type)s, %(direction)s,
+                            %(entry_date)s, %(entry_price)s, %(initial_stop)s, %(initial_target)s,
+                            %(exit_date)s, %(exit_price)s, %(exit_reason)s, %(bars_held)s,
+                            %(r_multiple)s, %(effective_r)s, %(size_mult)s, %(borrow_annual_rate)s,
+                            %(mfe_r)s, %(mae_r)s,
+                            %(market_regime)s, %(ticker_trend)s, %(entry_score)s) \
+                    """
+
+# For tables migrated to effective_r but not yet to the excursion columns.
+_EXCURSION_KEYS = ("mfe_r", "mae_r")
+_INSERT_TRADE_SQL_NO_EXCURSION = """
+                    INSERT INTO backtest_trades (run_id, ticker, signal_type, direction,
+                                                 entry_date, entry_price, initial_stop, initial_target,
+                                                 exit_date, exit_price, exit_reason, bars_held, r_multiple,
+                                                 effective_r, size_mult, borrow_annual_rate,
                                                  market_regime, ticker_trend, entry_score)
                     VALUES (%(run_id)s, %(ticker)s, %(signal_type)s, %(direction)s,
                             %(entry_date)s, %(entry_price)s, %(initial_stop)s, %(initial_target)s,
@@ -144,17 +161,26 @@ def save_backtest_trades(run_id: int, trades: Iterable[Trade]) -> int:
     try:
         conn = _connect()
         cursor = conn.cursor()
-        if _has_effective_r_columns(cursor):
-            cursor.executemany(_INSERT_TRADE_SQL, rows)
-        else:
+        if not _has_column(cursor, "effective_r"):
             # Pre-migration table: drop the new keys and use the legacy column set
             # so journaling still succeeds (run the ALTER in backtest_schema.sql).
             logger.warning("backtest_trades: effective_r columns absent — using legacy "
                            "insert; run the ALTER in data/backtest_schema.sql")
             legacy = [{k: v for k, v in r.items()
-                       if k not in ("effective_r", "size_mult", "borrow_annual_rate")}
+                       if k not in ("effective_r", "size_mult", "borrow_annual_rate")
+                       + _EXCURSION_KEYS}
                       for r in rows]
             cursor.executemany(_INSERT_TRADE_SQL_LEGACY, legacy)
+        elif not _has_column(cursor, "mfe_r"):
+            # effective_r-era table without the excursion columns: journal
+            # without them (run the mfe_r/mae_r ALTER in backtest_schema.sql).
+            logger.warning("backtest_trades: mfe_r/mae_r columns absent — journaling "
+                           "without excursions; run the ALTER in data/backtest_schema.sql")
+            trimmed = [{k: v for k, v in r.items() if k not in _EXCURSION_KEYS}
+                       for r in rows]
+            cursor.executemany(_INSERT_TRADE_SQL_NO_EXCURSION, trimmed)
+        else:
+            cursor.executemany(_INSERT_TRADE_SQL, rows)
         conn.commit()
         inserted = cursor.rowcount
         logger.info("backtest_trades ← inserted %d row(s) for run_id=%d",
@@ -191,23 +217,29 @@ def _trade_to_row(run_id: int, t: Trade) -> dict:
         "effective_r": round(t.effective_r, 4),
         "size_mult": round(t.size_mult, 4),
         "borrow_annual_rate": round(t.borrow_annual_rate, 5),
+        # Exit-quality instrumentation: same initial-stop R denominator as
+        # r_multiple, so ledger analyses (give-back, WR(T) ceilings) no longer
+        # need an engine re-run.
+        "mfe_r": round(t.mfe_r, 4),
+        "mae_r": round(t.mae_r, 4),
         "market_regime": t.market_regime,
         "ticker_trend": t.ticker_trend,
         "entry_score": round(t.entry_score, 1),
     }
 
 
-def _has_effective_r_columns(cursor) -> bool:
-    """True when backtest_trades has the effective_r column (post-migration).
+def _has_column(cursor, column: str) -> bool:
+    """True when backtest_trades has `column` (migration state probe).
 
-    One cheap information_schema lookup per write lets the writer fall back to the
-    legacy column set on older tables instead of failing the whole insert.
+    One cheap information_schema lookup per write lets the writer fall back to an
+    older column set instead of failing the whole insert. `column` is always a
+    code-supplied literal, never user input.
     """
     try:
         cursor.execute(
             "SELECT COUNT(*) FROM information_schema.columns "
             "WHERE table_schema = DATABASE() AND table_name = 'backtest_trades' "
-            "AND column_name = 'effective_r'"
+            "AND column_name = %s", (column,)
         )
         row = cursor.fetchone()
         return bool(row and row[0])
@@ -295,7 +327,10 @@ def expected_hold_range(cap: int = 25, fallback: tuple[int, int] | None = None) 
     (``cap`` = ``execution.max_hold_days``) when the DB is down or no run exists.
     """
     if fallback is None:
-        fallback = (max(1, round(cap * 0.4)), int(cap))
+        # Cap-anchored fallback using the reference run's actual hold ratios
+        # (p25 ≈ 0.12·cap, p75 ≈ 0.56·cap → cap 25 ≈ 3–14d), so a DB-down display
+        # still matches the data-driven range instead of spanning to the cap.
+        fallback = (max(1, round(cap * 0.12)), max(1, round(cap * 0.56)))
     conn = None
     try:
         conn = _connect()

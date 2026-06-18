@@ -3,11 +3,16 @@
 /.idea/
 /data/*
 !/data/*.sql
+# Manual test/study/verification RUN RESULTS live under docs/backtest_out/ (global
+# rule: data/ is for automated program outputs only). Keep their logs/dumps out of
+# git, same as data/.
+/docs/backtest_out/
 __pycache__/
 /logs/
 *.tmp
 *.corrupt
 .opencodeignore
-AGENTS.md
-TODO.md
-validation_program_design.md
+# Only README.md is tracked on GitHub; all other Markdown stays local
+# (TODO, AGENTS, docs/ ADRs + plans + verification notes).
+*.md
+!README.md

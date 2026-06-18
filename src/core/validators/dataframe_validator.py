@@ -3,14 +3,19 @@ OHLCV DataFrame validation and auto-correction.
 
 REQUIRED_COLUMNS is defined here and imported by every other module.
 
-Auto-corrections  (applied with a WARNING log — data is modified)
+Row DROPS  (data is LOST — logged at WARNING so the loss is visible)
+──────────────────────────────────────────────────────────────────
+    • ±inf values                 replaced with NaN, then rows dropped
+    • NaN in any required column   rows dropped
+    • duplicate-timestamp rows     dropped (keep last)
+    • high<low / close>high / close<low   bad row(s) dropped
+
+Representation normalizations  (no value change — logged at DEBUG)
 ──────────────────────────────────────────────────────────────────
     • index not a DatetimeIndex   converted via pd.to_datetime()
     • tz-aware index              tz stripped via tz_localize(None)
-    • index name != 'timestamp'   renamed to 'timestamp'
     • open/high/low/close dtype   cast to float64
-    • ±inf values                 replaced with NaN, then rows dropped
-    • NaN in any required column  rows dropped
+    • volume dtype                cast to int64
 
 Hard failures  (raise ValidationError — data cannot be recovered)
 ──────────────────────────────────────────────────────────────────
@@ -82,6 +87,7 @@ def validate_ohlcv(
     df = _fix_volume_dtype(df, tag)
     df = _check_ohlcv_logic(df, ticker)
     df = df.sort_index()
+    df = _drop_duplicate_dates(df, tag)
 
     if df.empty:
         raise ValidationError(
@@ -164,7 +170,7 @@ def _drop_bad_rows(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     nan_mask = df[REQUIRED_COLUMNS].isna().any(axis=1)
     nan_count = int(nan_mask.sum())
     if nan_count:
-        logger.debug(
+        logger.warning(
             "%sdropping %d row(s) with NaN in required columns",
             tag, nan_count,
         )
@@ -180,11 +186,29 @@ def _fix_volume_dtype(df: pd.DataFrame, tag: str) -> pd.DataFrame:
             "%s'volume' dtype is %s — casting to int64",
             tag, df["volume"].dtype,
         )
-        df["volume"] = (
-            pd.to_numeric(df["volume"], errors="coerce")
-            .round()
-            .astype("int64")
-        )
+        vol = pd.to_numeric(df["volume"], errors="coerce")
+        # Drop rows whose volume can't be parsed — int64 can't hold NaN, so
+        # astype would raise IntCastingNaNError on non-numeric provider values.
+        if vol.isna().any():
+            n = int(vol.isna().sum())
+            logger.warning("%sdropping %d row(s) with non-numeric volume", tag, n)
+            df = df.loc[vol.notna()].copy()
+            vol = vol.loc[df.index]
+        df["volume"] = vol.round().astype("int64")
+    return df
+
+
+def _drop_duplicate_dates(df: pd.DataFrame, tag: str) -> pd.DataFrame:
+    """Drop duplicate-timestamp rows, keeping the last (most recently corrected) value.
+
+    A duplicate bar date is a recoverable provider blip; keeping one preserves index
+    uniqueness so downstream ``.iloc[-1]`` / resampling can't double-count. No-op on
+    clean data. Holiday calendar gaps are not violations and are not flagged here."""
+    dup = df.index.duplicated(keep="last")
+    n = int(dup.sum())
+    if n:
+        logger.warning("%sdropping %d duplicate-timestamp row(s) — keeping last", tag, n)
+        df = df[~dup]
     return df
 
 
@@ -216,7 +240,7 @@ def _check_ohlcv_logic(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         bad = df[mask]
         if not bad.empty:
             sample = bad.index[:3].tolist()
-            logger.debug(
+            logger.warning(
                 "%sOHLCV violation '%s' on %d row(s) — dropping; "
                 "first offenders: %s",
                 tag, description, len(bad), sample,

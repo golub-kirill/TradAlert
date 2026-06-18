@@ -26,10 +26,11 @@ Architecture
 
 Public API
 ──────────
-    SweepEngine.baseline()          -> SweepPoint
-    SweepEngine.run_ofat(grid)      -> SweepReport
+    SweepEngine.baseline()              -> SweepPoint
+    SweepEngine.run_ofat(grid)          -> SweepReport
+    SweepEngine.run_random_joint(n, k)  -> SweepReport  (multi-knob samples)
 
-    PARAM_GRID                      : default OFAT spec (23 parameters)
+    PARAM_GRID                      : default OFAT spec (17 parameters)
     PORTFOLIO_GRID                  : portfolio-level sweep spec
 """
 
@@ -39,6 +40,7 @@ import copy
 import logging
 import multiprocessing
 import os
+import random
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -46,6 +48,7 @@ from datetime import date
 from typing import Any, Callable
 
 import pandas as pd
+import yaml
 
 from backtest.loader import UniverseData
 from backtest.stats import Stats, compute_stats, group_by
@@ -101,10 +104,9 @@ PARAM_GRID: list[ParamSpec] = [
               "Momentum MACD delta gate", "momentum_entry"),
 
     # Momentum exit (fade trigger). NB `signals.momentum.short` is the held-LONG
-    # momentum-fade EXIT (legacy name), not a short entry. The rsi_min floor
-    # below rarely binds — at a MACD zero-cross-down RSI is usually well above
-    # 40 — so sweeping it often shows little/no effect (inert gate, not a wiring
-    # bug). Instrument binding frequency before pruning/widening.
+    # momentum-fade EXIT (legacy name), not a short entry. The rsi_min floor below
+    # rarely binds (at a MACD zero-cross-down RSI is usually well above 40), so
+    # sweeping it often shows little effect — an inert gate, not a wiring bug.
     # See docs/triage_raw_notes_2026-06.md (Note 2a).
     ParamSpec("signals.momentum.short.rsi_min",
               (25, 30, 35, 40),
@@ -151,39 +153,9 @@ PARAM_GRID: list[ParamSpec] = [
               "Earnings buffer days", "events",
               fmt="{:.0f}"),
 
-    # 52-week proximity
-    ParamSpec("scanner.weights.near_52w_high",
-              (0, 1, 2, 3, 4),
-              "Near 52w high weight", "phase1"),
-    ParamSpec("scanner.weights.far_from_52w_low",
-              (0, 1, 2, 3, 4),
-              "Far from 52w low weight", "phase1"),
-
-    # RP percentile
-    ParamSpec("scanner.weights.rp_percentile",
-              (0, 1, 2, 3, 4, 5),
-              "RP percentile weight", "phase2"),
-
-    # MA200 slope
-    ParamSpec("scanner.weights.ma200_slope",
-              (0, 1, 2),
-              "MA200 slope weight", "phase3"),
-
-    # VBP exit
-    ParamSpec("scanner.exit_weights.vbp_resistance",
-              (0, 1, 2, 3),
-              "VBP resistance weight", "phase4"),
-
-    # Global
-    ParamSpec("scanner.min_score_to_alert",
-              (55, 60, 65, 70, 75),
-              "Min score to alert", "global",
-              fmt="{:.0f}"),
-
-    # Behavioral size-multiplier floor. The consumer key is
-    # `size_mult_floor` (settings.yaml + behavioral classifier). The old
-    # `size_multiplier_floor` spelling was a DEAD key — the alias pointed at a
-    # name nobody reads, so this row had no effect. Fixed to `size_mult_floor`.
+    # Behavioral size-multiplier floor. Consumer key is `size_mult_floor`
+    # (settings.yaml + behavioral classifier); the alias must match that spelling
+    # or this row is a no-op.
     ParamSpec("behavioral.size_mult_floor",
               (0.25, 0.35, 0.50, 0.65),
               "Behavioral size floor", "phase8"),
@@ -205,6 +177,18 @@ PORTFOLIO_GRID: list[ParamSpec] = [
     ParamSpec("portfolio.max_drawdown_r",
               (6.0, 8.0, 10.0, 12.0),
               "Max portfolio drawdown (R)", "portfolio",
+              fmt="{:.1f}"),
+
+    # Dynamic exits. These dimensions were searched, so they must sit in the grid
+    # for honest multiple-testing trial counts — the deflated-Sharpe N is only as
+    # truthful as the grid it sweeps.
+    ParamSpec("portfolio.breakeven_trigger_r",
+              (0.5, 0.75, 1.0, 1.25, 1.5),
+              "Breakeven stop trigger (R)", "exits",
+              fmt="{:.2f}"),
+    ParamSpec("portfolio.trail_atr_mult",
+              (3.0, 5.0, 6.0, 8.0),
+              "ATR trail multiplier", "exits",
               fmt="{:.1f}"),
 ]
 
@@ -228,100 +212,6 @@ MEAN_REV_GRID: list[ParamSpec] = [
               (50, 55, 60, 65, 70, 75),
               "MR exit RSI floor", "mean_rev_exit"),
 ]
-
-# ── scoring system focused grid ───────────────────────────────────────────────
-# Used by --scoring-sweep to tune the SignalScorer: entry/exit thresholds
-# and sub-score weights that gate trade selection via min_score_to_alert.
-# All paths map to settings.yaml via _SETTINGS_ALIASES.
-
-SCORING_GRID: list[ParamSpec] = [
-    # ── Entry thresholds (shape the scoring curves) ───────────────────────
-    ParamSpec("scanner.entry_thresholds.rsi_healthy_center",
-              (45, 50, 52.5, 55, 60),
-              "RSI healthy center", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.rsi_healthy_half_w",
-              (8, 10, 12.5, 15, 20),
-              "RSI healthy half-width", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.ma50_slope_scale",
-              (1.0, 1.5, 2.0, 3.0, 4.0),
-              "MA50 slope scale", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.breakout_band_pct",
-              (1.5, 2.0, 3.0, 4.0, 5.0),
-              "Breakout band %", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.volume_spike_ratio",
-              (1.5, 2.0, 2.5, 3.0),
-              "Volume spike ratio", "scoring_entry", fmt="{:.1f}"),
-    ParamSpec("scanner.entry_thresholds.near_52w_high_pct_band",
-              (15, 20, 25, 30, 35),
-              "52w high band %", "scoring_entry", fmt="{:.0f}"),
-    ParamSpec("scanner.entry_thresholds.far_from_52w_low_pct_floor",
-              (20, 25, 30, 35, 40),
-              "52w low floor %", "scoring_entry", fmt="{:.0f}"),
-
-    # ── Entry weights (relative importance of sub-scores) ──────────────────
-    ParamSpec("scanner.weights.trend_up",
-              (1, 2, 3, 4, 5),
-              "Trend-up weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.ma50_slope",
-              (1, 2, 3, 4),
-              "MA50 slope weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.volume_spike",
-              (1, 2, 3, 4),
-              "Volume spike weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.rsi_healthy",
-              (1, 2, 3, 4),
-              "RSI healthy weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.breakout_20d",
-              (1, 2, 3, 4, 5),
-              "Breakout 20d weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.macd_bullish",
-              (1, 2, 3, 4, 5),
-              "MACD bullish weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.relative_strength",
-              (0, 1, 2, 3, 4),
-              "Relative strength weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.weekly_trend",
-              (0, 1, 2, 3, 4),
-              "Weekly trend weight", "scoring_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.weights.bb_zscore",
-              (0, 1, 2, 3, 4),
-              "BB Z-score weight", "scoring_weights", fmt="{:.0f}"),
-
-    # ── Exit thresholds ────────────────────────────────────────────────────
-    ParamSpec("scanner.exit_thresholds.rsi_overbought_floor",
-              (55, 60, 65, 70),
-              "RSI overbought floor", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.rsi_overbought_range",
-              (5, 8, 10, 15, 20),
-              "RSI overbought range", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.multi_bar_decay_max",
-              (2, 3, 4, 5),
-              "Multi-bar decay max", "scoring_exit", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_thresholds.vol_expansion_ratio",
-              (0.3, 0.5, 0.8, 1.0, 1.5),
-              "Vol expansion ratio", "scoring_exit", fmt="{:.1f}"),
-
-    # ─ Exit weights ───────────────────────────────────────────────────────
-    ParamSpec("scanner.exit_weights.regime_flip",
-              (2, 3, 4, 5, 6),
-              "Regime flip weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.multi_bar_decay",
-              (1, 2, 3, 4, 5),
-              "Multi-bar decay weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.rsi_overbought",
-              (1, 2, 3, 4),
-              "RSI overbought weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.macd_cross_down",
-              (1, 2, 3, 4, 5),
-              "MACD cross-down weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.vol_expansion",
-              (1, 2, 3, 4),
-              "Vol expansion weight", "scoring_exit_weights", fmt="{:.0f}"),
-    ParamSpec("scanner.exit_weights.rs_divergence",
-              (0, 1, 2, 3, 4),
-              "RS divergence weight", "scoring_exit_weights", fmt="{:.0f}"),
-]
-
 
 # ── result types ──────────────────────────────────────────────────────────────
 
@@ -347,20 +237,10 @@ class SweepPoint:
     elapsed_s: float = 0.0
     trades: list[Trade] = field(default_factory=list)
 
-    # ── helpers ───────────────────────────────────────────────────────────
-
-    def fmt_value(self, spec: ParamSpec | None = None) -> str:
-        if spec:
-            return spec.fmt.format(self.param_value)
-        try:
-            return f"{self.param_value:.3g}"
-        except (TypeError, ValueError):
-            return str(self.param_value)
-
-    @property
-    def label_with_value(self) -> str:
-        suffix = " * base" if self.is_baseline else ""
-        return f"{self.param_value}{suffix}"
+    # Full {dotted: value} mutation set behind this point. OFAT points carry
+    # their single knob; joint points carry every mutated knob — the
+    # walk-forward OOS leg replays exactly this dict.
+    mutations: dict | None = None
 
 
 @dataclass
@@ -467,6 +347,12 @@ class SweepReport:
                 "initial_target": t.initial_target,
                 "exit_reason": t.exit_reason,
                 "r_multiple": round(t.r_multiple, 4),
+                # size- and borrow-adjusted R (= r_multiple × size_mult − borrow drag).
+                # validate_shorts uses this for the economic Sharpe/Calmar checks so the
+                # short side isn't judged on raw per-unit R.
+                "effective_r": round(t.effective_r, 4),
+                "size_mult": round(t.size_mult, 4),
+                "borrow_annual_rate": round(t.borrow_annual_rate, 5),
                 "bars_held": t.bars_held,
                 "market_regime": t.market_regime,
                 "ticker_trend": t.ticker_trend,
@@ -489,11 +375,6 @@ class SweepEngine:
     base_port_cfg  : Baseline PortfolioConfig keyword arguments.
     n_workers      : Parallel worker processes. 0 = sequential.
                      Defaults to min(cpu_count, 6) for safety.
-    use_scoring    : When True, inject a SignalScorer (min_score_to_alert gate +
-                     score-ranked budget fill). When False (default), no scorer —
-                     entries are taken un-gated and the budget fills alphabetically.
-                     The score is non-predictive of R (corr -0.03), so OFF is the
-                     default; turn ON to study/tune the scoring layer.
     """
 
     def __init__(
@@ -502,11 +383,9 @@ class SweepEngine:
             base_cfg: dict,
             base_port_cfg: dict | None = None,
             n_workers: int | None = None,
-            use_scoring: bool = False,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
-        self._use_scoring = use_scoring
         self._base_port = base_port_cfg or {
             "max_open_risk": 5.0,
             "earnings_aware": False,
@@ -570,16 +449,17 @@ class SweepEngine:
         # ── build job list ────────────────────────────────────────────────
         jobs: list[dict] = []
         for spec in all_specs:
-            is_portfolio = spec.dotted.startswith("portfolio.")
             baseline_val = self._resolve_baseline(spec)
             for val in spec.values:
                 if val == baseline_val:
                     continue  # skip exact baseline -- already have it
                 jobs.append({
-                    "spec": spec,
-                    "val": val,
-                    "is_portfolio": is_portfolio,
-                    "baseline_val": baseline_val,
+                    "param_name": spec.dotted,
+                    "param_value": val,
+                    "param_label": spec.label,
+                    "group": spec.group,
+                    "mutations": {spec.dotted: val},
+                    "progress_text": f"{spec.label} = {spec.fmt.format(val)}",
                 })
 
         logger.info("Sweep: %d jobs, %d workers", len(jobs), self._n_workers)
@@ -590,8 +470,7 @@ class SweepEngine:
         if self._n_workers <= 1:
             for job in jobs:
                 if progress:
-                    spec = job["spec"]
-                    progress(f"{spec.label} = {spec.fmt.format(job['val'])}")
+                    progress(job["progress_text"])
                 pt = self._dispatch_job(job)
                 points.append(pt)
         else:
@@ -608,10 +487,126 @@ class SweepEngine:
             n_workers=self._n_workers,
         )
 
+    def run_random_joint(
+            self,
+            n_samples: int,
+            knobs: int = 3,
+            seed: int = 1337,
+            grid: list[ParamSpec] | None = None,
+            port_grid: list[ParamSpec] | None = None,
+            progress: Callable[[str], None] | None = None,
+    ) -> SweepReport:
+        """
+        Randomized multi-knob sweep: each sample mutates ``knobs`` parameters
+        jointly, drawn from the same grids OFAT uses.
+
+        OFAT moves one knob per run, so selecting its winner cannot reproduce
+        a multi-parameter selection and understates overfitting. Joint samples
+        give walk-forward re-tuning an honest multi-knob search space with an
+        explicit trial count (``n_samples``) for multiple-testing corrections.
+        The sampler is seeded → the same (seed, grids, live baseline values)
+        always yields the same candidate set; per-spec pools exclude the live
+        baseline value, so editing a config default shifts the draws.
+
+        Returns a SweepReport whose points carry ``mutations`` (the full
+        {dotted: value} dict) so the selected combo can be replayed exactly.
+        """
+        rng = random.Random(seed)
+        grid = grid if grid is not None else PARAM_GRID
+        port_grid = port_grid if port_grid is not None else PORTFOLIO_GRID
+        all_specs = list(grid) + list(port_grid)
+
+        t_total = time.time()
+
+        if progress:
+            progress("Running baseline...")
+        base_pt = self.baseline()
+        logger.info("Baseline: %d trades E[R]=%+.3f",
+                    base_pt.stats.trades_count, base_pt.stats.expectancy_r)
+
+        # Candidate pool: per spec, its non-baseline values.
+        values_by_spec: dict[str, tuple[ParamSpec, list]] = {}
+        for spec in all_specs:
+            baseline_val = self._resolve_baseline(spec)
+            vals = [v for v in spec.values if v != baseline_val]
+            if vals:
+                values_by_spec[spec.dotted] = (spec, vals)
+
+        spec_keys = sorted(values_by_spec)  # sorted → seed-stable order
+        k = min(knobs, len(spec_keys))
+        if k == 0 or n_samples <= 0:
+            return SweepReport(
+                baseline=base_pt, points=[],
+                universe_info=self._universe.summary(),
+                elapsed_s=time.time() - t_total, n_workers=self._n_workers,
+            )
+
+        # Sample unique mutation sets (cap attempts in case the space is tiny).
+        jobs: list[dict] = []
+        seen: set[frozenset] = set()
+        attempts = 0
+        while len(jobs) < n_samples and attempts < n_samples * 50:
+            attempts += 1
+            chosen = rng.sample(spec_keys, k)
+            mutations: dict = {}
+            label_parts: list[str] = []
+            for dotted in sorted(chosen):
+                spec, vals = values_by_spec[dotted]
+                val = rng.choice(vals)
+                mutations[dotted] = val
+                label_parts.append(f"{dotted}={spec.fmt.format(val)}")
+            key = frozenset(mutations.items())
+            if key in seen:
+                continue
+            seen.add(key)
+            desc = ", ".join(label_parts)
+            jobs.append({
+                "param_name": "joint",
+                "param_value": desc,
+                "param_label": f"J{len(jobs):03d}",
+                "group": "joint",
+                "mutations": mutations,
+                "progress_text": f"J{len(jobs):03d}: {desc}",
+            })
+        if len(jobs) < n_samples:
+            logger.warning(
+                "Joint sweep: only %d unique combos available (asked for %d)",
+                len(jobs), n_samples)
+
+        logger.info("Joint sweep: %d samples × %d knobs (seed=%d), %d workers",
+                    len(jobs), k, seed, self._n_workers)
+
+        points: list[SweepPoint] = []
+        if self._n_workers <= 1:
+            for job in jobs:
+                if progress:
+                    progress(job["progress_text"])
+                points.append(self._dispatch_job(job))
+        else:
+            points = self._run_parallel(jobs, progress)
+
+        elapsed = time.time() - t_total
+        logger.info("Joint sweep complete in %.1fs -- %d points",
+                    elapsed, len(points))
+
+        return SweepReport(
+            baseline=base_pt,
+            points=points,
+            universe_info=self._universe.summary(),
+            elapsed_s=elapsed,
+            n_workers=self._n_workers,
+        )
+
     # ── private ───────────────────────────────────────────────────────────
 
     def _resolve_baseline(self, spec: ParamSpec) -> Any:
-        """Extract the baseline value for a ParamSpec from the live configs."""
+        """Extract the baseline value for a ParamSpec from the live configs.
+
+        Settings-routed specs (behavioral.* — see ``_SETTINGS_ALIASES``)
+        don't exist in filters.yaml, so they fall back to settings.yaml;
+        without that, their live baseline values would enter the job pool
+        as fake mutations and pad the trial count.
+        """
         if spec.dotted.startswith("portfolio."):
             key = spec.dotted[len("portfolio."):]
             return self._base_port.get(key)
@@ -619,34 +614,60 @@ class SweepEngine:
         node = self._base_cfg
         for p in parts:
             if not isinstance(node, dict) or p not in node:
-                return None
+                node = None
+                break
             node = node[p]
-        return node
+        if node is not None:
+            return node
+        settings_path = _SETTINGS_ALIASES.get(spec.dotted)
+        if settings_path is not None:
+            settings = self._load_settings()
+            if settings is not None:
+                return _get_nested(settings, settings_path)
+        return None
+
+    def _load_settings(self) -> dict | None:
+        """Load and cache config/settings.yaml (baseline resolution only)."""
+        if not hasattr(self, "_settings_cache"):
+            try:
+                import yaml as _yaml
+                path = os.path.join(os.path.dirname(__file__), "..",
+                                    "config", "settings.yaml")
+                with open(path, encoding="utf-8") as f:
+                    self._settings_cache = _yaml.safe_load(f)
+            except Exception as exc:
+                logger.debug("settings.yaml load failed for baseline "
+                             "resolution: %s", exc)
+                self._settings_cache = None
+        return self._settings_cache
+
+    def _materialise(self, mutations: dict) -> tuple[dict, dict]:
+        """Build (cfg, port_params) with every ``{dotted: value}`` mutation applied."""
+        cfg = copy.deepcopy(self._base_cfg)
+        port_params = dict(self._base_port)
+        for dotted, val in mutations.items():
+            if dotted.startswith("portfolio."):
+                port_params[dotted[len("portfolio."):]] = val
+            else:
+                _set_nested(cfg, dotted, val)
+        return cfg, port_params
 
     def _dispatch_job(self, job: dict) -> SweepPoint:
         """Build args and call _run_one for a single job dict."""
-        spec = job["spec"]
-        val = job["val"]
-        is_portfolio = job["is_portfolio"]
+        cfg, port_params = self._materialise(job["mutations"])
 
-        cfg = copy.deepcopy(self._base_cfg)
-        port_params = dict(self._base_port)
-
-        if is_portfolio:
-            key = spec.dotted[len("portfolio."):]
-            port_params[key] = val
-        else:
-            _set_nested(cfg, spec.dotted, val)
-
-        return self._run_one(
+        pt = self._run_one(
             cfg=cfg,
             port_params=port_params,
-            param_name=spec.dotted,
-            param_value=val,
-            param_label=spec.label,
-            group=spec.group,
+            param_name=job["param_name"],
+            param_value=job["param_value"],
+            param_label=job["param_label"],
+            group=job["group"],
             is_baseline=False,
+            mutations=job["mutations"],
         )
+        pt.mutations = dict(job["mutations"])
+        return pt
 
     def _run_parallel(
             self,
@@ -655,8 +676,6 @@ class SweepEngine:
     ) -> list[SweepPoint]:
         """Execute jobs across a ProcessPoolExecutor."""
         packed_universe = _pack_universe(self._universe)
-        base_cfg_copy = copy.deepcopy(self._base_cfg)
-        base_port_copy = dict(self._base_port)
 
         futures = {}
         points: list[SweepPoint] = [None] * len(jobs)  # preserve order
@@ -668,50 +687,52 @@ class SweepEngine:
                 initargs=(src_path, packed_universe),  # universe shipped ONCE per worker
         ) as pool:
             for i, job in enumerate(jobs):
-                spec = job["spec"]
-                val = job["val"]
-                is_portfolio = job["is_portfolio"]
-
-                cfg = copy.deepcopy(base_cfg_copy)
-                port_params = dict(base_port_copy)
-
-                if is_portfolio:
-                    key = spec.dotted[len("portfolio."):]
-                    port_params[key] = val
-                else:
-                    _set_nested(cfg, spec.dotted, val)
+                cfg, port_params = self._materialise(job["mutations"])
 
                 fut = pool.submit(
                     _worker_run,
                     cfg,
                     port_params,
-                    spec.dotted,
-                    val,
-                    spec.label,
-                    spec.group,
+                    job["param_name"],
+                    job["param_value"],
+                    job["param_label"],
+                    job["group"],
+                    job["mutations"],
                 )
                 futures[fut] = i
 
             n_done = 0
+            n_failed = 0
             for fut in as_completed(futures):
                 idx = futures[fut]
                 job = jobs[idx]
-                spec = job["spec"]
                 try:
                     pt = fut.result()
                     points[idx] = pt
                 except Exception as exc:
-                    logger.error("Job failed [%s=%s]: %s",
-                                 spec.label, job["val"], exc)
+                    n_failed += 1
+                    # Log the FULL worker traceback (exc_info), not just str(exc),
+                    # so a BrokenProcessPool / OOM / pickling crash is diagnosable
+                    # rather than silently swallowed into a zeroed point that
+                    # downstream tuning treats as a real 0-trade config.
+                    logger.error("Job failed [%s=%s] — substituting an empty point",
+                                 job["param_label"], job["param_value"], exc_info=exc)
                     points[idx] = _empty_point(
-                        spec.dotted, job["val"], spec.label, spec.group
+                        job["param_name"], job["param_value"],
+                        job["param_label"], job["group"],
                     )
+                if points[idx] is not None:
+                    points[idx].mutations = dict(job["mutations"])
                 n_done += 1
                 if progress:
-                    progress(
-                        f"[{n_done}/{len(jobs)}] "
-                        f"{spec.label} = {spec.fmt.format(job['val'])}"
-                    )
+                    progress(f"[{n_done}/{len(jobs)}] {job['progress_text']}")
+
+            if n_failed:
+                logger.warning(
+                    "Sweep: %d/%d jobs FAILED (tracebacks above) — their points are "
+                    "zeroed; selection logic must exclude them, not treat them as "
+                    "real 0-trade configs.", n_failed, len(jobs),
+                )
 
         return [p for p in points if p is not None]
 
@@ -724,15 +745,17 @@ class SweepEngine:
             param_label: str,
             group: str,
             is_baseline: bool,
+            mutations: dict | None = None,
     ) -> SweepPoint:
-        """Hot-path: construct engine, run backtest, collect stats."""
+        """Hot-path: construct engine + portfolio config, run the backtest,
+        collect stats. Built from module-level helpers shared with the worker
+        stand-in; settings.yaml is cached per process so jobs don't re-read disk."""
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
         from core.filter_engine import FilterEngine
-        from core.scoring import SignalScorer
-        from backtest.portfolio_backtester import PortfolioBacktester, PortfolioConfig
+        from backtest.portfolio_backtester import PortfolioBacktester
 
         run_id = f"{group}/{param_name}={param_value}"
         t0 = time.time()
@@ -743,55 +766,13 @@ class SweepEngine:
             logger.warning("FilterEngine.from_dict failed [%s]: %s", run_id, exc)
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        _PORT_FIELDS = {
-            "max_open_risk", "start_date", "end_date", "earnings_aware",
-            "close_open_at_eod", "entry_slippage_pct", "commission_r",
-            "max_hold_days", "max_hold_mode",
-        }
-        pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
-
-        # Per-worker chronic-loser tracker. The config dict is passed
-        # through base_port; each worker builds a fresh TickerHealth so
-        # sweep points don't share streak state.
-        chronic_cfg = port_params.get("chronic_loser_cfg")
-        if chronic_cfg:
-            try:
-                from core.ticker_health import TickerHealth
-                pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
-            except Exception as exc:
-                logger.warning("TickerHealth.from_config failed [%s]: %s",
-                               run_id, exc)
-
-        try:
-            pcfg = PortfolioConfig(**pcfg_kwargs)
-        except Exception as exc:
-            logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
+        pcfg = _build_port_config(port_params, run_id)
+        if pcfg is None:
             return _empty_point(param_name, param_value, param_label, group, is_baseline)
 
-        # Settings are always loaded (behavioral classification needs them). The
-        # scorer (min_score_to_alert gate + score-ranked budget fill) is only wired
-        # when use_scoring is on — the score is non-predictive of R, so by default
-        # entries are un-gated and the budget fills alphabetically.
-        scorer = None
-        _settings = None
-        try:
-            import yaml as _yaml
-            _settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-            with open(_settings_path, encoding="utf-8") as _f:
-                _settings = _yaml.safe_load(_f)
+        settings = _job_settings(param_name, param_value, is_baseline, mutations)
 
-            # Mutate _settings for sweep params that live in settings.yaml
-            # (scanner weights, exit_weights, min_score_to_alert, behavioral params)
-            if not is_baseline:
-                _apply_settings_mutation(_settings, param_name, param_value)
-
-            if self._use_scoring:
-                scorer = SignalScorer(_settings, cfg)
-        except Exception as exc:
-            logger.debug("settings load / scorer init failed — running without "
-                         "score gate: %s", exc)
-
-        bt = PortfolioBacktester(engine, pcfg, scorer=scorer)
+        bt = PortfolioBacktester(engine, pcfg)
         result = bt.run_prepped(
             self._universe.prepped,
             self._universe.skipped,
@@ -800,48 +781,128 @@ class SweepEngine:
             macro_series=self._universe.macro_series,
             behavioral_data=self._universe.behavioral_data,
             spy_df=self._universe.spy_df,
-            settings=_settings,
+            settings=settings,
+        )
+        return _collect_point(
+            result.trades, run_id, param_name, param_value, param_label,
+            group, is_baseline, len(self._universe.prepped), t0,
         )
 
-        trades = result.trades
-        stats = compute_stats(trades)
-        by_sig = group_by(trades, "signal_type")
-        by_reg = group_by(trades, "market_regime")
-        by_exit = group_by(trades, "exit_reason")
-        by_year = group_by(trades, lambda t: str(t.entry_date.year)
-        if t.entry_date else "<none>")
 
-        elapsed = time.time() - t0
-        logger.info(
-            "  %-40s  %3d trades  E[R]=%+.3f  WR=%.0f%%  %.1fs",
-            run_id, stats.trades_count, stats.expectancy_r,
-            stats.win_rate * 100, elapsed,
-        )
+# ── sweep-job helpers (module-level so the worker stand-in reuses them) ───────
 
-        return SweepPoint(
-            run_id=run_id,
-            param_name=param_name,
-            param_value=param_value,
-            param_label=param_label,
-            group=group,
-            is_baseline=is_baseline,
-            stats=stats,
-            by_signal=by_sig,
-            by_regime=by_reg,
-            by_exit=by_exit,
-            by_year=by_year,
-            n_tickers=len(self._universe.prepped),
-            elapsed_s=elapsed,
-            trades=trades,
-        )
+_PORT_FIELDS = frozenset({
+    "max_open_risk", "start_date", "end_date", "earnings_aware",
+    "close_open_at_eod", "entry_slippage_pct", "commission_r",
+    "max_hold_days", "max_hold_mode",
+    "trail_atr_mult", "trail_activate_r",
+    "breakeven_trigger_r", "breakeven_buffer_atr",
+})
+
+# config/settings.yaml is read ONCE per process: each job deep-copies this base and
+# applies its own mutations. _UNLOADED distinguishes "not yet read" from a cached
+# read that yielded None (missing/unreadable file → fail-open).
+_SETTINGS_UNLOADED = object()
+_BASE_SETTINGS = _SETTINGS_UNLOADED
+
+
+def _base_settings():
+    """Parsed config/settings.yaml, cached per process. None when unreadable."""
+    global _BASE_SETTINGS
+    if _BASE_SETTINGS is _SETTINGS_UNLOADED:
+        path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
+        try:
+            with open(path, encoding="utf-8") as f:
+                _BASE_SETTINGS = yaml.safe_load(f)
+        except Exception as exc:
+            logger.debug("settings load failed — running without settings "
+                         "context: %s", exc)
+            _BASE_SETTINGS = None
+    return _BASE_SETTINGS
+
+
+def _job_settings(param_name: str, param_value: Any, is_baseline: bool,
+                  mutations: dict | None):
+    """Per-job settings: a deep copy of the cached base with this job's
+    settings-resident mutations applied (behavioral params). None when the base
+    is unreadable; baseline jobs get the base unmutated.
+
+    When a ``mutations`` dict is given EVERY entry is routed — ``param_name``
+    alone can't carry multi-knob jobs ("joint") or the walk-forward OOS replay
+    ("wf_tuned"), whose settings-resident knobs would otherwise be silent no-ops.
+    """
+    base = _base_settings()
+    if base is None:
+        return None
+    settings = copy.deepcopy(base)
+    if not is_baseline:
+        try:
+            if mutations:
+                for m_name, m_val in mutations.items():
+                    _apply_settings_mutation(settings, m_name, m_val)
+            else:
+                _apply_settings_mutation(settings, param_name, param_value)
+        except Exception as exc:
+            logger.debug("settings mutation failed [%s=%s]: %s",
+                         param_name, param_value, exc)
+    return settings
+
+
+def _build_port_config(port_params: dict, run_id: str):
+    """Build the PortfolioConfig for one sweep job: filter port_params to the
+    allowlisted fields and attach a fresh per-job chronic-loser tracker (so
+    sweep points don't share streak state). Returns None on construction failure."""
+    from backtest.portfolio_backtester import PortfolioConfig
+    pcfg_kwargs = {k: v for k, v in port_params.items() if k in _PORT_FIELDS}
+    chronic_cfg = port_params.get("chronic_loser_cfg")
+    if chronic_cfg:
+        try:
+            from core.ticker_health import TickerHealth
+            pcfg_kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
+        except Exception as exc:
+            logger.warning("TickerHealth.from_config failed [%s]: %s", run_id, exc)
+    try:
+        return PortfolioConfig(**pcfg_kwargs)
+    except Exception as exc:
+        logger.warning("PortfolioConfig failed [%s]: %s", run_id, exc)
+        return None
+
+
+def _collect_point(trades, run_id, param_name, param_value, param_label,
+                   group, is_baseline, n_tickers, t0) -> SweepPoint:
+    """Compute stats + group breakdowns and assemble the SweepPoint for one job."""
+    stats = compute_stats(trades)
+    elapsed = time.time() - t0
+    logger.info(
+        "  %-40s  %3d trades  E[R]=%+.3f  WR=%.0f%%  %.1fs",
+        run_id, stats.trades_count, stats.expectancy_r,
+        stats.win_rate * 100, elapsed,
+    )
+    return SweepPoint(
+        run_id=run_id,
+        param_name=param_name,
+        param_value=param_value,
+        param_label=param_label,
+        group=group,
+        is_baseline=is_baseline,
+        stats=stats,
+        by_signal=group_by(trades, "signal_type"),
+        by_regime=group_by(trades, "market_regime"),
+        by_exit=group_by(trades, "exit_reason"),
+        by_year=group_by(trades, lambda t: str(t.entry_date.year)
+                         if t.entry_date else "<none>"),
+        n_tickers=n_tickers,
+        elapsed_s=elapsed,
+        trades=trades,
+    )
 
 
 # ── worker helpers (module-level so ProcessPoolExecutor can pickle them) ──────
 
-# Per-worker universe cache. The 75 MB UniverseData is shipped to each worker
-# process ONCE via the pool initializer (initargs) and unpickled here, instead of
-# being passed (and re-deserialised) on every job — which made the IPC, not the
-# backtest, the bottleneck and defeated --workers scaling. See _run_parallel.
+# Per-worker universe cache. UniverseData is shipped to each worker process ONCE
+# via the pool initializer (initargs) and unpickled here, rather than re-passed and
+# re-deserialised on every job — which would make IPC the bottleneck and defeat
+# --workers scaling. See _run_parallel.
 _WORKER_UNIVERSE = None
 
 
@@ -868,6 +929,7 @@ def _worker_run(
         param_value: Any,
         param_label: str,
         group: str,
+        mutations: dict | None = None,
 ) -> SweepPoint:
     """
     Worker entry-point for ProcessPoolExecutor.
@@ -888,6 +950,7 @@ def _worker_run(
         param_label=param_label,
         group=group,
         is_baseline=False,
+        mutations=mutations,
     )
 
 
@@ -945,47 +1008,10 @@ def _get_nested(d: dict, dotted: str, default: Any = None) -> Any:
 
 
 # Mapping from filters.yaml dotted paths → settings.yaml dotted paths.
-# These params live in settings.yaml (read by SignalScorer) but were
-# historically specified as filters.yaml paths in the sweep grid.
+# These params live in settings.yaml but are specified as filters.yaml-style
+# dotted paths in the sweep grid.
 _SETTINGS_ALIASES: dict[str, str] = {
-    # Original PARAM_GRID aliases
-    "scanner.weights.near_52w_high": "scanner.weights.near_52w_high",
-    "scanner.weights.far_from_52w_low": "scanner.weights.far_from_52w_low",
-    "scanner.weights.rp_percentile": "scanner.weights.rp_percentile",
-    "scanner.weights.ma200_slope": "scanner.weights.ma200_slope",
-    "scanner.exit_weights.vbp_resistance": "scanner.exit_weights.vbp_resistance",
-    "scanner.min_score_to_alert": "scanner.min_score_to_alert",
     "behavioral.size_mult_floor": "behavioral.size_mult_floor",
-    # SCORING_GRID — entry thresholds
-    "scanner.entry_thresholds.rsi_healthy_center": "scanner.entry_thresholds.rsi_healthy_center",
-    "scanner.entry_thresholds.rsi_healthy_half_w": "scanner.entry_thresholds.rsi_healthy_half_w",
-    "scanner.entry_thresholds.ma50_slope_scale": "scanner.entry_thresholds.ma50_slope_scale",
-    "scanner.entry_thresholds.breakout_band_pct": "scanner.entry_thresholds.breakout_band_pct",
-    "scanner.entry_thresholds.volume_spike_ratio": "scanner.entry_thresholds.volume_spike_ratio",
-    "scanner.entry_thresholds.near_52w_high_pct_band": "scanner.entry_thresholds.near_52w_high_pct_band",
-    "scanner.entry_thresholds.far_from_52w_low_pct_floor": "scanner.entry_thresholds.far_from_52w_low_pct_floor",
-    # SCORING_GRID — entry weights
-    "scanner.weights.trend_up": "scanner.weights.trend_up",
-    "scanner.weights.ma50_slope": "scanner.weights.ma50_slope",
-    "scanner.weights.volume_spike": "scanner.weights.volume_spike",
-    "scanner.weights.rsi_healthy": "scanner.weights.rsi_healthy",
-    "scanner.weights.breakout_20d": "scanner.weights.breakout_20d",
-    "scanner.weights.macd_bullish": "scanner.weights.macd_bullish",
-    "scanner.weights.relative_strength": "scanner.weights.relative_strength",
-    "scanner.weights.weekly_trend": "scanner.weights.weekly_trend",
-    "scanner.weights.bb_zscore": "scanner.weights.bb_zscore",
-    # SCORING_GRID — exit thresholds
-    "scanner.exit_thresholds.rsi_overbought_floor": "scanner.exit_thresholds.rsi_overbought_floor",
-    "scanner.exit_thresholds.rsi_overbought_range": "scanner.exit_thresholds.rsi_overbought_range",
-    "scanner.exit_thresholds.multi_bar_decay_max": "scanner.exit_thresholds.multi_bar_decay_max",
-    "scanner.exit_thresholds.vol_expansion_ratio": "scanner.exit_thresholds.vol_expansion_ratio",
-    # SCORING_GRID — exit weights
-    "scanner.exit_weights.regime_flip": "scanner.exit_weights.regime_flip",
-    "scanner.exit_weights.multi_bar_decay": "scanner.exit_weights.multi_bar_decay",
-    "scanner.exit_weights.rsi_overbought": "scanner.exit_weights.rsi_overbought",
-    "scanner.exit_weights.macd_cross_down": "scanner.exit_weights.macd_cross_down",
-    "scanner.exit_weights.vol_expansion": "scanner.exit_weights.vol_expansion",
-    "scanner.exit_weights.rs_divergence": "scanner.exit_weights.rs_divergence",
 }
 
 
@@ -993,9 +1019,9 @@ def _apply_settings_mutation(settings: dict, param_name: str, value: Any) -> Non
     """
     Mutate the settings.yaml dict for sweep params that live there.
 
-    The SignalScorer reads weights, min_score_to_alert, and behavioral params
-    from settings.yaml — NOT from filters.yaml. This function bridges the gap
-    so that OFAT sweep params correctly affect scoring behavior.
+    The behavioral classifier reads its params from settings.yaml — NOT from
+    filters.yaml. This function bridges the gap so that settings-resident
+    sweep params correctly reach the backtest.
     """
     settings_path = _SETTINGS_ALIASES.get(param_name)
     if settings_path is not None:

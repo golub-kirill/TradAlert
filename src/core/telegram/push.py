@@ -13,6 +13,7 @@ the formatters — import without PTB present.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 from datetime import date
@@ -64,15 +65,45 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None) -> None:
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
 
+def send_notice(text: str, settings) -> None:
+    """Send a one-off plain operator notice to the owner chat. Fail-open — never
+    raises into the caller (used e.g. to flag a DB outage during a scan). No-op
+    when telegram is disabled or the token/chat are unset.
+    """
+    cfg = load_telegram_config(settings)
+    if not cfg.enabled:
+        return
+    token = os.environ.get("TG_BOT_TOKEN")
+    chat = os.environ.get("TG_CHAT_ID")
+    if not token or not chat:
+        logger.warning("[telegram] notice skipped — TG_BOT_TOKEN/TG_CHAT_ID missing")
+        return
+    try:
+        chat_id = int(chat)
+    except (TypeError, ValueError):
+        logger.warning("[telegram] notice skipped — TG_CHAT_ID not numeric")
+        return
+    try:
+        asyncio.run(_send_notice(token, chat_id, cfg.parse_mode, text))
+    except Exception as exc:  # alerting must never break the scan
+        logger.warning("[telegram] notice failed (scan unaffected) — %s", exc)
+
+
+async def _send_notice(token, chat_id, parse_mode, text):
+    from core.telegram.bot import TelegramNotifier
+    async with TelegramNotifier(token, chat_id, parse_mode=parse_mode) as nf:
+        await nf.send_message(text)
+
+
 # ── selection (pure) ─────────────────────────────────────────────────────────────
 
 def _select(results, cfg: TelegramConfig):
-    """Return [(TickerResult, kind)] for fired, non-watch-only, enabled, unmuted signals."""
+    """Return [(TickerResult, kind)] for fired, enabled, unmuted signals."""
     out = []
     muted = set(cfg.mute)
     for tr in results:
         s = getattr(tr, "signal", None)
-        if s is None or not s.passed or getattr(s, "watch_only", False):
+        if s is None or not s.passed:
             continue
         kind_pair = _DIRECTION_KIND.get(s.direction)
         if kind_pair is None:
@@ -114,13 +145,31 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
                 await nf.send_message(text, reply_markup=markup)
 
 
+# Telegram caps a photo CAPTION at 1024 chars (a plain message allows 4096).
+_CAPTION_LIMIT = 1024
+
+
 def _render(tr, kind, risk_on, n_open):
+    chart = _latest_chart(tr.ticker)
     if kind in ("long_entry", "short_entry"):
         text = fmt.format_entry(tr, risk_on=risk_on, n_open=n_open,
                                 checklist=_checklist(tr.signal) or None)
+        # Data-freshness tier: a stale-after-refetch or gapped entry is flagged, not sent as
+        # a clean LIVE alert (main.py sets it; default "LIVE" → unchanged for normal fires).
+        if getattr(tr.signal, "tier", "LIVE") == "NEEDS_REVIEW":
+            reason = html.escape(getattr(tr.signal, "review_reason", "") or "data freshness")
+            text = f"⚠ <b>NEEDS REVIEW</b> — {reason}\n{text}"
     else:
         text = fmt.format_exit(tr)
-    return text, _latest_chart(tr.ticker)
+    # If the (banner + body) text would overflow a photo caption, drop the chart
+    # so the alert goes out as a full message instead of being truncated mid-HTML
+    # — a too-long caption is rejected by Telegram and the alert would be lost.
+    if chart is not None and len(text) > _CAPTION_LIMIT:
+        logger.warning(
+            "[telegram] %s alert text %d chars > %d caption limit — sending "
+            "without chart to avoid truncation.", tr.ticker, len(text), _CAPTION_LIMIT)
+        chart = None
+    return text, chart
 
 
 # Telegram factor line: a per-group summary of the engine's entry-gate checks.

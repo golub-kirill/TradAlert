@@ -125,14 +125,43 @@ def print_equity_curve(ec):
 def print_bootstrap(bootstrap, bankroll=50_000):
     sep = "─" * 60
     print()
-    print(_c("  Bootstrap Confidence Intervals  (95%, n=10 000 resamples)", _BOLD + _CYAN))
+    n_eff = max((r.n_samples for r in bootstrap.values() if r is not None), default=0)
+    print(_c(f"  Bootstrap Confidence Intervals  (95%, n={n_eff:,} resamples)", _BOLD + _CYAN))
     print(f"  {sep}")
     for m in ["expectancy", "win_rate", "total_r", "profit_factor"]:
         r = bootstrap.get(m)
         if r is None: continue
-        sig = _c(" ✓", _GREEN) if r.significant else _c(" —", _RED)
+        # CI-excludes-zero is only meaningful for signed metrics; win_rate and
+        # profit_factor are always > 0, so a "significant" mark there is vacuous.
+        if m in ("expectancy", "total_r"):
+            sig = _c(" ✓", _GREEN) if r.significant else _c(" —", _RED)
+        else:
+            sig = "  "
         print(f"  {m:<16s} {r.estimate:>+8.3f}  "
               f"CI [{r.lower:>+7.3f} … {r.upper:>+7.3f}]  SE={r.std_error:.3f}{sig}")
+
+
+def print_exit_quality(trades):
+    """Exit-reason × MFE/MAE table — the core 'where do exits leak' read (Phase 0).
+
+    capture = avg_r / avg_mfe (fraction of the peak favorable move realized);
+    gaveback = share of trades that hit MFE >= 1R but closed below half their peak.
+    """
+    from backtest.stats import exit_quality_by_reason
+    rows = exit_quality_by_reason(trades)
+    if not rows:
+        return
+    print()
+    print(_c("  Exit quality by reason  (R; capture = avg_r / avg_mfe)", _BOLD + _CYAN))
+    print("  " + "─" * 74)
+    print(f"  {'reason':<12} {'n':>5} {'avg_r':>8} {'avg_mfe':>9} {'avg_mae':>9} "
+          f"{'capture':>9} {'gaveback':>9}")
+    print("  " + "─" * 74)
+    for r in rows:
+        cap = f"{r.capture:.0%}" if r.capture == r.capture else "n/a"
+        print(f"  {r.exit_reason:<12} {r.n:>5} {r.avg_r:>+8.3f} {r.avg_mfe_r:>+9.3f} "
+              f"{r.avg_mae_r:>+9.3f} {cap:>9} {r.pct_gave_back:>8.0%}")
+    print("  " + "─" * 74)
 
 
 def print_kelly(kelly, streaks=None, bankroll=50_000, fixed_risk_pct=0.01):
@@ -495,10 +524,9 @@ def _build_html(report, equity=None, wf_report=None,
         eq_dates = [str(d.date()) for d in equity.equity.index]
         eq_vals = [round(float(v), 4) for v in equity.equity.values]
         dd_vals = [round(float(v), 4) for v in equity.drawdown.values]
-        # Backfill zero-trade months so silent regimes (e.g. the
-        # Mar-May 2025 tariff-scare gap from the 2026-05-27 postmortem)
-        # show up explicitly in the bar chart. Renders zero months grey
-        # so they're distinguishable from real flat months.
+        # Backfill zero-trade months so silent regimes (e.g. the Mar-May 2025
+        # tariff-scare gap) show up explicitly in the bar chart, rendered grey
+        # to stay distinguishable from real flat months.
         _mo_keys = list(equity.monthly.index)
         if _mo_keys:
             _first = _mo_keys[0]
@@ -528,7 +556,10 @@ def _build_html(report, equity=None, wf_report=None,
 
         mo_colors = [_mo_color(k, v) for k, v in zip(mo_labels, mo_vals)]
         sharpe_s = f"{equity.sharpe:.2f}" if equity.sharpe == equity.sharpe else "N/A"
-        sortino_s = f"{equity.sortino:.2f}" if equity.sortino == equity.sortino else "N/A"
+        sortino_s = (
+            "∞" if equity.sortino == float("inf")
+            else (f"{equity.sortino:.2f}" if equity.sortino == equity.sortino else "N/A")
+        )
         calmar_s = f"{equity.calmar:.2f}" if equity.calmar != float("inf") and equity.calmar == equity.calmar else "inf"
         bm, bv = equity.best_month
         wm, wv = equity.worst_month
@@ -539,7 +570,13 @@ def _build_html(report, equity=None, wf_report=None,
         mo_vals_js = str(mo_vals)
         mo_colors_js = str(mo_colors)
         sh_cls = "green" if equity.sharpe > 1 else ("yellow" if equity.sharpe > 0 else "red")
-        so_cls = "green" if equity.sortino > 1.5 else "yellow"
+        # inf Sortino (no downside months) is degenerate, not a validated pass —
+        # don't auto-green it via the numeric >1.5 path.
+        so_cls = "green" if (
+            equity.sortino == equity.sortino
+            and equity.sortino != float("inf")
+            and equity.sortino > 1.5
+        ) else "yellow"
         ca_cls = "green" if equity.calmar > 0.5 else "yellow"
         pm_cls = "green" if equity.pct_positive_months >= 0.55 else "yellow"
         ar_cls = "green" if equity.annual_r > 0 else "red"
@@ -575,17 +612,21 @@ def _build_html(report, equity=None, wf_report=None,
     bootstrap_html = ""
     if bootstrap:
         rows = ""
+        _signed = ("expectancy", "total_r")  # CI-excludes-0 only meaningful here
         for m, r in bootstrap.items():
-            cls = "win" if r.significant and r.estimate > 0 else (
-                "lose" if r.significant and r.estimate < 0 else "")
+            meaningful = m in _signed
+            cls = ("win" if meaningful and r.significant and r.estimate > 0 else
+                   "lose" if meaningful and r.significant and r.estimate < 0 else "")
+            sig_cell = ("✓ significant" if r.significant else "—") if meaningful else "n/a"
             rows += f"""<tr class="{cls}">
               <td>{_esc(m)}</td>
               <td class="num">{r.estimate:+.4f}</td><td class="num">{r.lower:+.4f}</td>
               <td class="num">{r.upper:+.4f}</td><td class="num">{r.std_error:.4f}</td>
-              <td>{"✓ significant" if r.significant else "—"}</td>
+              <td>{sig_cell}</td>
             </tr>"""
+        n_eff = max((r.n_samples for r in bootstrap.values() if r is not None), default=0)
         bootstrap_html = f"""
-<h2>Bootstrap CIs <span class="group-tag">95% · 10 000 resamples</span></h2>
+<h2>Bootstrap CIs <span class="group-tag">95% · {n_eff:,} resamples</span></h2>
 <div class="top5-wrapper"><table>
   <thead><tr><th>Metric</th><th>Estimate</th><th>CI Lower</th><th>CI Upper</th>
   <th>SE</th><th>Significant</th></tr></thead>
@@ -593,9 +634,8 @@ def _build_html(report, equity=None, wf_report=None,
 </table></div>"""
 
     # ── Position Sizing & Kelly ───────────────────────────────────────────
-    # Operator-facing layout: 1% fixed-risk recommendation leads; Kelly is
-    # demoted to a labelled reference table. Mirrors print_kelly() so the
-    # HTML report cannot disagree with the terminal report.
+    # 1% fixed-risk recommendation leads; Kelly is a labelled reference table.
+    # Mirrors print_kelly() so HTML and terminal reports cannot disagree.
     kelly_html = ""
     if kelly:
         risk_dollars = bankroll * fixed_risk_pct
@@ -698,9 +738,8 @@ def _build_html(report, equity=None, wf_report=None,
         )
 
     # ── Stop-out latency histogram ────────────────────────────────────────
-    # Postmortem 2026-05-27 found 11 of 36 stops failed within 3 bars
-    # (-12.9R, 26 % of stop damage). Surfacing the distribution here makes
-    # bad-entry latency visible at a glance for future runs.
+    # Surfaces the bars-held distribution of stop-outs so early-bar stop damage
+    # (bad-entry latency) is visible at a glance.
     stop_latency_html = ""
     try:
         _stop_trades = [

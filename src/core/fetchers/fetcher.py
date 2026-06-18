@@ -20,7 +20,7 @@ import yaml
 
 from core.fetchers import yf_fetchOne
 from core.fetchers.yf_fetchOne import DEFAULT_INTERVAL, DEFAULT_LOOKBACK
-from core.paths import CONFIG_DIR, WATCHLIST_YAML, SETTINGS_YAML
+from core.paths import WATCHLIST_YAML, SETTINGS_YAML
 from exceptions import ConfigError
 from persistence.cache import DEFAULT_STALENESS_H, get_or_fetch
 
@@ -38,7 +38,6 @@ except ImportError:
     logger.warning("curl_cffi not installed — some TSX tickers may fail with 'no timezone'")
 
 # ── config paths ──────────────────────────────────────────────────────────────
-_CONFIG_DIR = CONFIG_DIR
 _WATCHLIST_PATH = WATCHLIST_YAML
 _SETTINGS_PATH = SETTINGS_YAML
 

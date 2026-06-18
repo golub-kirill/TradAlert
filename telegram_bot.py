@@ -253,11 +253,11 @@ def _basic_metrics(pos, df) -> dict:
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)
         m["days_held"] = bars_held
-        exec_cfg = _get_engine()._cfg.get("execution", {})
-        mh = exec_cfg.get("max_hold_days")
+        exec_cfg = _get_engine().cfg.execution
+        mh = exec_cfg.max_hold_days
         if mh is not None:
             m["max_hold"] = int(mh)
-            m["mode"] = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+            m["mode"] = str(exec_cfg.max_hold_mode).replace("-", "_")
             m["time_stop_left"] = int(mh) - bars_held
     except Exception as exc:
         logger.debug("[metrics] time-stop calc failed for %s — %s", pos.ticker, exc)
@@ -270,7 +270,7 @@ def _engine_verdict(pos, df) -> str:
 
     engine = _get_engine()
     market_dfs, vix_df = _load_market_context()
-    regime = engine.market_regime(market_dfs, vix_df)
+    regime = engine.market_regime(market_dfs, vix_df, empty_vote_trend="CHOP")
     sig = engine.signal(
         pos.ticker, df, market_dfs=market_dfs, vix_df=vix_df,
         held_long=(pos.side == "long"), held_short=(pos.side == "short"),
@@ -278,10 +278,10 @@ def _engine_verdict(pos, df) -> str:
     )
     if sig.passed and sig.direction in ("exit_long", "exit_short"):
         return f"EXIT now — {sig.reason or sig.signal_type}"
-    exec_cfg = engine._cfg.get("execution", {})
-    mh = exec_cfg.get("max_hold_days")
+    exec_cfg = engine.cfg.execution
+    mh = exec_cfg.max_hold_days
     if mh is not None:
-        mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+        mode = str(exec_cfg.max_hold_mode).replace("-", "_")
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)
         if max_hold_exit_due(
@@ -301,10 +301,20 @@ def _build_chart(ticker: str):
         return None
     engine = _get_engine()
     market_dfs, vix_df = _load_market_context()
-    regime = engine.market_regime(market_dfs, vix_df)
+    regime = engine.market_regime(market_dfs, vix_df, empty_vote_trend="CHOP")
     sig = engine.signal(
         ticker, df, market_dfs=market_dfs, vix_df=vix_df,
         regime=regime, with_checks=True)
+    # Populate the data-driven expected-hold range (p25–p75 of real bars_held) so a
+    # regenerated chart shows the SAME horizon as the entry alert/caption — not the
+    # static SignalResult default.
+    if sig.passed and sig.direction in ("long", "short"):
+        try:
+            from backtest.db import expected_hold_range
+            sig.expected_hold_days = expected_hold_range(
+                cap=int(engine.cfg.execution.max_hold_days or 25))
+        except Exception:
+            pass  # keep the SignalResult default
     return chart(ticker, df, signal=(sig if sig.passed else None),
                  output_dir=SCREENSHOTS_DIR, regime=regime)
 

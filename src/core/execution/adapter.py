@@ -2,12 +2,12 @@
 Execution-adapter seam between command handlers (Telegram bot / CLI) and the
 sink that records a trade.
 
-Today the only sink is the local `positions` journal (`JournalAdapter`, pure DB).
-A future broker integration implements the same `ExecutionAdapter` surface and
-slots in via `get_adapter()` WITHOUT touching any handler. The "never
-auto-execute" invariant is structural: no scan/signal code path calls an adapter
-— only an explicit human command/button does, and `get_adapter` returns the
-journal-only adapter unless a broker is deliberately, separately opted in.
+The only sink is the local `positions` journal (`JournalAdapter`, pure DB). A
+broker integration would implement the same `ExecutionAdapter` surface and slot
+in via `get_adapter()` without touching any handler. The "never auto-execute"
+invariant is structural: no scan/signal path calls an adapter — only an explicit
+human command/button does, and `get_adapter` returns the journal-only adapter
+unless a broker is deliberately opted in.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class JournalAdapter:
 def get_adapter(settings: dict | None = None) -> ExecutionAdapter:
     """Return the active execution adapter.
 
-    Returns the journal-only adapter unconditionally today. A broker adapter is
+    Returns the journal-only adapter unconditionally. A broker adapter is
     intentionally NOT reachable from config alone — wiring one is a separate,
     deliberate change, keeping the no-auto-execution guarantee in one place.
     """
