@@ -170,5 +170,15 @@ def test_naaim_accepts_in_range_scrape(monkeypatch):
     assert value == 87.5
 
 
+def test_naaim_ignores_unlabelled_percentage(monkeypatch):
+    # A bare "NN%" with no Exposure/NAAIM label must NOT be scraped as the value
+    # (the loose fallback pattern was removed) — a failed parse returns None.
+    from core.fetchers.behavioral import naaim
+    monkeypatch.setattr(naaim, "request_with_retry",
+                        lambda *a, **k: _Resp("Advisors are 50% bullish this week."))
+    value, _date = naaim._fetch_latest_naaim()
+    assert value is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

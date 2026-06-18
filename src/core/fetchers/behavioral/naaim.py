@@ -111,14 +111,14 @@ def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp | None]:
         logger.warning("[naaim] fetch failed: %s", exc)
         return None, None
 
-    # Use regex to find a number between 0 and 200 near "Exposure Index"
-    # Common patterns: "Exposure Index: 87.2" or "Current Exposure: 112.5"
+    # Match the NAAIM exposure value only when LABELLED (Exposure Index / Current
+    # Exposure / NAAIM Number) — no bare "NN%" fallback (it grabs unrelated page
+    # percentages); a failed parse returns None (fail-open).
     text = resp.text
     patterns = [
         r"Exposure\s*Index[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"Current\s*Exposure[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"NAAIM\s*Number[:\s]*(\d{1,3}(?:\.\d+)?)",
-        r"(\d{1,3}(?:\.\d+)?)\s*%",
     ]
     value = None
     for pat in patterns:

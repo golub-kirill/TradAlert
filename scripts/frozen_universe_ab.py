@@ -131,7 +131,7 @@ def main() -> None:
     base_port = {
         "max_open_risk": 5.0,
         "earnings_aware": True,
-        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.001),
+        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
         "commission_r": exec_cfg.get("commission_r", 0.005),
         "close_open_at_eod": True,
         "max_hold_days": int(audit.get("max_hold_days", 25)),
