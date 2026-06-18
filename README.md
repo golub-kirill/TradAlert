@@ -20,10 +20,10 @@ config/
   secrets.env          Local secrets (gitignored; see secrets.env.example)
 
 src/core/              Domain: filter_engine, regime (MarketRegime + classifier), ticker_store, types, paths, defaults
-src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/AAII/breadth)
+src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/breadth/sector-rotation)
 src/core/indicators/   ATR/RSI/MACD/Bollinger + VBP + chart renderer
 src/core/macro/        Macro regime classifier (risk_on_score, size_multiplier)
-src/core/behavioral/   Behavioral regime classifier (breadth, sentiment, positioning)
+src/core/behavioral/   Behavioral regime classifier (breadth, sector-rotation, positioning)
 src/core/validators/   OHLCV + ticker validation
 src/persistence/       Parquet cache, sectioned-JSON cache, MySQL persistence
 backtest/              Sweep engine, walk-forward, stats, equity curve, report
@@ -73,12 +73,21 @@ can never drift from the real decision and the backtest replays bit-identically.
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
-Held long positions (from the `positions` table) are also force-exited live when
-they reach the max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`)
-— a `time_stop` EXIT — using the same `core.exits.max_hold_exit_due` rule as the
-backtester, so live and backtest stay in step. Likewise, once a held long's best
-excursion reaches `execution.breakeven_trigger_r` (default `1.0`, ADR-004) the scan
-raises `positions.stop_price` to entry via the shared
+**Data-freshness tier + event-risk (live-only).** Before each ticker the scan drops any
+unclosed current-day bar and force-refetches stale data; a fired entry that is still
+stale-after-refetch, gapped > 2×ATR overnight, or whose live gap can't be verified is
+downgraded from `LIVE` to **NEEDS_REVIEW** — split into a separate `⚠ NEEDS REVIEW`
+stdout block (with the reason) and persisted to `scan_results.tier`/`review_reason`.
+When a fresh entry lands within `scanner.event_risk_within_days` (default 5) of a
+scheduled FOMC/CPI/NFP, the summary also prints a display-only `⚠ EVENT RISK` advisory
+(never gates or sizes). Both are LIVE-path only, so the backtest stays byte-identical.
+
+Held positions (long or short) are also force-exited live when they reach the
+max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`) — a `time_stop`
+EXIT (a COVER for a held short) — using the same `core.exits.max_hold_exit_due` rule
+as the backtester, so live and backtest stay in step. Likewise, once a held position's
+best excursion reaches `execution.breakeven_trigger_r` (default `1.0`, ADR-004) the
+scan raises `positions.stop_price` to breakeven via the shared
 `core.exits.breakeven_stop_level` rule (a Telegram notice is sent; `initial_stop`
 is never touched, so realized-R reconciliation is unaffected).
 
@@ -135,8 +144,11 @@ Window / IO flags:
 | `--no-journal`        | False               | Opt OUT of MySQL journaling for a throwaway run.     |
 | `--log LEVEL`         | WARNING             | DEBUG / INFO / WARNING / ERROR.                      |
 
-Strategy opt-in flags (each defaults **OFF** so the baseline replays
-bit-identically; turn on to A/B a refinement):
+Strategy refinement flags — each **CLI flag** defaults off, but the YAML supplies the
+operative default: the shipped `filters.yaml` already enables max-hold
+(`25`/`if_not_profit`), the breakeven stop (`1.0R`, ADR-004) and the anti-gap trigger
+filter, so the no-flag baseline runs **with** those (it is the `run_id=15` headline, not
+a bare strategy). Pass a flag to force its key on for an A/B even when the YAML default is off:
 
 | Flag                | Effect                                                                                                                                                                                                                                                                                                                                                                                              | Config key                             |
 |---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
@@ -193,16 +205,17 @@ architecture mismatches when moving data between machines).
 ### Reconciliation — is the edge holding live?
 
 Two read-only meters compare live performance to backtest expectancy (the latest
-`backtest_runs`, or `--bt-run-id N`); both flag drift beyond `--drift` R/trade
-(default 0.15):
+scoring-OFF `backtest_runs`, matching the live default, or `--bt-run-id N`); both flag
+drift beyond `--drift` R/trade (default 0.15):
 
 ```bash
 python scripts/reconcile_live.py     # signal fidelity: replay fired signals through cached prices
 python scripts/reconcile_fills.py    # real meter: realized R on actual fills in the positions table
 ```
 
-`reconcile_live.py` replays every fired entry signal forward under the 25-bar
-cap — a *delayed backtest*, so it only judges signal fidelity. `reconcile_fills.py`
+`reconcile_live.py` replays every fired **LIVE-tier** entry signal forward under the
+25-bar cap — a *delayed backtest*, so it only judges signal fidelity; NEEDS_REVIEW
+(stale/gapped) fires are held out, not scored. `reconcile_fills.py`
 scores **closed `positions`** (logged via `position_CLI.py`): realized
 R = `(exit-entry)/(entry-stop)` (long) using the initial recorded stop as the
 risk unit, bucketed by direction and compared to `backtest_trades.r_multiple`
@@ -264,11 +277,11 @@ Loaded by `python-dotenv` at startup.
 |------------------|--------------------------------------|--------------------------------------------------------------------------------------------------------|
 | `DB_HOST`        | MySQL journaling, `position_CLI.py`  | Default `localhost`.                                                                                   |
 | `DB_PORT`        | MySQL journaling, `position_CLI.py`  | Default `3306`.                                                                                        |
-| `DB_USER`        | MySQL journaling, `position_CLI.py`  |
-| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |
+| `DB_USER`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
+| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |                                                                                                        |
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
-| `SEC_USER_AGENT` | reserved                             | Not wired — reserved for a future SEC EDGAR integration.                                               |
+| `SEC_USER_AGENT` | reserved                             | Not yet read — the EDGAR Form-4 fetcher (`scripts/form4_fetch.py`) hardcodes its contact UA; documented in `secrets.env.example` but unconsumed.                                                |
 | `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
 | `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
 
@@ -292,7 +305,7 @@ Loaded by `python-dotenv` at startup.
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
 | `signals.momentum.short`                                                         | Held-long *momentum-fade exit* (legacy name; canonical at `signals.exits.momentum_fade`). |
 | `signals.mean_reversion.long`                                                    | Mean-rev entry: rsi_max, min_hist_delta_atr.                                              |
-| `signals.mean_reversion.short`                                                   | Held-long *overbought exit* (legacy; canonical at `signals.exits.mean_rev_overbought`).   |
+| `signals.mean_reversion.short`                                                   | Held-long *overbought exit* (legacy; canonical at `signals.exits.mean_rev`).   |
 | `signals.gap_risk.{enabled,max_prev_bar_range_atr}`                              | Block entries after wide-range prev bar.                                                  |
 | `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
 | `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Boolean toggles (also accept dict for `signals.exits.*` parameter blocks).                |
@@ -310,6 +323,7 @@ Loaded by `python-dotenv` at startup.
 | `fetcher.max_workers`                                                       | ThreadPool size for watchlist fetch.                                                                                                                                                                                                                              |
 | `risk.max_open_risk`                                                        | Aggregate open-risk cap the live scanner surfaces (budget consumed vs. cap, size_mult); alerter only, never auto-executes.                                                                                                                                          |
 | `scanner.chart.signal_history`                                              | Render historical signal markers on charts.                                                                                                                                                                                                                       |
+| `scanner.event_risk_within_days`                                           | Advisory window (calendar days, default 5): surface an upcoming FOMC/CPI/NFP on a fresh entry; display-only, never gates/sizes (distinct from the `events.stop_dates` entry-day block). |
 | `macro.{enabled,fred_api_key_env,staleness_hours,series_dir,series_subset}` | Macro layer toggles + cache.                                                                                                                                                                                                                                      |
 | `macro.{fred_series,boc_series,yf_series}`                                  | Series IDs to fetch.                                                                                                                                                                                                                                              |
 | `macro.{size_mult_floor,size_mult_ceiling}`                                 | risk_on_score → size_multiplier mapping.                                                                                                                                                                                                                          |
@@ -356,12 +370,12 @@ attaches: `atr`, `rsi`, `macd`, `macd_signal`, `macd_hist`, `bb_mid`,
 
 ```
 FilterEngine.scan(ticker, df, market_cap)         → ScanResult
-FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, held_long, regime)
+FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, held_long, held_short, regime, with_checks)
                                                   → SignalResult
 ```
 
-Direction `long` for fresh entries; `exit_long` for held positions
-(`held_long=True`). `SignalResult.size_mult` carries the composite macro ×
+Direction `long`/`short` for fresh entries; `exit_long`/`exit_short` for held
+positions (`held_long`/`held_short=True`). `SignalResult.size_mult` carries the composite macro ×
 behavioral multiplier; backtester scales R-distance by it,
 `signals.size_mult_gate` blocks entries below `min`.
 
