@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 Direction = Literal["long", "short", "exit_long", "exit_short", "none"]
-SignalType = Literal["momentum", "mean_reversion", "regime", "time_stop", "none"]
+SignalType = Literal["momentum", "mean_reversion", "regime", "time_stop", "pead", "none"]
 
 
 @dataclass
@@ -163,6 +163,7 @@ class SIGNAL_TYPE:
     MOMENTUM: str = "momentum"
     MEAN_REVERSION: str = "mean_reversion"
     REGIME: str = "regime"
+    PEAD: str = "pead"
     NONE: str = "none"
 
 

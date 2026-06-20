@@ -37,6 +37,8 @@ from backtest.backtester import (
 )
 from backtest.earnings_history import get_earnings_history
 from backtest.trade import Trade
+from core.fetchers.earnings_history_store import get_earnings_events
+from core.pead import EarningsEvent
 from core.exits import max_hold_exit_due
 from core.filter_engine import FilterEngine, SignalResult
 from persistence.cache import load as cache_load
@@ -182,6 +184,7 @@ class _TickerPrep:
     """Pre-computed, walk-invariant context per ticker."""
     df: pd.DataFrame
     earnings_history: list[date]
+    earnings_events: list[EarningsEvent] = field(default_factory=list)
 
 
 def _prepare(
@@ -213,13 +216,18 @@ def _prepare(
             continue
 
         eh: list[date] = []
+        ev: list[EarningsEvent] = []
         if earnings_aware:
             try:
                 eh = get_earnings_history(ticker)
             except Exception as exc:
                 logger.warning("[%s] earnings history failed — %s", ticker, exc)
+            try:
+                ev = get_earnings_events(ticker)
+            except Exception as exc:
+                logger.warning("[%s] PEAD earnings events failed — %s", ticker, exc)
 
-        prepped[ticker] = _TickerPrep(df=df, earnings_history=eh)
+        prepped[ticker] = _TickerPrep(df=df, earnings_history=eh, earnings_events=ev)
 
     return prepped, skipped
 
@@ -528,6 +536,7 @@ class PortfolioBacktester:
                     held_long_flag,
                     regime=regime,
                     held_short=held_short_flag,
+                    earnings_events=getattr(prepped[ticker], "earnings_events", None),
                 )
                 if not signal.passed:
                     continue

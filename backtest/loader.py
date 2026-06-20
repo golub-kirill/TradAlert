@@ -33,6 +33,7 @@ import pyarrow.parquet as pq
 from backtest.backtester import _attach_indicators
 from backtest.earnings_history import get_earnings_history
 from backtest.portfolio_backtester import _TickerPrep
+from core.fetchers.earnings_history_store import get_earnings_events
 
 logger = logging.getLogger(__name__)
 
@@ -243,15 +244,20 @@ def load_universe(
 
         # Tradeable ticker
         eh: list[date] = []
+        ev = []
         if earnings_aware:
             try:
                 eh = get_earnings_history(ticker, cache_dir=earnings_dir)
             except Exception as exc:
                 logger.warning("[%s] earnings history failed — %s", ticker, exc)
+            try:
+                ev = get_earnings_events(ticker)
+            except Exception as exc:
+                logger.warning("[%s] PEAD earnings events failed — %s", ticker, exc)
 
-        prepped[ticker] = _TickerPrep(df=df, earnings_history=eh)
-        logger.debug("loaded %-12s  (%d bars, %d earnings dates)",
-                     ticker, len(df), len(eh))
+        prepped[ticker] = _TickerPrep(df=df, earnings_history=eh, earnings_events=ev)
+        logger.debug("loaded %-12s  (%d bars, %d earnings dates, %d events)",
+                     ticker, len(df), len(eh), len(ev))
 
     # ── load macro series from parquet cache ────────────────────────────
     macro_series: dict[str, pd.DataFrame] | None = None

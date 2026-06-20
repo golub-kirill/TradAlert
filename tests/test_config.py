@@ -161,6 +161,23 @@ def test_toggle_present_values_win():
     assert cfg.events.earnings_buffer_days == 7
 
 
+def test_pead_defaults_when_absent():
+    # No signals.pead block → opt-in defaults (enabled OFF → baseline byte-identical).
+    cfg = parse(_min_cfg())
+    assert cfg.signals.pead.enabled is False
+    assert cfg.signals.pead.min_priors == 8
+    assert cfg.signals.pead.tercile_pct == 0.667
+
+
+def test_pead_present_values_win():
+    raw = _min_cfg()
+    raw["signals"]["pead"] = {"enabled": True, "min_priors": 5, "tercile_pct": 0.8}
+    cfg = parse(raw)
+    assert cfg.signals.pead.enabled is True
+    assert cfg.signals.pead.min_priors == 5
+    assert cfg.signals.pead.tercile_pct == 0.8
+
+
 def test_config_module_is_a_leaf():
     import core.config as config_mod
     src = Path(config_mod.__file__).read_text(encoding="utf-8")
