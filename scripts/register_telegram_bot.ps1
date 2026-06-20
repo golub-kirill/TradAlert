@@ -4,7 +4,7 @@
     Windows scheduled task that starts at logon and restarts on crash.
 
 .DESCRIPTION
-    Runs scripts\run_telegram_bot.bat at user logon, only while the current user
+    Runs pythonw.exe telegram_bot.py directly at user logon, only while the current user
     is logged on (no stored password needed). The daemon long-polls Telegram and
     answers the alert/position buttons + commands. If it crashes, Task Scheduler
     restarts it (RestartCount / RestartInterval). Re-running this script replaces
@@ -30,13 +30,19 @@ $ErrorActionPreference = "Stop"
 # Resolve repo paths from this script's own location (scripts\ sits under the root).
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root      = Split-Path -Parent $ScriptDir
-$Bat       = Join-Path $ScriptDir "run_telegram_bot.bat"
+$Pythonw   = Join-Path $Root ".venv\Scripts\pythonw.exe"
 
-if (-not (Test-Path $Bat)) {
-    throw "Wrapper not found: $Bat"
+if (-not (Test-Path $Pythonw)) {
+    throw "venv pythonw not found: $Pythonw"
 }
 
-$action = New-ScheduledTaskAction -Execute $Bat -WorkingDirectory $Root
+# Launch pythonw.exe DIRECTLY (not via run_telegram_bot.bat): a cmd wrapper spawns
+# python as a CHILD that gets reparented on Stop-ScheduledTask, so the daemon keeps
+# polling after a "stop". Running the interpreter as the task's OWN process means
+# Stop-ScheduledTask terminates the daemon cleanly. pythonw = no console window;
+# the daemon keeps its own structured log at data\telegram_bot.log. (run_telegram_bot.bat
+# remains for manual launches.)
+$action = New-ScheduledTaskAction -Execute $Pythonw -Argument "telegram_bot.py" -WorkingDirectory $Root
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
@@ -58,7 +64,7 @@ Register-ScheduledTask -TaskName $TaskName `
     -Force | Out-Null
 
 Write-Host "Registered '$TaskName' - starts at logon, only when logged on, restarts on crash."
-Write-Host "Wrapper  : $Bat"
+Write-Host "Launch   : $Pythonw telegram_bot.py (direct; Stop-ScheduledTask kills it cleanly)"
 Write-Host "Bot log  : $(Join-Path $Root 'logs\telegram_bot.log')"
 Write-Host ""
 Write-Host "Requires : telegram.daemon_enabled: true in config\settings.yaml,"
