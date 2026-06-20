@@ -12,7 +12,7 @@ pyarrow
 pandas_market_calendars
 
 # Market data
-yfinance
+yfinance>=1.4              # >=1.4 for yf.Calendars (econ/IPO calendar API); the earnings_dates surprise columns
 
 # Config + secrets
 pyyaml
