@@ -33,8 +33,13 @@ _DIRECTION_KIND = {
 }
 
 
-def send_alerts(results, settings, *, macro_state=None, run_date=None) -> None:
-    """Select fired signals and push them. Never raises into the caller."""
+def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_down=None) -> None:
+    """Select fired signals and push them. Never raises into the caller.
+
+    `stand_down` is the optional DB-backed rejection rollup from
+    persistence.db.stand_down_summary (or None); it enriches the stand-down
+    message's "Top blocks" line and is ignored when signals fired.
+    """
     cfg = load_telegram_config(settings)
     if not cfg.enabled:
         return
@@ -58,9 +63,11 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None) -> None:
     regime_label = (selected[0][0].signal.market_regime if selected else _any_regime(results)) or None
     rday = run_date or date.today()
 
+    rejections = (stand_down or {}).get("rejection_gates") or None
+
     try:
         asyncio.run(_send_all(token, chat_id, cfg, selected, len(results),
-                              risk_on, n_open, regime_label, rday))
+                              risk_on, n_open, regime_label, rday, rejections))
     except Exception as exc:  # broad on purpose — alerting must never break the scan
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
@@ -119,14 +126,15 @@ def _select(results, cfg: TelegramConfig):
 
 # ── async send ───────────────────────────────────────────────────────────────────
 
-async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday):
+async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
+                    rejections=None):
     from core.telegram.bot import TelegramNotifier
 
     async with TelegramNotifier(token, chat_id, parse_mode=cfg.parse_mode) as nf:
         if not selected:
             await nf.send_message(fmt.format_stand_down(
                 rday, n_scanned=n_scanned, regime_label=regime_label,
-                risk_on=risk_on, n_open=n_open))
+                risk_on=risk_on, n_open=n_open, rejections=rejections))
             return
 
         n_long = sum(1 for _, k in selected if k == "long_entry")

@@ -210,6 +210,90 @@ def save_scan_results(
     return inserted
 
 
+_STAND_DOWN_SELECT_SQL = """
+                         SELECT ticker, passed, signal_kind, tier, reason, error
+                         FROM scan_results
+                         WHERE run_id = %(run_id)s \
+                         """
+
+# Caps keep the readout/Telegram line compact and bounded regardless of run size.
+_REJECTION_GATES_TOP = 8
+_PASSED_ON_CAP = 25
+
+
+def stand_down_summary(run_id: int) -> dict | None:
+    """
+    Read-only rollup of one scan run's ``scan_results`` rows for the stand-down
+    readout (stdout + Telegram). Aggregates totals, a per-gate rejection
+    breakdown, and the pass-scan-no-fire list.
+
+    FAIL-OPEN: any DB or aggregation error logs a WARNING and returns None;
+    never raises into the scan or the Telegram push.
+
+    Returns
+    -------
+    dict | None
+        ``{"run_id", "n_scanned", "n_passed_scan", "n_fired", "n_review",
+           "n_errors", "rejection_gates": [{"gate", "n"}, ...],
+           "passed_on": [{"ticker", "reason"}, ...]}`` or None on any error.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_STAND_DOWN_SELECT_SQL, {"run_id": run_id})
+        rows = cursor.fetchall()  # tuples: (ticker, passed, signal_kind, tier, reason, error)
+
+        n_scanned = len(rows)
+        n_passed_scan = 0
+        n_fired = 0
+        n_review = 0
+        n_errors = 0
+        gate_counts: dict[str, int] = {}
+        passed_on: list[dict] = []
+
+        for ticker, passed, signal_kind, tier, reason, error in rows:
+            if error is not None:
+                n_errors += 1
+            if tier == "NEEDS_REVIEW":
+                n_review += 1
+            if signal_kind not in (None, "none"):
+                n_fired += 1
+            if passed:
+                n_passed_scan += 1
+                if signal_kind in (None, "none") and len(passed_on) < _PASSED_ON_CAP:
+                    passed_on.append({"ticker": ticker, "reason": reason})
+            else:
+                gate = reason if reason else "(unspecified)"
+                gate_counts[gate] = gate_counts.get(gate, 0) + 1
+
+        rejection_gates = [
+            {"gate": gate, "n": n}
+            for gate, n in sorted(
+                gate_counts.items(), key=lambda kv: (-kv[1], kv[0])
+            )[:_REJECTION_GATES_TOP]
+        ]
+
+        return {
+            "run_id": run_id,
+            "n_scanned": n_scanned,
+            "n_passed_scan": n_passed_scan,
+            "n_fired": n_fired,
+            "n_review": n_review,
+            "n_errors": n_errors,
+            "rejection_gates": rejection_gates,
+            "passed_on": passed_on,
+        }
+
+    except Exception as exc:  # broad: readout is advisory and must never break the scan
+        logger.warning("stand_down_summary skipped — %s", exc)
+        return None
+
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def _result_to_row(run_id: int, r: TickerResult) -> dict:
     """Map one TickerResult to a flat dict matching _INSERT_SCAN_RESULT_SQL."""
     scan = r.scan
@@ -231,6 +315,13 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
     target_price = float(sig.target_price) if fired and getattr(sig, "target_price", None) else None
     signal_type = sig.signal_type if fired and getattr(sig, "signal_type", None) else None
 
+    # Operative reason for this ticker's disposition: the scan gate when blocked,
+    # else the signal-stage reason when it passed scan but nothing fired (so a
+    # "passed scan, no signal" row records WHY no entry, not just the scan-pass note).
+    reason = scan.reason or None
+    if scan.passed and sig is not None and not sig.passed and getattr(sig, "reason", None):
+        reason = sig.reason
+
     return {
         "run_id": run_id,
         "ticker": r.ticker,
@@ -243,7 +334,7 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         # scan_results.score column retained for historical rows; nothing
         # writes a score anymore, so new rows journal NULL.
         "score": None,
-        "reason": scan.reason or None,
+        "reason": reason,
         "close": scan.close,
         "stop_price": stop_price,
         "target_price": target_price,
