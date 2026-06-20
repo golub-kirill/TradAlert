@@ -111,11 +111,19 @@ def _fetch_latest_naaim() -> tuple[float | None, pd.Timestamp | None]:
         logger.warning("[naaim] fetch failed: %s", exc)
         return None, None
 
-    # Match the NAAIM exposure value only when LABELLED (Exposure Index / Current
-    # Exposure / NAAIM Number) — no bare "NN%" fallback (it grabs unrelated page
-    # percentages); a failed parse returns None (fail-open).
-    text = resp.text
+    # Match the NAAIM exposure value only when LABELLED — no bare "NN%" fallback
+    # (it grabs unrelated page percentages); a failed parse returns None (fail-open).
+    # The 2026-06 page phrases the current reading "...Exposure Index number is*: 92.83"
+    # (the older bare "Exposure Index: NN" forms are kept as fallbacks).
+    # ⚠ SUNSET: NAAIM announced the FREE feed transitions to subscription-only on
+    # 2026-08-01 — this scrape WILL break then. Plan to drop NAAIM at that point
+    # (positioning falls back to COT-only, as AAII was dropped when its free feed gated).
+    # Strip HTML tags + collapse whitespace so the label and value are contiguous —
+    # the live page renders the number in a separate inline element, so a regex on
+    # raw HTML (tags between "is*:" and "92.83") never matches.
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", resp.text))
     patterns = [
+        r"Exposure\s*Index\s*number\s*is[\*:\s]*(\d{1,3}(?:\.\d+)?)",
         r"Exposure\s*Index[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"Current\s*Exposure[:\s]*(\d{1,3}(?:\.\d+)?)",
         r"NAAIM\s*Number[:\s]*(\d{1,3}(?:\.\d+)?)",

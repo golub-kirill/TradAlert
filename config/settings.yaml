@@ -131,6 +131,9 @@ macro: # block: macro data configuration
 
 behavioral: # block: behavioral data configuration
   enabled: true                         # master toggle; false → no behavioral regime
+  use_naaim: false                      # positioning = COT-only (NAAIM PURGED 2026-06-18). The NAAIM A/B
+                                        # showed its contribution was -0.72R (within jitter, ~zero); its free
+                                        # feed sunsets 2026-08-01. COT (CFTC leveraged-fund net) is the source.
   data_dir: "data/behavioral"           # cache directory
   stale_window_days: 14                 # days before data is treated as missing
   size_mult_floor: 0.25                 # minimum position size when behavioral risk is fully off

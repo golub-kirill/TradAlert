@@ -200,16 +200,26 @@ def classify_behavioral_state(
         missing_axes.append("sector_cycle")
 
     # ── positioning_state ────────────────────────────────────────────────
-    # One axis fed by two sources (COT + NAAIM). Mark it missing only when BOTH
-    # are absent — with one present it is still scored (NEUTRAL). missing_axes
-    # holds the CANONICAL axis name so the weight loop below actually excludes it.
-    if cot_es is not None and not cot_es.empty and naaim is not None and not naaim.empty:
-        positioning_state = _classify_positioning(cot_es, naaim)
+    # COT-led positioning. ``behavioral.use_naaim`` (default True) composites the
+    # NAAIM exposure survey with COT; False = COT-only (NAAIM's free feed sunsets
+    # 2026-08-01, see naaim.py). use_naaim=True preserves the legacy "both feeds
+    # required for a read" behaviour → byte-identical baseline; False makes COT alone
+    # sufficient. Axis missing only when its active source(s) are all absent.
+    use_naaim = bool(behavioral_cfg.get("use_naaim", True))
+    cot_ok = cot_es is not None and not cot_es.empty
+    if use_naaim:
+        naaim_ok = naaim is not None and not naaim.empty
+        if cot_ok and naaim_ok:
+            positioning_state = _classify_positioning(cot_es, naaim)
+        else:
+            positioning_state = "NEUTRAL"
+            if not cot_ok and not naaim_ok:
+                missing_axes.append("positioning_state")
     else:
-        positioning_state = "NEUTRAL"
-        cot_absent = cot_es is None or cot_es.empty
-        naaim_absent = naaim is None or naaim.empty
-        if cot_absent and naaim_absent:
+        if cot_ok:
+            positioning_state = _classify_positioning(cot_es, None)
+        else:
+            positioning_state = "NEUTRAL"
             missing_axes.append("positioning_state")
 
     # ── composite behavioral_score ───────────────────────────────────────
@@ -357,7 +367,7 @@ def _classify_sector_cycle(sector_df: pd.DataFrame) -> str:
 
 def _classify_positioning(
         cot_es: pd.DataFrame,
-        naaim: pd.DataFrame,
+        naaim: pd.DataFrame | None,
 ) -> str:
     """
     Classify positioning from COT + NAAIM.
@@ -373,9 +383,13 @@ def _classify_positioning(
     _lev = _column_or_warn(cot_es, "lev_net", "positioning(COT)")
     cot_pctile = _rolling_percentile(_lev, 260) if _lev is not None else None
 
-    # NAAIM: exposure percentile.
-    _exp = _column_or_warn(naaim, "exposure", "positioning(NAAIM)")
-    naaim_pctile = _rolling_percentile(_exp, 260) if _exp is not None else None
+    # NAAIM: exposure percentile. naaim=None (COT-only mode / NAAIM purged) skips
+    # this source cleanly — no schema warning.
+    if naaim is not None:
+        _exp = _column_or_warn(naaim, "exposure", "positioning(NAAIM)")
+        naaim_pctile = _rolling_percentile(_exp, 260) if _exp is not None else None
+    else:
+        naaim_pctile = None
 
     if cot_pctile is not None and naaim_pctile is not None:
         composite = (cot_pctile + naaim_pctile) / 2

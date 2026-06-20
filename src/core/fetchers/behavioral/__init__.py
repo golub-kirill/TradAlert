@@ -92,16 +92,10 @@ def fetch_all_behavioral(
         logger.warning("[behavioral] COT fetch failed: %s", exc, exc_info=True)
         failed.append("cot")
 
-    # NAAIM
-    try:
-        naaim = fetch_naaim(
-            data_dir=data_dir, staleness_days=staleness_days, force=force,
-        )
-        if not naaim.empty:
-            result["naaim"] = naaim
-    except Exception as exc:
-        logger.warning("[behavioral] NAAIM fetch failed: %s", exc, exc_info=True)
-        failed.append("naaim")
+    # NAAIM — PURGED 2026-06-18. Positioning is COT-only (settings.behavioral.use_naaim:
+    # false; A/B cost was -0.72R ≈ 0). The free feed sunsets 2026-08-01 anyway, so the
+    # live scan no longer fetches it. (naaim.py + the classifier toggle remain for now;
+    # full code removal is a follow-up tidy.)
 
     # Breadth (compute_sp500_breadth uses staleness_hours; convert from days)
     try:
