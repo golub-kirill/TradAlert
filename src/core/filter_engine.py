@@ -501,23 +501,30 @@ class FilterEngine:
                 f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
-        # size_mult_gate: block entries when the composite macro × behavioral
-        # position-size multiplier is below the configured floor.
-        #
-        # Currently INERT even when `enabled: true`: regime.size_multiplier is the
-        # geometric mean of two axes each floored at 0.25
-        # (settings.{macro,behavioral}.size_mult_floor), so it is >= 0.25 == the
-        # gate `min` and the strict `< min` never fires. To actually gate, lower an
-        # axis floor below `min` or raise `min` above 0.25 — both BLOCK entries and
-        # move the headline, so re-validate first.
-        smg = self.cfg.signals.size_mult_gate
-        if smg.enabled:
-            min_mult = float(smg.min)
-            if regime.size_multiplier < min_mult:
-                return self._fail_result(
-                    f"size_mult {regime.size_multiplier:.2f} < gate min {min_mult:.2f}",
-                    regime, ticker_trend,
-                )
+        # Overextension veto (opt-in; default OFF → byte-identical baseline): block a
+        # fresh entry already stretched far from the mean (parabolic chasing). Uses the
+        # Bollinger z-score (close − bb_mid)/σ already on the row. Longs veto above
+        # +bb_z_max; shorts below −bb_z_max. PEAD entries bypass (the earnings gap IS
+        # the signal). Changes trade composition → validate (DSR + White's RC) before
+        # shipping ON. (Replaced the inert size_mult_gate, whose floored composite could
+        # never drop below its own gate min.)
+        oxt = self.cfg.signals.overextension
+        if oxt.enabled and signal_type != "pead":
+            try:
+                bb_z = float(row["bb_z"])
+            except (KeyError, TypeError, ValueError):
+                bb_z = 0.0
+            if bb_z == bb_z:  # finite (NaN-safe)
+                if is_long_dir and bb_z > oxt.bb_z_max:
+                    return self._fail_result(
+                        f"overextended: bb_z {bb_z:.2f} > {oxt.bb_z_max:.2f}",
+                        regime, ticker_trend,
+                    )
+                if not is_long_dir and bb_z < -oxt.bb_z_max:
+                    return self._fail_result(
+                        f"overextended short: bb_z {bb_z:.2f} < {-oxt.bb_z_max:.2f}",
+                        regime, ticker_trend,
+                    )
 
         checks = (
             self._build_gate_checks(

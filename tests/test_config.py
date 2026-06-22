@@ -134,7 +134,7 @@ def test_toggles_and_events_defaults():
     assert s.gap_risk.max_prev_bar_range_atr == 3.0
     assert s.sector_gate.enabled is False
     assert s.sector_gate.sector_map_path == "config/sector_map.yaml"
-    assert s.size_mult_gate.min == 0.25
+    assert s.overextension.enabled is False and s.overextension.bb_z_max == 2.5
     # exit toggles all default True
     assert s.exits.regime_flip and s.exits.momentum_fade and s.exits.mean_rev
     assert s.exits.regime_flip_short and s.exits.short_cover_pop and s.exits.short_cover_oversold

@@ -45,7 +45,6 @@ def _engine() -> FilterEngine:
     cfg["signals"]["gap_risk"] = {"enabled": False}
     cfg["signals"]["sector_gate"] = {"enabled": False}
     cfg["signals"]["require_trigger_bar_up"] = False
-    cfg["signals"]["size_mult_gate"] = {"enabled": False}
     cfg["events"] = {"earnings_buffer_days": 0, "stop_dates": []}
     eng = FilterEngine.from_dict(cfg)
     eng._today = date(2025, 6, 15)

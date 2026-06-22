@@ -156,9 +156,9 @@ signals: # block: trigger configuration
     #   tighter reward ceiling can be justified. Absent →
     #   falls back to min_rr above. Only affects shorts.
 
-  size_mult_gate: # composite (macro×behavioral) position-size gate
-    enabled: true                       # master switch
-    min: 0.25                           # block entries when regime.size_multiplier < this
+  overextension: # S1: veto entries already stretched far from the mean (parabolic chasing)
+    enabled: false                      # default OFF → byte-identical baseline; validate (DSR+RC) before ON
+    bb_z_max: 2.5                       # veto a long when Bollinger z (close−mid)/σ > this (short: < −this)
 
   pead:                                 # post-earnings-drift entry (opt-in; default OFF → baseline byte-identical)
     enabled: false                      # master switch; true emits PEAD long entries the day after a strong earnings reaction

@@ -176,9 +176,9 @@ class SectorGateCfg:
 
 
 @dataclass(frozen=True)
-class SizeMultGateCfg:
+class OverextensionCfg:
     enabled: bool
-    min: float
+    bb_z_max: float
 
 
 @dataclass(frozen=True)
@@ -225,7 +225,7 @@ class SignalsCfg:
     stop_loss: StopLossCfg
     gap_risk: GapRiskCfg
     sector_gate: SectorGateCfg
-    size_mult_gate: SizeMultGateCfg
+    overextension: OverextensionCfg
     pead: PeadCfg
     exits: ExitsCfg
     hard_to_borrow_list: list
@@ -338,10 +338,10 @@ def parse(cfg: dict) -> EngineConfig:
                 enabled=_bool(cfg, "signals.sector_gate.enabled", False),
                 sector_map_path=_node(cfg, "signals.sector_gate.sector_map_path",
                                       "config/sector_map.yaml")),
-            size_mult_gate=SizeMultGateCfg(
-                enabled=_bool(cfg, "signals.size_mult_gate.enabled", False),
-                min=_num(cfg, "signals.size_mult_gate.min",
-                         D("filters.signals.size_mult_gate.min", 0.25))),
+            overextension=OverextensionCfg(
+                enabled=_bool(cfg, "signals.overextension.enabled", False),
+                bb_z_max=_num(cfg, "signals.overextension.bb_z_max",
+                              D("filters.signals.overextension.bb_z_max", 2.5))),
             pead=PeadCfg(
                 enabled=_bool(cfg, "signals.pead.enabled",
                               D("filters.signals.pead.enabled", False)),
