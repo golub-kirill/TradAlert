@@ -12,10 +12,10 @@ REM  multiple-testing + walk-forward steps read LIVE caches (fresh measurements;
 REM  headline R carries +-~10R cache jitter, so judge them on Sharpe/ratios, not
 REM  the absolute R level).
 REM
-REM  NOTE: the program's "joint vs SPY" (Phase 2) and "WF vs SPY" (Phase 3)
-REM  ENHANCEMENTS are NOT built (multiple_testing.py is OFAT + vs-cash). For the
-REM  per-window SPY-relative read, run scripts\benchmark_relative.py separately
-REM  (fast, seconds) — it is the built Phase-1 metric.
+REM  NOTE: the program's "joint vs SPY" (Phase 2) + "WF vs SPY" (Phase 3) are now
+REM  BUILT — run scripts\run_validation_spy_relative.bat for the corrected SPY-
+REM  relative DSR/White's-RC (joint) + WF-vs-SPY. This .bat is the OFAT + vs-cash
+REM  confirmatory subset. The per-window Phase-1 read is scripts\benchmark_relative.py.
 REM ===========================================================================
 cd /d C:\PycharmProjects\TradAlert
 set PYTHONIOENCODING=utf-8
@@ -52,7 +52,7 @@ echo.
 echo ============================================================
 echo  Step 3/4 - Fixed-config walk-forward (OOS temporal
 echo  stability; --wf-no-retune; 14 workers; ~20-40 min)
-echo  Prior: ~0 IS->OOS degradation, ~70%% OOS-positive.
+echo  Prior: ~0 IS-to-OOS degradation, ~70%% OOS-positive.
 echo  Log: docs\backtest_out\heavy_wf_fixed_%TS%.log
 echo ============================================================
 .venv\Scripts\python.exe -m backtest.run_backtest --start 2000-01-01 --walk-forward --wf-no-retune --workers 14 --no-journal --no-html --no-csv 2>&1 | %TEE% -a "docs\backtest_out\heavy_wf_fixed_%TS%.log"
@@ -61,8 +61,8 @@ echo.
 echo ============================================================
 echo  Step 4/4 - V5 joint re-tune walk-forward (search-inflation
 echo  estimate; 14 workers; SEVERAL HOURS)
-echo  Prior: IS +0.171 -> OOS +0.072 = +0.099 selection inflation
-echo  (tuning buys ~nothing OOS -> freeze the config).
+echo  Prior: IS +0.171 to OOS +0.072 = +0.099 selection inflation
+echo  (tuning buys ~nothing OOS, so freeze the config).
 echo  Log: docs\backtest_out\heavy_wf_joint_%TS%.log
 echo ============================================================
 .venv\Scripts\python.exe -m backtest.run_backtest --start 2000-01-01 --walk-forward --wf-joint 24 --workers 14 --no-journal --no-html --no-csv 2>&1 | %TEE% -a "docs\backtest_out\heavy_wf_joint_%TS%.log"

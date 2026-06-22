@@ -16,9 +16,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from backtest.benchmark_metrics import (  # noqa: E402
-    align_strategy_benchmark, alpha_beta, excess_sharpe,
-    information_ratio, pct_periods_beating,
+    align_strategy_benchmark, alpha_beta, benchmark_by_months, excess_sharpe,
+    information_ratio, month_end_returns, pct_periods_beating,
 )
+from backtest.multiple_testing import align_monthly_matrix  # noqa: E402
 from backtest.stats_utils import sharpe_ratio  # noqa: E402
 from benchmark_relative import verdict_at       # noqa: E402
 
@@ -97,6 +98,42 @@ def test_pct_periods_beating_strict_and_nan_excluded():
 def test_short_or_zero_variance_inputs_are_nan():
     assert np.isnan(excess_sharpe([0.01], [0.0]))             # < 2 points
     assert np.isnan(excess_sharpe([0.02, 0.02], [0.01, 0.01]))  # zero-variance active series
+
+
+# ── SPY-relative helpers (Phase 2/3 — backtest/benchmark_metrics) ────────────────
+
+def test_month_end_returns_month_over_month():
+    """Daily price series → month-end-close pct_change; first month dropped (pct_change NaN)."""
+    jan = pd.date_range("2001-01-01", "2001-01-31", freq="D")
+    feb = pd.date_range("2001-02-01", "2001-02-28", freq="D")
+    mar = pd.date_range("2001-03-01", "2001-03-31", freq="D")
+    idx = jan.append(feb).append(mar)
+    vals = ([100.0] * len(jan)) + ([110.0] * len(feb)) + ([121.0] * len(mar))
+    r = month_end_returns(pd.Series(vals, index=idx))
+    assert np.allclose(r.values, [0.10, 0.10])                       # 110/100, 121/110
+    assert [str(p.to_period("M")) for p in r.index] == ["2001-02", "2001-03"]
+
+
+def test_benchmark_by_months_aligns_and_nans_missing():
+    bidx = pd.to_datetime(["2001-01-31", "2001-02-28", "2001-03-31"])
+    bench = pd.Series([0.01, -0.02, 0.03], index=bidx)
+    out = benchmark_by_months(["2001-01", "2001-02", "2001-04"], bench)
+    assert np.allclose(out[:2], [0.01, -0.02])
+    assert np.isnan(out[2])                                          # 2001-04 absent → NaN
+
+
+def test_benchmark_by_months_pairs_with_align_monthly_matrix():
+    """The SPY-relative active matrix = α·strat_matrix − benchmark_by_months(months)[:,None]."""
+    s1 = pd.Series([1.0, 2.0], index=["2001-01", "2001-03"])
+    s2 = pd.Series([0.5, -1.0], index=["2001-02", "2001-03"])
+    matrix, months = align_monthly_matrix([s1, s2])
+    assert months == ["2001-01", "2001-02", "2001-03"]
+    bench = pd.Series([0.01, 0.02, 0.03],
+                      index=pd.to_datetime(["2001-01-31", "2001-02-28", "2001-03-31"]))
+    spy = benchmark_by_months(months, bench)
+    assert np.allclose(spy, [0.01, 0.02, 0.03])
+    active = 0.01 * matrix - spy[:, None]                            # same shape, broadcastable
+    assert active.shape == matrix.shape
 
 
 # ── pre-registered verdict gate ─────────────────────────────────────────────────

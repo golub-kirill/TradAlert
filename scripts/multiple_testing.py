@@ -88,6 +88,7 @@ def main() -> None:
         deflated_sharpe_ratio,
         whites_reality_check,
     )
+    from backtest.benchmark_metrics import benchmark_by_months, month_end_returns
 
     ap = argparse.ArgumentParser(
         description="Phase D — deflated Sharpe + White's reality check over the sweep grid")
@@ -120,6 +121,22 @@ def main() -> None:
     ap.add_argument("--tickers", nargs="+", metavar="TICKER", default=None,
                     help="Restrict to these tickers (default: full tier_a). "
                          "Useful for a fast end-to-end smoke test.")
+    ap.add_argument("--snapshot", default=None, metavar="DIR",
+                    help="Frozen cache root (prices/ behavioral/ macro/ earnings_history/). "
+                         "Pins the run to a snapshot — immune to cache jitter. "
+                         "Default: live data/ caches.")
+    ap.add_argument("--joint", type=int, default=0, metavar="N",
+                    help="Run N seeded multi-knob JOINT configs (SweepEngine.run_random_joint) "
+                         "instead of the OFAT grid — the honest multi-parameter trial set for "
+                         "the deflation. 0 (default) = OFAT.")
+    ap.add_argument("--joint-knobs", type=int, default=3, metavar="K",
+                    help="Knobs mutated per joint sample (default 3).")
+    ap.add_argument("--joint-seed", type=int, default=1337, metavar="S",
+                    help="Joint sampler seed (default 1337). Report ≥2 seeds — no seed-shopping.")
+    ap.add_argument("--spy-relative", action="store_true",
+                    help="Also compute the DSR + White's RC on the SPY-RELATIVE active-return "
+                         "matrix (alpha*strat_R - SPY_pct, P2-M), so the correction tests "
+                         "'beats SPY', not just 'beats cash'. Reports the 0.5/1/2 pct alpha-band.")
     args = ap.parse_args()
 
     from datetime import date
@@ -135,8 +152,14 @@ def main() -> None:
         tickers = [t for t in args.tickers]
 
     print(f"  Loading universe ({len(tickers)} tickers)…", flush=True)
-    uni = load_universe(tickers, ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
-                        earnings_aware=True, start_date=start_date, end_date=end_date)
+    load_kwargs = dict(ma_slow=base_cfg.get("trend", {}).get("ma_slow", 200),
+                       earnings_aware=True, start_date=start_date, end_date=end_date)
+    if args.snapshot:
+        snap = _ROOT / args.snapshot
+        load_kwargs.update(cache_dir=snap / "prices", earnings_dir=snap / "earnings_history",
+                           macro_dir=snap / "macro", behavioral_dir=snap / "behavioral")
+        print(f"  Snapshot: {snap}", flush=True)
+    uni = load_universe(tickers, **load_kwargs)
     print(f"  {uni.summary()}", flush=True)
 
     exec_cfg = base_cfg.get("execution", {})
@@ -171,14 +194,22 @@ def main() -> None:
 
     grid = _build_grid(args.quick)
     port_grid = PORTFOLIO_GRID if not args.quick else _quick_portfolio_grid()
-    n_jobs = sum(len(s.values) - 1 for s in grid + port_grid)
-    print(f"\n  Sweep: {len(grid) + len(port_grid)} params, ~{n_jobs} configs "
-          f"(+ baseline)\n", flush=True)
 
     def _progress(msg: str) -> None:
         print(f"  ▸ {msg}", flush=True)
 
-    report = engine.run_ofat(grid=grid, port_grid=port_grid, progress=_progress)
+    if args.joint > 0:
+        print(f"\n  Joint sweep: {args.joint} random {args.joint_knobs}-knob configs "
+              f"(seed={args.joint_seed}) drawn from {len(grid) + len(port_grid)} params "
+              f"(+ baseline)\n", flush=True)
+        report = engine.run_random_joint(
+            n_samples=args.joint, knobs=args.joint_knobs, seed=args.joint_seed,
+            grid=grid, port_grid=port_grid, progress=_progress)
+    else:
+        n_jobs = sum(len(s.values) - 1 for s in grid + port_grid)
+        print(f"\n  Sweep: {len(grid) + len(port_grid)} params, ~{n_jobs} configs "
+              f"(+ baseline)\n", flush=True)
+        report = engine.run_ofat(grid=grid, port_grid=port_grid, progress=_progress)
 
     # ── per-config monthly-R series (effective-R, via build_curve) ─────────────
     def _sharpe(vals) -> float:
@@ -300,6 +331,81 @@ def main() -> None:
     print("             conservative. Treat a pass as necessary, not sufficient; White's")
     print("             RC (correlation-preserving) is the more robust primary gate.")
     print("=" * 74 + "\n")
+
+    # ── SPY-relative correction (§P2-M: same-unit 1R=α equity, {0.5,1,2}% band) ──
+    if args.spy_relative:
+        spy_df = getattr(uni, "spy_df", None)
+        if spy_df is None or "close" not in getattr(spy_df, "columns", []):
+            print("  ⚠ --spy-relative requested but SPY not loaded from the snapshot — "
+                  "skipping the SPY-relative block.\n")
+        else:
+            spy_monthly = month_end_returns(spy_df["close"])
+            spy = benchmark_by_months(months, spy_monthly)          # aligned to the matrix months
+            keep = np.isfinite(spy)
+            sub = matrix[keep]
+            spy_k = spy[keep]
+            n_sr_months = int(keep.sum())
+
+            # assumption-free co-read (own standalone Sharpe; cannot move with α)
+            strat_own = _sharpe(sub[:, baseline_idx])
+            spy_own = _sharpe(spy_k)
+
+            ALPHAS = [("0.5%", 0.005), ("1.0%", 0.010), ("2.0%", 0.020),
+                      ("raw α≡1", 1.0)]   # raw = degeneracy control (1R=100% equity)
+            sr = {}
+            for _lbl, a in ALPHAS:
+                active = a * sub - spy_k[:, None]              # α·strat_R − SPY_% (same unit)
+                sharpes = [_sharpe(active[:, j]) for j in range(active.shape[1])]
+                n_fin = int(np.isfinite(sharpes).sum())
+                dsr_a = deflated_sharpe_ratio(active[:, baseline_idx], sharpes, n_trials=n_fin)
+                rc_a = whites_reality_check(active, n_bootstrap=args.bootstrap,
+                                            mean_block=args.mean_block, seed=args.seed)
+                sr[a] = (dsr_a, rc_a)
+
+            print("=" * 74)
+            print("  SPY-RELATIVE Multiple-Testing Correction  (active return = α·strat_R − SPY_%)")
+            print("  " + "-" * 70)
+            print(f"  {('joint' if args.joint > 0 else 'OFAT')} matrix vs SPY | "
+                  f"T={n_sr_months} aligned months | N={n_finite} trials | "
+                  f"DSR pass >0.95 · RC pass p<0.05  (PRIMARY = White's RC vs SPY)")
+            print(f"  ASSUMPTION-FREE co-read: headline own-Sharpe {strat_own:+.3f} vs "
+                  f"SPY own-Sharpe {spy_own:+.3f} → ΔSharpe {strat_own - spy_own:+.3f} "
+                  f"({'beats' if strat_own > spy_own else 'does NOT beat'} SPY risk-adj)")
+            print()
+            print(f"  {'1R=':>8} | {'DSR(head)':>9} {'>0.95?':>7} | {'RC p':>7} {'<0.05?':>7} "
+                  f"| best config (RC)")
+            print("  " + "-" * 70)
+            for _lbl, a in ALPHAS:
+                dsr_a, rc_a = sr[a]
+                best_lbl = kept_labels[rc_a.best_config_idx][:24] if rc_a.best_config_idx >= 0 else "—"
+                tag = "  ← base" if a == 0.010 else ("  (degeneracy control)" if a == 1.0 else "")
+                print(f"  {_lbl:>8} | {dsr_a.dsr:>9.3f} {('yes' if dsr_a.dsr > 0.95 else 'no'):>7} "
+                      f"| {rc_a.p_value:>7.4f} {('yes' if rc_a.p_value < 0.05 else 'no'):>7} "
+                      f"| {best_lbl}{tag}")
+            print("  " + "-" * 70)
+
+            # pre-registered verdict at the base α = 1% (phase23_spy_relative_prereg.md)
+            dsr_b, rc_b = sr[0.010]
+            rc_spy_pass = rc_b.p_value < 0.05
+            dsr_spy_pass = dsr_b.dsr > 0.95
+            if rc_spy_pass and dsr_spy_pass:
+                sr_verdict = "PASS  (RC beats SPY p<0.05 AND DSR>0.95)"
+            elif rc_spy_pass:
+                sr_verdict = f"MARGINAL  (RC beats SPY p<0.05 but DSR={dsr_b.dsr:.2f}≤0.95)"
+            elif rc_pass:   # rc_pass = vs-cash RC from the block above
+                sr_verdict = "MARGINAL  (= beta: RC beats CASH but NOT SPY at base α)"
+            else:
+                sr_verdict = "FAIL  (RC does NOT beat SPY, p≥0.05)"
+            print(f"  >>> SPY-RELATIVE VERDICT (base 1R=1%): {sr_verdict} <<<")
+            band = {sr[a][1].p_value < 0.05 for _l, a in ALPHAS if a != 1.0}
+            if len(band) == 1:
+                print(f"      RC-vs-SPY verdict STABLE across the {{0.5,1,2}}% band.")
+            else:
+                print(f"      RC-vs-SPY verdict FLIPS across the band → 'beats SPY' is a function of")
+                print(f"      assumed leverage, not the signal (§P2-M). Read the ΔSharpe co-read above.")
+            print("  Caveat   : joint sampling still under-counts the human search (watchlist, scoring,")
+            print("             slippage, exit-mode) → a PASS is necessary, not sufficient.")
+            print("=" * 74 + "\n")
 
 
 if __name__ == "__main__":
