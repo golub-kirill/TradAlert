@@ -4,7 +4,7 @@ Behavioral regime classifier.
 Computes a ``BehavioralState`` from fetched behavioral data feeds:
  - breadth → breadth_state, breadth_divergence
  - sector rotation → sector_cycle
- - COT + NAAIM → positioning_state
+ - COT (leveraged-money net) → positioning_state
 
 The sentiment axis (AAII, then CNN Fear & Greed) was PURGED: AAII gated its free feed
 and F&G has no history before its ~2011 inception (so ~32% of the 2000-2026 backtest
@@ -47,9 +47,9 @@ def _column_or_warn(df, col, axis):
 # release. Backtest as_of slicing must use the RELEASE date, not the report/
 # survey date, or a print leaks into decisions made before it existed:
 #   cot_es : CFTC TFF reports Tuesday positions, released the following Friday (+3).
-#   naaim  : exposure survey dated to its Wednesday survey day, released next day (+1).
 # Price-derived feeds (breadth, sector_rotation) have no publication lag.
-_RELEASE_LAG_DAYS = {"cot_es": 3, "naaim": 1}
+# (NAAIM purged 2026-06-18 — positioning is COT-only.)
+_RELEASE_LAG_DAYS = {"cot_es": 3}
 
 
 def _release_align(df: "pd.DataFrame | None", lag_days: int) -> "pd.DataFrame | None":
@@ -177,7 +177,6 @@ def classify_behavioral_state(
     # Release-align the survey/report feeds before slicing so a print is only
     # visible from its publication date onward (no look-ahead in backtests).
     cot_es = _slice(_release_align(data.get("cot_es"), _RELEASE_LAG_DAYS["cot_es"]))
-    naaim = _slice(_release_align(data.get("naaim"), _RELEASE_LAG_DAYS["naaim"]))
 
     spy_t = _slice(spy_df) if spy_df is not None else None
 
@@ -200,17 +199,15 @@ def classify_behavioral_state(
         missing_axes.append("sector_cycle")
 
     # ── positioning_state ────────────────────────────────────────────────
-    # One axis fed by two sources (COT + NAAIM). Mark it missing only when BOTH
-    # are absent — with one present it is still scored (NEUTRAL). missing_axes
-    # holds the CANONICAL axis name so the weight loop below actually excludes it.
-    if cot_es is not None and not cot_es.empty and naaim is not None and not naaim.empty:
-        positioning_state = _classify_positioning(cot_es, naaim)
+    # COT-only positioning (CFTC leveraged-money net). NAAIM purged 2026-06-18 —
+    # its free feed sunset 2026-08-01 and its A/B contribution was ≈0 (−0.72R).
+    # Axis missing only when COT is absent.
+    cot_ok = cot_es is not None and not cot_es.empty
+    if cot_ok:
+        positioning_state = _classify_positioning(cot_es)
     else:
         positioning_state = "NEUTRAL"
-        cot_absent = cot_es is None or cot_es.empty
-        naaim_absent = naaim is None or naaim.empty
-        if cot_absent and naaim_absent:
-            missing_axes.append("positioning_state")
+        missing_axes.append("positioning_state")
 
     # ── composite behavioral_score ───────────────────────────────────────
     state_values = {
@@ -355,40 +352,26 @@ def _classify_sector_cycle(sector_df: pd.DataFrame) -> str:
         return "MID"
 
 
-def _classify_positioning(
-        cot_es: pd.DataFrame,
-        naaim: pd.DataFrame,
-) -> str:
+def _classify_positioning(cot_es: pd.DataFrame) -> str:
     """
-    Classify positioning from COT + NAAIM.
+    Classify positioning from COT leveraged-money net positioning (percentile).
 
-    Composite percentile:
     > 90th → CROWDED_LONG
     < 10th → CROWDED_SHORT
     else → NEUTRAL
+
+    (NAAIM purged 2026-06-18 — COT is the sole positioning source.)
     """
     # COT: leveraged-money net positioning percentile (TFF report → ``lev_net``).
-    # Guarded: a missing/empty feed must degrade this axis, not raise — the
-    # downstream composite already handles a None percentile.
+    # Guarded: a missing/empty feed degrades this axis to NEUTRAL, never raises.
     _lev = _column_or_warn(cot_es, "lev_net", "positioning(COT)")
     cot_pctile = _rolling_percentile(_lev, 260) if _lev is not None else None
-
-    # NAAIM: exposure percentile.
-    _exp = _column_or_warn(naaim, "exposure", "positioning(NAAIM)")
-    naaim_pctile = _rolling_percentile(_exp, 260) if _exp is not None else None
-
-    if cot_pctile is not None and naaim_pctile is not None:
-        composite = (cot_pctile + naaim_pctile) / 2
-    elif cot_pctile is not None:
-        composite = cot_pctile
-    elif naaim_pctile is not None:
-        composite = naaim_pctile
-    else:
+    if cot_pctile is None:
         return "NEUTRAL"
 
-    if composite > 90:
+    if cot_pctile > 90:
         return "CROWDED_LONG"
-    elif composite < 10:
+    elif cot_pctile < 10:
         return "CROWDED_SHORT"
     else:
         return "NEUTRAL"

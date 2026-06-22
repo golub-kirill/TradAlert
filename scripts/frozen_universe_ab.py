@@ -3,7 +3,8 @@
 Frozen-universe A/B (survivorship / selection-bias audit).
 
 Quantifies how much of the backtest edge is hindsight. For each as-of date D it
-runs the SAME windowed backtest (D → present, shipped 25-bar hard cap) on:
+runs the SAME windowed backtest (D → present, shipped 25-bar if_not_profit cap +
+breakeven 1.0R) on:
 
   A (hindsight)  — the CURRENT tier_a (curated with full hindsight: losers deleted,
                    newer names kept).
@@ -135,8 +136,15 @@ def main() -> None:
         "commission_r": exec_cfg.get("commission_r", 0.005),
         "close_open_at_eod": True,
         "max_hold_days": int(audit.get("max_hold_days", 25)),
-        "max_hold_mode": str(audit.get("max_hold_mode", "hard")).replace("-", "_"),
+        "max_hold_mode": str(audit.get("max_hold_mode", "if_not_profit")).replace("-", "_"),
     }
+    # Shipped breakeven (filters.yaml execution.breakeven_trigger_r, 1.0R) so the
+    # audit's A/B legs run the EXACT shipped strategy (live == backtest).
+    be = exec_cfg.get("breakeven_trigger_r")
+    if be:
+        base_port["breakeven_trigger_r"] = float(be)
+        if exec_cfg.get("breakeven_buffer_atr"):
+            base_port["breakeven_buffer_atr"] = float(exec_cfg["breakeven_buffer_atr"])
 
     from backtest.loader import load_universe
     candidates = list(dict.fromkeys(tier_a + pruned))  # union, order-preserving

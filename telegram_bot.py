@@ -206,12 +206,28 @@ def _load_market_context():
     return (market_dfs or None), vix_df
 
 
-def _load_bars(ticker: str):
-    """cache_load + attach_indicators for one ticker, or None on failure."""
+def _load_bars(ticker: str, fresh: bool = False):
+    """attach_indicators on the ticker's bars, or None on failure.
+
+    ``fresh=True`` forces a re-fetch (``get_or_fetch(force=True)``, the same path
+    main.py uses) so an on-demand chart regenerated BETWEEN daily scans shows
+    current bars rather than the stale cache; it falls back to the cached bars if
+    the fetch fails (fail-open) so a chart still renders. Default (cache load) is
+    unchanged for position cards.
+    """
     try:
         from core.indicators.indicators import attach_indicators
         from persistence.cache import load as cache_load
-        return attach_indicators(cache_load(ticker))
+        if fresh:
+            try:
+                from persistence.cache import get_or_fetch
+                df = get_or_fetch(ticker, force=True)
+            except Exception as exc:
+                logger.warning("[bars] %s fresh fetch failed (using cache) — %s", ticker, exc)
+                df = cache_load(ticker)
+        else:
+            df = cache_load(ticker)
+        return attach_indicators(df)
     except Exception as exc:
         logger.warning("[bars] %s load failed — %s", ticker, exc)
         return None
@@ -296,7 +312,7 @@ def _build_chart(ticker: str):
     """Render a FRESH chart from the latest bars (distinct from the entry-day snapshot)."""
     from core.indicators.chart import chart
 
-    df = _load_bars(ticker)
+    df = _load_bars(ticker, fresh=True)   # regenerate from a fresh fetch, not stale cache
     if df is None:
         return None
     engine = _get_engine()

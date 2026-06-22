@@ -182,6 +182,13 @@ class SizeMultGateCfg:
 
 
 @dataclass(frozen=True)
+class PeadCfg:
+    enabled: bool
+    min_priors: int
+    tercile_pct: float
+
+
+@dataclass(frozen=True)
 class ExitsCfg:
     regime_flip: bool
     momentum_fade: bool
@@ -219,6 +226,7 @@ class SignalsCfg:
     gap_risk: GapRiskCfg
     sector_gate: SectorGateCfg
     size_mult_gate: SizeMultGateCfg
+    pead: PeadCfg
     exits: ExitsCfg
     hard_to_borrow_list: list
     require_trigger_bar_up: bool
@@ -334,6 +342,13 @@ def parse(cfg: dict) -> EngineConfig:
                 enabled=_bool(cfg, "signals.size_mult_gate.enabled", False),
                 min=_num(cfg, "signals.size_mult_gate.min",
                          D("filters.signals.size_mult_gate.min", 0.25))),
+            pead=PeadCfg(
+                enabled=_bool(cfg, "signals.pead.enabled",
+                              D("filters.signals.pead.enabled", False)),
+                min_priors=_int(cfg, "signals.pead.min_priors",
+                                D("filters.signals.pead.min_priors", 8)),
+                tercile_pct=_num(cfg, "signals.pead.tercile_pct",
+                                 D("filters.signals.pead.tercile_pct", 0.667))),
             exits=ExitsCfg(
                 regime_flip=_bool(cfg, "signals.exits.regime_flip", True),
                 momentum_fade=_bool(cfg, "signals.exits.momentum_fade", True),

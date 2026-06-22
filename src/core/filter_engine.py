@@ -22,6 +22,7 @@ from pandas import Series
 
 from core.config import EngineConfig, SignalLeg, parse as parse_config
 from core.defaults import DEFAULTS
+from core.pead import EarningsEvent, qualifies
 # Re-exported for the many callers that import these from here; the regime
 # state + classifier live in the leaf module core.regime (unit-testable,
 # importable without the engine).
@@ -297,6 +298,7 @@ class FilterEngine:
             market_dfs: dict[str, pd.DataFrame] | None = None,
             vix_df: pd.DataFrame | None = None,
             earnings_date: date | None = None,
+            earnings_events: list[EarningsEvent] | None = None,
             held_long: bool = False,
             held_short: bool = False,
             regime: MarketRegime | None = None,
@@ -352,6 +354,7 @@ class FilterEngine:
             if held_long
             else self._signal_entry(
                 ticker, df, regime, earnings_date, market_dfs,
+                earnings_events=earnings_events,
                 with_checks=with_checks,
             )
         )
@@ -374,6 +377,7 @@ class FilterEngine:
             regime: MarketRegime,
             earnings_date: date | None,
             market_dfs: dict[str, pd.DataFrame] | None = None,
+            earnings_events: list[EarningsEvent] | None = None,
             with_checks: bool = False,
     ) -> SignalResult:
         """Long-entry signal detection with full gate chain.
@@ -404,9 +408,24 @@ class FilterEngine:
         row = df.iloc[-1]
         prev = df.iloc[-2]
 
+        # PEAD post-earnings-drift long candidacy (opt-in; default OFF → byte-identical).
+        # Fires the day a strong earnings reaction lands; keeps the regime kill-switch
+        # but bypasses the gap gates below (the earnings gap IS the signal).
+        pead_cfg = self.cfg.signals.pead
+        pead_fires = False
+        pead_reason = ""
+        if pead_cfg.enabled and regime.allows_longs and earnings_events:
+            spy_df = (market_dfs or {}).get("SPY")
+            if spy_df is not None and "close" in spy_df.columns:
+                fires, _car, pead_reason = qualifies(
+                    df, spy_df["close"], earnings_events,
+                    min_priors=pead_cfg.min_priors, tercile_pct=pead_cfg.tercile_pct,
+                )
+                pead_fires = fires
+
         # 4b. gap risk filter
         gr = self.cfg.signals.gap_risk
-        if gr.enabled:
+        if gr.enabled and not pead_fires:
             max_range = gr.max_prev_bar_range_atr
             prev_range = prev["high"] - prev["low"]
             if prev_range > max_range * prev["atr"]:
@@ -423,9 +442,12 @@ class FilterEngine:
                 return self._fail_result(reason, regime, ticker_trend)
 
         # 5. evaluate long-entry conditions
-        direction, signal_type, why = self._evaluate_entry(
-            row, prev, df, regime, ticker_trend,
-        )
+        if pead_fires:
+            direction, signal_type, why = "long", "pead", (pead_reason or "pead drift")
+        else:
+            direction, signal_type, why = self._evaluate_entry(
+                row, prev, df, regime, ticker_trend,
+            )
 
         if direction == "none":
             return self._fail_result(why, regime, ticker_trend)
@@ -443,7 +465,7 @@ class FilterEngine:
         # 5a. Anti-gap entry confirmation (opt-in). Require trigger-bar
         # close ≥ open before queuing the T+1 entry — early stop-outs cluster
         # on red trigger bars (close < open). Cheap gate, no cost when off.
-        if self.cfg.signals.require_trigger_bar_up:
+        if self.cfg.signals.require_trigger_bar_up and signal_type != "pead":
             try:
                 tr_close = float(row["close"])
                 tr_open = float(row["open"])

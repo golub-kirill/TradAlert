@@ -23,13 +23,15 @@ ETFs / indices return [] (no earnings exist). Network failures return []
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from core.paths import EARNINGS_HISTORY_DIR
+from core.paths import EARNINGS_HISTORY_DIR, EARNINGS_PEAD_DIR
 
 from core.fetchers.earnings_history import fetch_earnings_dates_from_yfinance
+from core.pead import EarningsEvent, classify_session
 from core.validators.yf_tickerValidator import validate_ticker
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,67 @@ def next_earnings_from(history: list[date], asof: date) -> date | None:
     """
     from core.fetchers.earnings_history import next_earnings_from as _canonical
     return _canonical(history, asof)
+
+
+def get_earnings_events(
+        ticker: str,
+        cache_dir: Path | str = EARNINGS_PEAD_DIR,
+) -> list[EarningsEvent]:
+    """
+    Load the per-ticker PEAD earnings cache and return ``EarningsEvent``s.
+
+    Reads ``{cache_dir}/{TICKER}.parquet`` (populated by ``scripts/pead_fetch.py``),
+    mapping each row's ``ann_date`` + ``local_hour`` to an ``EarningsEvent`` with
+    its reaction session ('BMO'/'AMC'). Events are returned sorted ascending by date.
+
+    Fail-open: a missing file, a 0-row parquet (ETF / no-earnings ticker), or any
+    read/parse error returns ``[]`` — the backtester treats an empty event list as
+    "no PEAD gate for this ticker".
+
+    Parameters
+    ----------
+    ticker : Symbol.
+    cache_dir : Directory holding the per-ticker PEAD parquet files.
+
+    Returns
+    -------
+    list[EarningsEvent]
+    """
+    ticker = validate_ticker(ticker)
+    path = Path(cache_dir) / f"{ticker.upper()}.parquet"
+
+    if not path.exists():
+        logger.debug("PEAD earnings cache miss (no file) %s", ticker)
+        return []
+
+    try:
+        import pandas as pd
+        df = pd.read_parquet(path)
+        if len(df) == 0:
+            logger.debug("PEAD earnings cache empty (0 rows) %s", ticker)
+            return []
+
+        events: list[EarningsEvent] = []
+        for row in df.itertuples(index=False):
+            try:
+                ev_date = _dt.date.fromisoformat(str(row.ann_date))
+            except ValueError as exc:
+                logger.debug("PEAD %s: unparseable ann_date %r — %s",
+                             ticker, getattr(row, "ann_date", None), exc)
+                continue
+            events.append(EarningsEvent(
+                date=ev_date,
+                session=classify_session(int(row.local_hour)),
+            ))
+
+        events.sort(key=lambda e: e.date)
+        logger.debug("PEAD earnings cache hit ✓ %s (%d events)",
+                     ticker, len(events))
+        return events
+    except Exception as exc:  # corrupt parquet, missing column, etc. — fail open
+        logger.warning("Failed to read PEAD earnings cache for %s — %s",
+                       ticker, exc)
+        return []
 
 
 # ── internals ────────────────────────────────────────────────────────────────

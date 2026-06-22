@@ -160,13 +160,12 @@ def test_classify_positioning_uses_lev_net_and_fails_open():
     from core.behavioral import _classify_positioning
     n = 300
     idx = pd.date_range("2019-01-01", periods=n, freq="W-FRI")
-    naaim = pd.DataFrame({"exposure": np.linspace(10, 90, n)}, index=idx)
     valid = ("CROWDED_LONG", "CROWDED_SHORT", "NEUTRAL")
 
     cot = pd.DataFrame({"lev_net": np.linspace(-1000, 5000, n)}, index=idx)
-    assert _classify_positioning(cot, naaim) in valid          # lev_net consumed
+    assert _classify_positioning(cot) in valid                 # lev_net consumed (COT-only)
 
     # Non-empty COT frame that lacks lev_net (e.g. old/Disaggregated schema)
-    # must NOT raise KeyError — the axis degrades, NAAIM still counts.
+    # must NOT raise KeyError — the axis degrades cleanly to NEUTRAL.
     bad_cot = pd.DataFrame({"mm_net": np.linspace(-1000, 5000, n)}, index=idx)
-    assert _classify_positioning(bad_cot, naaim) in valid
+    assert _classify_positioning(bad_cot) == "NEUTRAL"

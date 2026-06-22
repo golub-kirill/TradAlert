@@ -77,6 +77,32 @@ def align_strategy_benchmark(strat_monthly, bench_monthly):
     return common, strat.reindex(common).to_numpy(), bench.reindex(common).to_numpy()
 
 
+def month_end_returns(close) -> pd.Series:
+    """Monthly %-returns of a price series: month-end close → ``pct_change``.
+
+    Same convention as ``scripts/benchmark_spy.py`` / ``benchmark_relative.py`` (so SPY
+    monthly returns tie out across the validation tools). ``close`` must carry a
+    DatetimeIndex. Indexed by month-end Timestamp.
+    """
+    c = pd.Series(close).dropna()
+    monthly_close = c.resample("ME").last().dropna()
+    return monthly_close.pct_change().dropna()
+
+
+def benchmark_by_months(month_keys: Sequence[str], bench_monthly) -> np.ndarray:
+    """Benchmark monthly-return aligned to an explicit ordered list of ``'YYYY-MM'`` keys.
+
+    Pairs with :func:`align_monthly_matrix`, which keys the strategy matrix by the same
+    ``'YYYY-MM'`` month strings: a SPY-relative active-return matrix is then
+    ``α·strat_matrix − benchmark_by_months(months, spy)[:, None]`` (same-unit, §P2-M).
+    Months absent from the benchmark return NaN so the caller can drop them. Returns a
+    float ndarray the same length as ``month_keys``.
+    """
+    bench = _to_period_series(bench_monthly)
+    lookup = {str(p): float(v) for p, v in bench.items()}   # str(Period('M')) == 'YYYY-MM'
+    return np.array([lookup.get(str(m), float("nan")) for m in month_keys], dtype=float)
+
+
 # ── active-return metrics (require same-unit aligned inputs) ─────────────────────
 
 def excess_sharpe(strat: Sequence[float], bench: Sequence[float]) -> float:

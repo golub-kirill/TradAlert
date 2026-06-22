@@ -27,6 +27,36 @@ def _no_db_budget(monkeypatch):
     monkeypatch.setattr(tb.pm, "open_risk_advisory", lambda *a, **k: None)
 
 
+# ── _load_bars: on-demand chart regen fetches FRESH bars (fail-open) ──────────
+
+def _patch_bars(monkeypatch, *, fetch):
+    import core.indicators.indicators as ind
+    import persistence.cache as cache
+    monkeypatch.setattr(cache, "get_or_fetch", fetch)
+    monkeypatch.setattr(cache, "load", lambda t: f"CACHED:{t}")
+    monkeypatch.setattr(ind, "attach_indicators", lambda df: f"IND({df})")
+
+
+def test_load_bars_fresh_uses_fetch(monkeypatch):
+    _patch_bars(monkeypatch, fetch=lambda t, force=False: f"FRESH:{t}")
+    assert tb._load_bars("AAPL", fresh=True) == "IND(FRESH:AAPL)"
+
+
+def test_load_bars_fresh_falls_back_to_cache(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("network down")
+    _patch_bars(monkeypatch, fetch=boom)
+    # fresh fetch failed → falls back to the cached bars so a chart still renders
+    assert tb._load_bars("AAPL", fresh=True) == "IND(CACHED:AAPL)"
+
+
+def test_load_bars_default_uses_cache(monkeypatch):
+    def must_not_fetch(*a, **k):
+        raise AssertionError("default _load_bars must not force a fetch")
+    _patch_bars(monkeypatch, fetch=must_not_fetch)
+    assert tb._load_bars("AAPL") == "IND(CACHED:AAPL)"
+
+
 # ── duck-typed PTB fakes ─────────────────────────────────────────────────────
 
 class _User:

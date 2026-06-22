@@ -53,8 +53,10 @@ import pandas as pd
 
 from backtest.trade import Trade
 from core.exits import breakeven_stop_level, max_hold_exit_due, trailing_stop_level
+from core.fetchers.earnings_history_store import get_earnings_events
 from core.filter_engine import FilterEngine, SignalResult
 from core.indicators.indicators import attach_indicators
+from core.pead import EarningsEvent
 from core.ticker_health import TickerHealth
 from core.ticker_store import TickerStore, next_earnings_from
 from exceptions import InsufficientDataError
@@ -318,8 +320,15 @@ class BarReplayBacktester:
                 logger.warning("[%s] earnings history failed (continuing) — %s",
                                ticker, exc)
 
+        earnings_events: list[EarningsEvent] = []
+        if self._cfg.earnings_aware and self._engine.cfg.signals.pead.enabled:
+            try:
+                earnings_events = get_earnings_events(ticker)
+            except Exception as exc:
+                logger.warning("[%s] PEAD earnings events failed (continuing) — %s", ticker, exc)
+
         trades, bars_walked = self._walk(
-            df, ticker, market_dfs, vix_df, earnings_history, start, end,
+            df, ticker, market_dfs, vix_df, earnings_history, earnings_events, start, end,
         )
         result.trades = trades
         result.bars_walked = bars_walked
@@ -334,6 +343,7 @@ class BarReplayBacktester:
             market_dfs: dict[str, pd.DataFrame] | None,
             vix_df: pd.DataFrame | None,
             earnings_history: list[date],
+            earnings_events: list[EarningsEvent],
             start: date,
             end: date,
     ) -> tuple[list[Trade], int]:
@@ -505,6 +515,7 @@ class BarReplayBacktester:
             signal = self._call_engine(
                 ticker, df, T, today, market_dfs, vix_df,
                 earnings_history, held_long=False,
+                earnings_events=earnings_events,
             )
             if signal.passed and signal.direction in ("long", "short"):
                 pending_entry = signal
@@ -560,6 +571,7 @@ class BarReplayBacktester:
             earnings_history: list[date],
             held_long: bool,
             held_short: bool = False,
+            earnings_events: list[EarningsEvent] | None = None,
     ) -> SignalResult:
         """
         Make one point-in-time engine.signal call.
@@ -587,6 +599,11 @@ class BarReplayBacktester:
         # Mutate then restore — engine has no per-call today parameter.
         saved_today = self._engine._today
         self._engine._today = today
+        # Only thread earnings_events when present (PEAD enabled); when absent the
+        # call is byte-identical to the pre-PEAD signature.
+        pead_kwargs = (
+            {"earnings_events": earnings_events} if earnings_events else {}
+        )
         try:
             return self._engine.signal(
                 ticker, df_t,
@@ -595,6 +612,7 @@ class BarReplayBacktester:
                 earnings_date=next_earn,
                 held_long=held_long,
                 held_short=held_short,
+                **pead_kwargs,
             )
         except InsufficientDataError as exc:
             logger.debug("[%s] engine.signal insufficient data at %s: %s",
@@ -716,6 +734,7 @@ def call_engine_slice(
         held_long,
         regime=None,
         held_short: bool = False,
+        earnings_events=None,
 ):
     """Module-level engine.signal wrapper used by PortfolioBacktester.
 
@@ -730,6 +749,8 @@ def call_engine_slice(
     from core.filter_engine import SignalResult
 
     next_earn = _nef(earnings_history, today) if earnings_history else None
+    # Pass PEAD events only when present → with PEAD off the call shape is unchanged.
+    _pead = {"earnings_events": earnings_events} if earnings_events else {}
     saved = engine._today
     engine._today = today
     try:
@@ -741,6 +762,7 @@ def call_engine_slice(
             held_long=held_long,
             held_short=held_short,
             regime=regime,
+            **_pead,
         )
     except InsufficientDataError as exc:
         logger.debug("[%s] engine.signal insufficient data at %s: %s", ticker, today, exc)

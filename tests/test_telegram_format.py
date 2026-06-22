@@ -135,6 +135,41 @@ def test_daily_header_and_stand_down():
     sd = _plain(fmt.format_stand_down(d, n_scanned=213, regime_label="CHOP_NORMAL",
                                       risk_on=0.41, n_open=4))
     assert "no actionable signals" in sd and "scanned 213" in sd and "4 open carried" in sd
+    assert "Top blocks" not in sd  # no rejections passed → unchanged from before
+
+
+def test_stand_down_rejections_rollup_line():
+    d = date(2026, 6, 6)
+    base = fmt.format_stand_down(d, n_scanned=213)
+    enriched = fmt.format_stand_down(
+        d, n_scanned=213,
+        rejections=[{"gate": "atr_pct", "n": 140}, {"gate": "price", "n": 20},
+                    {"gate": "cap", "n": 8}])
+    assert "Top blocks" not in base                  # absent without rejections
+    p = _plain(enriched)
+    assert "Top blocks: atr_pct ×140 · price ×20 · cap ×8" in p
+
+
+def test_stand_down_rejections_accepts_tuples_and_caps_at_five():
+    d = date(2026, 6, 6)
+    rej = [("g1", 5), ("g2", 4), ("g3", 3), ("g4", 2), ("g5", 1), ("g6", 1)]
+    p = _plain(fmt.format_stand_down(d, rejections=rej))
+    assert "g1 ×5" in p and "g5 ×1" in p
+    assert "g6" not in p  # top 5 only
+
+
+def test_stand_down_rejections_html_escapes_gate():
+    d = date(2026, 6, 6)
+    out = fmt.format_stand_down(d, rejections=[{"gate": "a<b>&c", "n": 3}])
+    assert "a&lt;b&gt;&amp;c ×3" in out
+    assert "<b>&c" not in out  # raw markup never leaks
+
+
+def test_stand_down_empty_rejections_unchanged():
+    d = date(2026, 6, 6)
+    base = fmt.format_stand_down(d, n_scanned=10, n_open=2)
+    assert fmt.format_stand_down(d, n_scanned=10, n_open=2, rejections=[]) == base
+    assert fmt.format_stand_down(d, n_scanned=10, n_open=2, rejections=None) == base
 
 
 # ── position card ────────────────────────────────────────────────────────────────

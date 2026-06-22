@@ -30,6 +30,9 @@ _VALUES: dict[str, Any] = {
     "filters.signals.gap_risk.enabled": False,
     "filters.signals.gap_risk.max_prev_bar_range_atr": 3.0,
     "filters.signals.size_mult_gate.min": 0.25,
+    "filters.signals.pead.enabled": False,
+    "filters.signals.pead.min_priors": 8,
+    "filters.signals.pead.tercile_pct": 0.667,
     # settings.yaml
     "settings.storage.staleness_hours": 12,
     "settings.scanner.chart.signal_history": True,

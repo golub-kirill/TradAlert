@@ -280,14 +280,35 @@ def format_daily_header(run_date: Any, *, n_entries: int = 0, n_exits: int = 0,
 
 
 def format_stand_down(run_date: Any, *, n_scanned: int = 0, regime_label: str | None = None,
-                      risk_on: float | None = None, n_open: int | None = None) -> str:
+                      risk_on: float | None = None, n_open: int | None = None,
+                      rejections: Sequence[Any] | None = None) -> str:
     lines = [f"😴 no actionable signals · scanned {n_scanned}"]
     regime = _regime_line(regime_label, risk_on, True)
     if regime:
         lines.append(regime)
     if n_open is not None:
         lines.append(f"💼 {n_open} open carried")
+    block_line = _rejections_line(rejections)
+    if block_line:
+        lines.append(block_line)
     return _card(f"📊 <b>TradAlert</b> · {run_date:%Y-%m-%d}", lines)
+
+
+def _rejections_line(rejections: Sequence[Any] | None, *, top: int = 5) -> str:
+    """One compact, HTML-escaped 'Top blocks: gate ×n · …' line, or '' when empty.
+
+    Accepts ``{"gate","n"}`` dicts or ``(gate, n)`` tuples. Escapes each gate.
+    """
+    if not rejections:
+        return ""
+    parts: list[str] = []
+    for item in list(rejections)[:top]:
+        if isinstance(item, dict):
+            gate, n = item.get("gate"), item.get("n")
+        else:
+            gate, n = item[0], item[1]
+        parts.append(f"{_esc(gate)} ×{n}")
+    return ("🚧 Top blocks: " + " · ".join(parts)) if parts else ""
 
 
 # ── open-position card (daemon management) ───────────────────────────────────────

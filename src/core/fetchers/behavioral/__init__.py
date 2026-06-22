@@ -3,7 +3,6 @@ Behavioral data fetchers.
 
 Fetches behavioral / structural data feeds:
  COT — CFTC Commitments of Traders report
- NAAIM — NAAIM exposure index
  Breadth — % S&P 500 above MA200
  Sector — (XLI+XLF)/(XLP+XLU) rotation ratio
 
@@ -16,7 +15,6 @@ Public API
 ----------
 fetch_all_behavioral(settings) -> dict[str, pd.DataFrame | dict]
 fetch_cot(contract) -> pd.DataFrame
-fetch_naaim -> pd.DataFrame
 compute_sp500_breadth -> pd.DataFrame
 compute_sector_rotation -> pd.DataFrame
 """
@@ -28,7 +26,6 @@ from pathlib import Path
 
 from core.fetchers.behavioral.breadth import compute_sp500_breadth, compute_sector_rotation
 from core.fetchers.behavioral.cot import fetch_cot, fetch_all_cot
-from core.fetchers.behavioral.naaim import fetch_naaim
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,6 @@ __all__ = [
     "fetch_all_behavioral",
     "fetch_cot",
     "fetch_all_cot",
-    "fetch_naaim",
     "compute_sp500_breadth",
     "compute_sector_rotation",
 ]
@@ -58,7 +54,6 @@ def fetch_all_behavioral(
     -------
     dict with keys:
     cot_es, cot_tnote, cot_vix — COT DataFrames
-    naaim — NAAIM DataFrame
     breadth — S&P 500 breadth DataFrame
     sector_rotation — sector ratio DataFrame
 
@@ -92,16 +87,8 @@ def fetch_all_behavioral(
         logger.warning("[behavioral] COT fetch failed: %s", exc, exc_info=True)
         failed.append("cot")
 
-    # NAAIM
-    try:
-        naaim = fetch_naaim(
-            data_dir=data_dir, staleness_days=staleness_days, force=force,
-        )
-        if not naaim.empty:
-            result["naaim"] = naaim
-    except Exception as exc:
-        logger.warning("[behavioral] NAAIM fetch failed: %s", exc, exc_info=True)
-        failed.append("naaim")
+    # NAAIM fully removed 2026-06-21 — positioning is COT-only (its free feed sunset
+    # 2026-08-01; A/B contribution was ≈0). No NAAIM fetch.
 
     # Breadth (compute_sp500_breadth uses staleness_hours; convert from days)
     try:

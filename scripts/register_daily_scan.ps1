@@ -17,13 +17,20 @@
 .PARAMETER TaskName
     Scheduled-task name (default "TradAlert Daily Scan").
 
+.PARAMETER Morning
+    Register a morning pre-close scan: appends --morning to the main.py
+    invocation so fired ENTRIES downgrade to NEEDS_REVIEW (exits still proceed).
+    Omit for the default post-close scan (registration is byte-identical).
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1
     powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1 -At 17:30
+    powershell -ExecutionPolicy Bypass -File scripts\register_daily_scan.ps1 -At 09:00 -Morning -TaskName "TradAlert Morning Scan"
 #>
 param(
     [string]$At = "18:00",
-    [string]$TaskName = "TradAlert Daily Scan"
+    [string]$TaskName = "TradAlert Daily Scan",
+    [switch]$Morning
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +44,13 @@ if (-not (Test-Path $Bat)) {
     throw "Wrapper not found: $Bat"
 }
 
-$action = New-ScheduledTaskAction -Execute $Bat -WorkingDirectory $Root
+# -Morning appends --morning (forwarded by run_daily.bat to main.py). Without
+# the switch no -Argument is passed, keeping the default registration identical.
+if ($Morning) {
+    $action = New-ScheduledTaskAction -Execute $Bat -Argument "--morning" -WorkingDirectory $Root
+} else {
+    $action = New-ScheduledTaskAction -Execute $Bat -WorkingDirectory $Root
+}
 
 $trigger = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $At

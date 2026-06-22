@@ -20,7 +20,7 @@ config/
   secrets.env          Local secrets (gitignored; see secrets.env.example)
 
 src/core/              Domain: filter_engine, regime (MarketRegime + classifier), ticker_store, types, paths, defaults
-src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/NAAIM/breadth/sector-rotation)
+src/core/fetchers/     yfinance OHLCV, FRED/BoC macro, behavioral (COT/breadth/sector-rotation)
 src/core/indicators/   ATR/RSI/MACD/Bollinger + VBP + chart renderer
 src/core/macro/        Macro regime classifier (risk_on_score, size_multiplier)
 src/core/behavioral/   Behavioral regime classifier (breadth, sector-rotation, positioning)

@@ -125,12 +125,15 @@ macro: # block: macro data configuration
 
 
 # ── BEHAVIORAL DATA LAYER ─────────────────────────────────────────
-# COT, NAAIM, breadth, sector rotation. (Sentiment axis PURGED — AAII gated its free
-# feed; CNN F&G evaluated but dropped: no pre-2011 history + overlaps VIX/breadth.)
+# COT, breadth, sector rotation. (NAAIM PURGED 2026-06-21 — COT-only positioning.
+# Sentiment axis PURGED earlier — AAII gated its free feed; CNN F&G dropped: no
+# pre-2011 history + overlaps VIX/breadth.)
 # Fetched once per pipeline run.  Stale data > 14 days treated as missing.
 
 behavioral: # block: behavioral data configuration
   enabled: true                         # master toggle; false → no behavioral regime
+                                        # positioning = COT-only (CFTC leveraged-fund net); NAAIM purged
+                                        # 2026-06-21 (free feed sunset 2026-08-01, A/B contribution ≈0).
   data_dir: "data/behavioral"           # cache directory
   stale_window_days: 14                 # days before data is treated as missing
   size_mult_floor: 0.25                 # minimum position size when behavioral risk is fully off

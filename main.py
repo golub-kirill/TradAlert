@@ -37,7 +37,7 @@ from core.freshness import (  # noqa: E402
 )
 from core.fetchers.live_price import get_live_price  # noqa: E402
 from core.fetchers.yf_fetchOne import fetch as _fetch_one  # noqa: E402
-from persistence.db import save_scan_run, save_scan_results  # noqa: E402
+from persistence.db import save_scan_run, save_scan_results, stand_down_summary  # noqa: E402
 from core.filter_engine import FilterEngine, GateCheck, ScanResult, SignalResult  # noqa: E402
 from core.types import TickerResult  # noqa: E402
 from core.fetchers.fetcher import FetchSummary, fetch_watchlist, fetch_tier_b  # noqa: E402
@@ -238,16 +238,25 @@ def main() -> None:
         fetch_summary.succeeded, engine,
         settings=settings,
         macro_state=macro_state, behavioral_state=behavioral_state,
-        rp_ranks=rp_ranks, cal_events=cal_events,
+        rp_ranks=rp_ranks, cal_events=cal_events, morning=args.morning,
     )
 
     elapsed = time.perf_counter() - t0
 
     # ── 7. persist ────────────────────────────────────────────────────────────
-    _save_scan(fetch_summary, results, forced=args.force, settings=settings)
+    run_id = _save_scan(fetch_summary, results, forced=args.force, settings=settings)
+
+    # DB-backed stand-down readout (advisory; fail-open — a DB/format error here
+    # must never break the scan or the Telegram push).
+    stand_down = None
+    try:
+        stand_down = stand_down_summary(run_id) if run_id else None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[stand-down] summary skipped — %s", exc)
 
     # ── 8. report ─────────────────────────────────────────────────────────────
     _print_report(fetch_summary, results, total_seconds=elapsed, settings=settings)
+    _print_stand_down(stand_down)
 
     # ── 8b. telegram push (fail-open; bit-neutral to the scan) ─────────────────
     # Off unless settings.telegram.enabled. Import inside the try so a missing
@@ -255,7 +264,8 @@ def main() -> None:
     try:
         from core.telegram.push import send_alerts
         send_alerts(results, settings, macro_state=macro_state,
-                    run_date=datetime.now(timezone.utc).date())
+                    run_date=datetime.now(timezone.utc).date(),
+                    stand_down=stand_down)
     except Exception as exc:
         logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 
@@ -428,6 +438,7 @@ def _run_pipeline(
         rp_ranks: dict[str, float] | None = None,
         now: datetime | None = None,
         cal_events: list | None = None,
+        morning: bool = False,
 ) -> list[TickerResult]:
     """
     Run enrichment → scan → signal for every fetched ticker.
@@ -502,7 +513,7 @@ def _run_pipeline(
             max_open_risk=max_open_risk, expected_hold=expected_hold,
             settings=settings, macro_state=macro_state,
             behavioral_state=behavioral_state, rp_ranks=rp_ranks,
-            now=now, event_risk=event_risk,
+            now=now, event_risk=event_risk, morning=morning,
         ))
 
     return results
@@ -568,6 +579,30 @@ def _mark_review(ticker: str, signal: SignalResult, scan: ScanResult,
         signal.review_reason = " · ".join(reasons)
 
 
+def _apply_morning_review(signal: SignalResult | None, morning: bool) -> None:
+    """Morning pre-close scan downgrade: a morning run is blind to today's
+    still-forming bar / the day's open, so a fired ENTRY cannot ship as LIVE.
+
+    When ``morning`` is True and ``signal`` is a fired ENTRY (long/short) still
+    tiered LIVE, downgrade it to NEEDS_REVIEW and append a morning note to
+    ``review_reason`` (preserving any freshness reason already set). Exits
+    (exit_long/exit_short) are NEVER downgraded — held-position exits must still
+    fire. Fail-safe: a None/missing/exit signal is a no-op and never raises."""
+    if not morning:
+        return
+    if signal is None or not signal.passed:
+        return
+    if signal.direction not in ("long", "short"):
+        return
+    if signal.tier != "LIVE":
+        return
+    signal.tier = "NEEDS_REVIEW"
+    note = "morning scan (pre-close)"
+    signal.review_reason = (
+        f"{signal.review_reason} · {note}" if signal.review_reason else note
+    )
+
+
 def _process_ticker(
         ticker: str,
         engine: FilterEngine,
@@ -583,6 +618,7 @@ def _process_ticker(
         rp_ranks: dict[str, float] | None,
         now: datetime | None = None,
         event_risk: str = "",
+        morning: bool = False,
 ) -> TickerResult:
     """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
 
@@ -787,6 +823,9 @@ def _process_ticker(
             signal.event_risk = event_risk
             # Downgrade to NEEDS_REVIEW if the data was stale-after-refetch or gapped > 2×ATR.
             _mark_review(ticker, signal, scan, stale_sessions)
+            # Morning pre-close scan: blind to today's forming bar/open → a fired
+            # entry can't ship LIVE. Appends to any freshness reason; exits untouched.
+            _apply_morning_review(signal, morning)
 
         # Collect historical signals for chart overlay
         hist_signals = []
@@ -949,14 +988,36 @@ def _indicators_ready(df: pd.DataFrame) -> bool:
     return bool(df[required].iloc[-1].notna().all())
 
 
+def _print_stand_down(summary: dict | None) -> None:
+    """Print a concise stand-down readout from the DB rollup. No-op when absent.
+
+    Advisory only — guarded so a malformed summary can never abort the run.
+    """
+    if not summary:
+        return
+    try:
+        print(
+            f"  STAND-DOWN  {summary.get('n_scanned', 0)} scanned · "
+            f"{summary.get('n_passed_scan', 0)} passed · "
+            f"{summary.get('n_fired', 0)} fired"
+        )
+        gates = summary.get("rejection_gates") or []
+        if gates:
+            blocks = " · ".join(f"{g.get('gate')} ×{g.get('n')}" for g in gates)
+            print(f"    top blocks: {blocks}")
+    except Exception as exc:  # readout is advisory — never break the run
+        logging.getLogger(__name__).debug("[stand-down] print skipped — %s", exc)
+
+
 def _save_scan(
         fetch_summary: FetchSummary,
         results: list[TickerResult],
         forced: bool,
         settings: dict | None = None,
-) -> None:
+) -> int | None:
     """
-    Persist one scan_runs row + scan_results rows.
+    Persist one scan_runs row + scan_results rows. Returns the scan_runs id
+    (for a follow-up stand-down readout), or None when the DB was unavailable.
 
     Counters
     --------
@@ -1007,11 +1068,13 @@ def _save_scan(
             except Exception as exc:
                 logging.getLogger(__name__).debug(
                     "journal-incomplete notice skipped — %s", exc)
-    else:
-        # POLICY: every scan must leave data for live reconciliation. Make a
-        # skipped journal loud rather than silent so the operator notices.
-        print("  ⚠  Scan NOT journaled — DB unavailable. Set DB_* in "
-              "config/secrets.env; live reconciliation depends on this feed.")
+        return run_id
+
+    # POLICY: every scan must leave data for live reconciliation. Make a
+    # skipped journal loud rather than silent so the operator notices.
+    print("  ⚠  Scan NOT journaled — DB unavailable. Set DB_* in "
+          "config/secrets.env; live reconciliation depends on this feed.")
+    return None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1033,6 +1096,14 @@ def _parse_args() -> argparse.Namespace:
         help="Enable short-side entries. Overrides "
              "signals.allow_shorts in filters.yaml to true. Default off "
              "keeps the long-only baseline replay-stable.",
+    )
+    parser.add_argument(
+        "--morning",
+        action="store_true",
+        default=False,
+        help="morning pre-close scan: downgrade fired ENTRIES to "
+             "NEEDS_REVIEW (blind to today's forming bar/open); exits still "
+             "proceed.",
     )
     return parser.parse_args()
 

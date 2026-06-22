@@ -310,5 +310,5 @@ survivorship_audit:
   # universe for as-of dates >= their inception (you would NOT have known to prune
   # them at the time). The pruning bias is usually larger than the look-ahead bias.
   pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT]
-  max_hold_days: 25         # apply the shipped cap so the audit reflects the real strategy
-  max_hold_mode: hard
+  max_hold_days: 25              # shipped cap so the audit reflects the real strategy
+  max_hold_mode: if_not_profit   # shipped exit (ADR-001); breakeven 1.0R also applied (filters.yaml)
