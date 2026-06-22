@@ -12,7 +12,6 @@ should be added separately and marked ``@pytest.mark.live``.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -119,65 +118,7 @@ def test_cot_normalise_no_exact_match_keeps_all():
     assert df["lev_net"].iloc[0] == -1
 
 
-# ─── naaim.py ────────────────────────────────────────────────────────────────
-
-
-def test_naaim_fail_open(tmp_path: Path):
-    from core.fetchers.behavioral.naaim import fetch_naaim
-    df = fetch_naaim(data_dir=tmp_path)
-    assert isinstance(df, pd.DataFrame)
-
-
-def test_naaim_reads_cache(tmp_path: Path):
-    from core.fetchers.behavioral.naaim import fetch_naaim
-    cached = pd.DataFrame(
-        {"exposure": [85.0, 92.0]},
-        index=pd.to_datetime(["2026-05-21", "2026-05-28"]),
-    )
-    cached.index.name = "date"
-    parquet = tmp_path / "naaim.parquet"
-    meta = tmp_path / "naaim.meta.json"
-    cached.to_parquet(parquet)
-    meta.write_text(json.dumps({"fetched_at": "2026-05-28T00:00:00"}))
-    df = fetch_naaim(data_dir=tmp_path)
-    assert not df.empty
-    assert "exposure" in df.columns
-
-
-class _Resp:
-    def __init__(self, text):
-        self.text = text
-
-    def raise_for_status(self):
-        pass
-
-
-def test_naaim_rejects_out_of_range_scrape(monkeypatch):
-    # A 3-digit number lifted off the page (e.g. an unrelated "999") must be
-    # rejected, not cached as an exposure reading (audit M2).
-    from core.fetchers.behavioral import naaim
-    monkeypatch.setattr(naaim, "request_with_retry",
-                        lambda *a, **k: _Resp("Exposure Index: 999"))
-    value, _date = naaim._fetch_latest_naaim()
-    assert value is None
-
-
-def test_naaim_accepts_in_range_scrape(monkeypatch):
-    from core.fetchers.behavioral import naaim
-    monkeypatch.setattr(naaim, "request_with_retry",
-                        lambda *a, **k: _Resp("Exposure Index: 87.5"))
-    value, _date = naaim._fetch_latest_naaim()
-    assert value == 87.5
-
-
-def test_naaim_ignores_unlabelled_percentage(monkeypatch):
-    # A bare "NN%" with no Exposure/NAAIM label must NOT be scraped as the value
-    # (the loose fallback pattern was removed) — a failed parse returns None.
-    from core.fetchers.behavioral import naaim
-    monkeypatch.setattr(naaim, "request_with_retry",
-                        lambda *a, **k: _Resp("Advisors are 50% bullish this week."))
-    value, _date = naaim._fetch_latest_naaim()
-    assert value is None
+# ─── naaim.py removed 2026-06-21 — positioning is COT-only; tests deleted ─────
 
 
 if __name__ == "__main__":

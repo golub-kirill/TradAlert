@@ -44,7 +44,7 @@ def test_behavioral_all_missing_confidence_non_negative():
 
 
 def test_behavioral_partial_positioning_not_marked_missing():
-    """COT present, NAAIM absent → positioning is NOT missing (marked only when both gone)."""
+    """COT present → positioning is NOT missing (COT-only; marked missing only when COT is gone)."""
     idx = pd.date_range("2020-01-01", periods=60, freq="W-FRI")
     cot = pd.DataFrame({"net_noncommercial": np.linspace(-100, 100, 60)}, index=idx)
     st = classify_behavioral_state({"cot_es": cot}, settings={}, spy_df=None, as_of=None)

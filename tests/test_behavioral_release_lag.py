@@ -1,8 +1,7 @@
 """
-Survey/report behavioral feeds (COT, NAAIM, AAII) must be release-aligned before
-as_of slicing, so a print cannot influence a decision made before it was
-published (audit F2/F4, B2): COT +3 days (Tuesday report -> Friday release),
-NAAIM/AAII +1 day.
+Survey/report behavioral feeds (COT) must be release-aligned before as_of slicing,
+so a print cannot influence a decision made before it was published (audit F2/F4, B2):
+COT +3 days (Tuesday report -> Friday release). (NAAIM purged 2026-06-21; AAII earlier.)
 """
 
 from __future__ import annotations
@@ -30,5 +29,5 @@ def test_release_align_passthrough_on_non_datetime_or_zero_lag():
 
 def test_release_lags_are_correct():
     assert _RELEASE_LAG_DAYS["cot_es"] == 3
-    assert _RELEASE_LAG_DAYS["naaim"] == 1
-    assert "aaii" not in _RELEASE_LAG_DAYS   # sentiment axis purged (no AAII / F&G)
+    assert "naaim" not in _RELEASE_LAG_DAYS   # NAAIM purged 2026-06-21 (COT-only positioning)
+    assert "aaii" not in _RELEASE_LAG_DAYS    # sentiment axis purged (no AAII / F&G)
