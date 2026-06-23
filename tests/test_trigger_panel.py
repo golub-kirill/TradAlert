@@ -159,27 +159,29 @@ def test_vbp_nearest_node_below_mirrors_above():
 
 # ── telegram factor line ──────────────────────────────────────────────────────
 
-def test_checklist_summarizes_groups():
-    from core.telegram.push import _checklist
+def test_panel_splits_decisive_and_advisory():
+    """S7: only the MOMENTUM gates are decisive; only 52W is advisory — the broad
+    TREND/VOL/etc. groups are dropped from the card so it isn't read as a score."""
+    from core.telegram.push import _panel
     checks = [
-        GateCheck("TREND", "a", True), GateCheck("TREND", "b", True),
-        GateCheck("MOMENTUM", "x", True), GateCheck("MOMENTUM", "y", False),
-        GateCheck("RISK", "r", False),
+        GateCheck("MOMENTUM", "RSI", True, "55 [50-70]"),
+        GateCheck("MOMENTUM", "MACD hist", True, "+0.10"),
+        GateCheck("TREND", "Trend", True, "UPTREND"),
+        GateCheck("LOCATION", "52W pos", True, "87%"),
+        GateCheck("VOLATILITY", "BB z", True, "+0.40"),
     ]
-    states = dict(_checklist(SimpleNamespace(checks=checks)))
-    assert states["TREND"] is True     # all pass
-    assert states["MOM"] is None       # mixed
-    assert states["RISK"] is False     # none pass
-    assert "LOC" not in states and "VOL" not in states  # empty groups omitted
+    decisive, advisory = _panel(SimpleNamespace(checks=checks))
+    assert [n for n, _ in decisive] == ["RSI", "MACD hist"]   # MOMENTUM only
+    assert advisory == [("52W pos", "87%")]                   # 52W only; TREND/bb_z dropped
 
 
-def test_checklist_empty_when_no_checks():
-    from core.telegram.push import _checklist
-    assert _checklist(SimpleNamespace(checks=[])) == []
-    assert _checklist(SimpleNamespace(checks=None)) == []
+def test_panel_empty_when_no_checks():
+    from core.telegram.push import _panel
+    assert _panel(SimpleNamespace(checks=[])) == ([], [])
+    assert _panel(SimpleNamespace(checks=None)) == ([], [])
 
 
-def test_format_entry_renders_factor_line():
+def test_format_entry_renders_decisive_and_advisory():
     from core.telegram import format as fmt
     tr = SimpleNamespace(
         ticker="ABC",
@@ -189,9 +191,11 @@ def test_format_entry_renders_factor_line():
             expected_hold_days=(10, 15), market_regime="BULL_NORMAL"),
         scan=SimpleNamespace(close=100.0),
     )
-    text = fmt.format_entry(tr, checklist=[("TREND", True), ("MOM", None), ("RISK", False)])
-    assert "🔎" in text
-    assert "TREND ✅" in text and "MOM ▫️" in text and "RISK ❌" in text
+    text = fmt.format_entry(tr, panel=([("RSI", "55"), ("MACD hist", "+0.10")],
+                                       [("52W pos", "87%")]))
+    assert "🔎 fired on" in text and "RSI 55" in text          # decisive section
+    assert "ℹ️ advisory" in text and "52W pos 87%" in text     # advisory section
+    assert "TREND ✅" not in text                               # old multi-group tally gone
 
 
 # ── live risk-budget + size_mult surfacing ────────────────────────────────────

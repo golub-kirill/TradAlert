@@ -82,9 +82,12 @@ def test_entry_escapes_event_risk():
     assert "<b>now</b> &" not in out  # raw markup never leaks
 
 
-def test_entry_checklist_renders_factor_line():
-    out = _plain(fmt.format_entry(_entry(), checklist=[("TREND", True), ("LOC", None), ("RISK", False)]))
-    assert "TREND ✅" in out and "LOC ▫️" in out and "RISK ❌" in out
+def test_entry_renders_decisive_advisory_sections():
+    out = _plain(fmt.format_entry(
+        _entry(), panel=([("RSI", "55"), ("MACD hist", "+0.10")], [("52W pos", "87%")])))
+    assert "fired on" in out and "RSI 55" in out          # decisive section
+    assert "advisory" in out and "52W pos 87%" in out     # advisory section
+    assert "TREND ✅" not in out                           # old multi-group tally gone
 
 
 def test_short_entry_borrow_and_tailwind():
@@ -193,7 +196,7 @@ def test_position_card():
 # ── rich visuals (bars / gauges / pcts / expandable) ─────────────────────────────
 
 def test_entry_rr_bar_and_expandable_detail():
-    out = fmt.format_entry(_entry(), risk_on=0.75, n_open=4, checklist=[("TREND", True)])
+    out = fmt.format_entry(_entry(), risk_on=0.75, n_open=4, panel=([("RSI", "55")], []))
     assert "<blockquote expandable>" in out          # secondary detail tucked away
     assert len(out) <= fmt.CAPTION_LIMIT
     p = _plain(out)
@@ -225,5 +228,5 @@ def test_meters_are_html_safe():
     # No meter/divider character ever introduces a raw ampersand into the HTML.
     out = fmt.format_entry(_entry(direction="short", ticker="X&Y", close=88.40),
                            risk_on=0.35, borrow_pct=4.0, htb=True,
-                           checklist=[("TREND", False)])
+                           panel=([("RSI", "55")], []))
     assert "X&amp;Y" in out and "X&Y" not in out

@@ -161,7 +161,7 @@ def _render(tr, kind, risk_on, n_open):
     chart = _latest_chart(tr.ticker)
     if kind in ("long_entry", "short_entry"):
         text = fmt.format_entry(tr, risk_on=risk_on, n_open=n_open,
-                                checklist=_checklist(tr.signal) or None)
+                                panel=_panel(tr.signal))
         # Data-freshness tier: a stale-after-refetch or gapped entry is flagged, not sent as
         # a clean LIVE alert (main.py sets it; default "LIVE" → unchanged for normal fires).
         if getattr(tr.signal, "tier", "LIVE") == "NEEDS_REVIEW":
@@ -180,37 +180,22 @@ def _render(tr, kind, risk_on, n_open):
     return text, chart
 
 
-# Telegram factor line: a per-group summary of the engine's entry-gate checks.
-# Same source as the chart trigger panel (SignalResult.checks), so the two
-# surfaces can never disagree with the real decision. Order is fixed for a
-# stable read: TREND · MOM · LOC · VOL · RISK.
-_GROUP_LABELS = (
-    ("TREND", "TREND"),
-    ("MOMENTUM", "MOM"),
-    ("LOCATION", "LOC"),
-    ("VOLATILITY", "VOL"),
-    ("RISK", "RISK"),
-)
+# Entry-card panel (audit S7): split the engine's gate checks into what DECIDED the
+# signal (the MOMENTUM entry gates) vs non-gating ADVISORY context (52-week position),
+# so the card no longer reads as a broad multi-factor "score". Same source as the chart
+# panel (SignalResult.checks); event_risk is surfaced separately by format_entry.
+def _panel(signal):
+    """``(decisive, advisory)`` rows for the entry card — each ``[(name, detail)]``.
 
-
-def _checklist(signal):
-    """[(label, state)] group marks from ``signal.checks``.
-
-    state is True when every factor in the group passes, False when none do,
-    None when mixed (rendered ✅ / ❌ / ▫️). Empty list when the signal carries
-    no checks (``with_checks`` was off) → the factor line is omitted.
+    decisive = the MOMENTUM gates that actually fired the signal; advisory = the
+    52-week position (context, never gating). Empty lists when the signal has no
+    checks (``with_checks`` was off) → both lines are omitted.
     """
     checks = getattr(signal, "checks", None) or []
-    by_group: dict[str, list[bool]] = {}
-    for c in checks:
-        by_group.setdefault(c.group, []).append(bool(c.passed))
-    out = []
-    for group, label in _GROUP_LABELS:
-        states = by_group.get(group)
-        if not states:
-            continue
-        out.append((label, True if all(states) else False if not any(states) else None))
-    return out
+    decisive = [(c.name, c.detail) for c in checks if c.group == "MOMENTUM"]
+    advisory = [(c.name, c.detail) for c in checks
+                if c.group == "LOCATION" and c.name == "52W pos"]
+    return decisive, advisory
 
 
 def _markup(tr, kind, cfg: TelegramConfig):

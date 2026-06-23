@@ -150,11 +150,6 @@ def _mark(state: Any) -> str:
     return str(state)
 
 
-def _factor_line(checklist: Sequence[tuple[str, Any]]) -> str:
-    """'TREND ✅ · MOM ✅ · LOC ▫️ · …' from the engine gate results (one source of truth)."""
-    return " · ".join(f"{_esc(lbl)} {_mark(state)}" for lbl, state in checklist)
-
-
 def _regime_line(regime_label: str | None, risk_on: float | None, is_long: bool) -> str:
     """'🌐 BULL_NORMAL · risk-on 0.75 ✅ tailwind' — direction-aware tailwind/headwind."""
     parts: list[str] = []
@@ -169,13 +164,15 @@ def _regime_line(regime_label: str | None, risk_on: float | None, is_long: bool)
 # ── entry (long & short) ────────────────────────────────────────────────────────
 
 def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = None,
-                 checklist: Sequence[tuple[str, Any]] | None = None,
+                 panel: tuple[Sequence[Any], Sequence[Any]] | None = None,
                  borrow_pct: float | None = None, htb: bool = False) -> str:
     """Clean card for a fired long/short entry. Attach the chart as the photo.
 
     Headline: entry→target (with upside %), stop (with downside %), and an R:R
-    fill bar. Secondary detail (hold, size, factor line, regime, open count) goes
-    in an expandable blockquote. `checklist` lights the factor line when present.
+    fill bar. Secondary detail (hold, size, decisive/advisory panel, regime, open
+    count) goes in an expandable blockquote. `panel` is ``(decisive, advisory)`` —
+    the gates that fired vs non-gating context — kept separate so the card is not
+    read as a broad multi-factor score (audit S7).
     """
     s, sc = tr.signal, tr.scan
     is_long = s.direction == "long"
@@ -206,8 +203,14 @@ def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = 
     event_risk = getattr(s, "event_risk", "")
     if event_risk:
         detail.append(f"🗓 event risk: {_esc(event_risk)}")
-    if checklist:
-        detail.append("🔎 " + _factor_line(checklist))
+    if panel:
+        decisive, advisory = panel
+        if decisive:
+            detail.append("🔎 fired on · " + " · ".join(
+                f"{_esc(n)} {_esc(d)}" for n, d in decisive))
+        if advisory:
+            detail.append("ℹ️ advisory · " + " · ".join(
+                f"{_esc(n)} {_esc(d)}" for n, d in advisory))
     if not is_long and (borrow_pct is not None or htb):
         bits = []
         if borrow_pct is not None:
