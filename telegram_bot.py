@@ -331,7 +331,12 @@ def _build_chart(ticker: str):
                 cap=int(engine.cfg.execution.max_hold_days or 25))
         except Exception:
             pass  # keep the SignalResult default
-    return chart(ticker, df, signal=(sig if sig.passed else None),
+    # A fired entry → its real trigger panel + SL/TP. Otherwise (the common case for an
+    # on-demand /chart) build a display scoreboard so the chart still shows the full
+    # indicator factor panel, not just the bare "Current Values" box.
+    chart_signal = sig if (sig.passed and sig.checks) else engine.scoreboard(
+        ticker, df, regime=regime, market_dfs=market_dfs)
+    return chart(ticker, df, signal=chart_signal,
                  output_dir=SCREENSHOTS_DIR, regime=regime)
 
 

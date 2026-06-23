@@ -208,6 +208,18 @@ def test_panel_includes_size_row():
     assert size is not None and size.detail.endswith("x")   # size_mult surfaced
 
 
+def test_scoreboard_builds_full_panel_without_a_fire():
+    """The on-demand /chart scoreboard populates the full factor panel even when no
+    entry is firing (passed=False, no SL/TP), so the chart shows the indicators."""
+    eng = _engine()  # no _stub → nothing fires
+    sig = eng.scoreboard("ABC", _firing_df(),
+                         regime=MarketRegime(trend="BULL", volatility="NORMAL"))
+    assert sig.passed is False                 # display only — not a fired entry
+    assert sig.checks                          # full factor panel populated
+    assert {"TREND", "MOMENTUM", "LOCATION", "VOLATILITY", "RISK"} <= {c.group for c in sig.checks}
+    assert sig.stop_price == 0.0 and sig.target_price == 0.0   # no SL/TP overlay
+
+
 def test_live_context_budget_row_flags_over_budget():
     from main import _append_live_context_checks
     over = SimpleNamespace(direction="long", checks=[GateCheck("TREND", "x", True)])

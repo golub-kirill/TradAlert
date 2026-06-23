@@ -368,6 +368,46 @@ class FilterEngine:
             logger.debug("signal NONE %s: %s", ticker, result.reason)
         return result
 
+    def scoreboard(
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            *,
+            regime: MarketRegime,
+            market_dfs: dict[str, pd.DataFrame] | None = None,
+            direction: Direction = "long",
+            signal_type: SignalType = "momentum",
+    ) -> SignalResult:
+        """Display-only factor scoreboard for ANY ticker — no entry required.
+
+        Builds the same direction-aware gate-check panel ``_build_gate_checks`` produces
+        for a fired entry, so the on-demand /chart can show the full indicator readings
+        even when nothing is currently firing. ``passed=False`` and stop/target stay 0
+        so no entry SL/TP overlay is drawn; the panel's R:R/Stop rows use a hypothetical
+        stop/target. **Live/UI only** — never on the backtest decision path, so the
+        run_id headline stays byte-identical.
+        """
+        row, prev = df.iloc[-1], df.iloc[-2]
+        ticker_trend = self._ticker_trend(df)
+        atr_mult = self.cfg.signals.stop_loss.atr_multiplier
+        min_rr = self.cfg.signals.stop_loss.min_rr
+        close = float(row["close"])
+        atr = float(row["atr"]) if pd.notna(row.get("atr")) else 0.0
+        is_long = direction == "long"
+        stop_price = close - atr * atr_mult if is_long else close + atr * atr_mult
+        target_price = (close + atr * atr_mult * min_rr if is_long
+                        else close - atr * atr_mult * min_rr)
+        checks = self._build_gate_checks(
+            row, prev, df, regime, ticker_trend, direction, signal_type,
+            stop_price, target_price, min_rr, atr_mult, None, market_dfs,
+        )
+        return SignalResult(
+            passed=False, direction=direction, signal_type=signal_type,
+            min_rr=min_rr, size_mult=round(regime.size_multiplier, 4),
+            market_regime=regime.label, ticker_trend=ticker_trend,
+            reason="scoreboard (display only)", checks=checks,
+        )
+
     # ── entry mode ──────────────────────────────────────────────────
 
     def _signal_entry(

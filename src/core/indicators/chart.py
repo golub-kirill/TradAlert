@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # ----- constants -------------------------------------------------------------
 
 LOOKBACK_BARS: int = 90
-_WEBP_QUALITY: int = 90
-_DPI: int = 150
+_WEBP_QUALITY: int = 95
+_DPI: int = 200
 _FIGSIZE = (20, 12)
 
 DEFAULT_OUT_DIR = Path("data/screenshots")
