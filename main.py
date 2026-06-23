@@ -185,10 +185,15 @@ def main() -> None:
             logger.warning("[behavioral] classification failed — proceeding without: %s",
                            exc, exc_info=True)
 
-    # Wire calendar events into engine (in-memory only)
+    # Macro calendar (FOMC/CPI/NFP) — ADVISORY ONLY (audit S6, 2026-06-22).
+    # The hard entry-day block was DEMOTED: a paired A/B showed an FOMC/CPI/NFP
+    # entry-block is a near-no-op (≈18 entries / +0.19R over 2015-2026) and the
+    # backtest can't replicate it (live==backtest), so calendar dates feed ONLY the
+    # event_risk advisory flag below — never engine._stop_dates. (The manually
+    # curated events.stop_dates in filters.yaml is still honored by the engine.)
     if _PHASE_MODULES_AVAILABLE:
         try:
-            cal_events = get_calendar_events()  # injected into engine._stop_dates below
+            cal_events = get_calendar_events()
         except (ImportError, OSError, ValueError, RuntimeError) as exc:
             logger.debug("[calendar] get_calendar_events failed (skipping): %s", exc)
             cal_events = []
@@ -196,20 +201,6 @@ def main() -> None:
         cal_events = []
 
     engine = FilterEngine.from_dict(filters_cfg)
-
-    # Inject calendar events into engine's stop_dates index
-    if cal_events:
-        import hashlib
-        for evt in cal_events:
-            date_str = evt.date.isoformat()
-            if date_str not in engine._stop_dates:
-                stable_id = int(hashlib.sha256(date_str.encode()).hexdigest()[:8], 16) % 1000
-                engine._stop_dates[date_str] = {
-                    "id": 9000 + stable_id,
-                    "date": date_str,
-                    "description": f"{evt.category}: {evt.description}",
-                    "action": evt.action,
-                }
 
     # Build RP rank table (cross-sectional, computed once)
     rp_ranks = {}
