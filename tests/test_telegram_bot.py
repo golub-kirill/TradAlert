@@ -893,6 +893,26 @@ def test_render_status_fail_open_when_db_down(monkeypatch):
     assert "Status" in txt          # header still renders; no exception raised
 
 
+def test_render_status_escapes_html_in_db_strings(monkeypatch):
+    # DB strings with < or & MUST be HTML-escaped — the daemon sends parse_mode=HTML,
+    # so a gate reason like "rr < min_rr" otherwise crashes the send (BadRequest:
+    # unsupported start tag) and the whole /status reply is lost.
+    monkeypatch.setattr(tb.pm, "load_open_positions", lambda: {})
+    monkeypatch.setattr(tb.pm, "open_risk_advisory", lambda b: None)
+    monkeypatch.setattr(tb, "_realized_summary", lambda: None)
+    import persistence.db as _db
+    monkeypatch.setattr(_db, "latest_scan_run",
+                        lambda: {"run_id": 1, "signals_fired": 0, "tickers_scanned": 9,
+                                 "market_regime": "BULL<NORMAL>"})
+    monkeypatch.setattr(_db, "stand_down_summary",
+                        lambda rid: {"rejection_gates": [{"gate": "rr < min_rr", "n": 5},
+                                                         {"gate": "a & b", "n": 2}]})
+    txt = tb._render_status()
+    assert "rr &lt; min_rr" in txt and "&lt;NORMAL&gt;" in txt and "a &amp; b" in txt
+    assert "rr < min_rr" not in txt          # the raw form that broke Telegram is gone
+    assert "<b>Status</b>" in txt            # structural tags preserved
+
+
 def test_cb_status_refreshes_in_place(monkeypatch):
     monkeypatch.setattr(tb, "OWNER_ID", _OWNER)
     monkeypatch.setattr(tb, "_render_status", lambda: "📊 Status\n💼 0 open position(s)")
