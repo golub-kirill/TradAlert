@@ -38,7 +38,7 @@ def _patch_bars(monkeypatch, *, fetch):
 
 
 def test_load_bars_fresh_uses_fetch(monkeypatch):
-    _patch_bars(monkeypatch, fetch=lambda t, force=False: f"FRESH:{t}")
+    _patch_bars(monkeypatch, fetch=lambda t, fetcher, force=False: f"FRESH:{t}")
     assert tb._load_bars("AAPL", fresh=True) == "IND(FRESH:AAPL)"
 
 

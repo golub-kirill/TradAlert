@@ -237,7 +237,8 @@ def _load_bars(ticker: str, fresh: bool = False):
         if fresh:
             try:
                 from persistence.cache import get_or_fetch
-                df = get_or_fetch(ticker, force=True)
+                from core.fetchers.yf_fetchOne import fetch as _fetch_one
+                df = get_or_fetch(ticker, _fetch_one, force=True)
             except Exception as exc:
                 logger.warning("[bars] %s fresh fetch failed (using cache) — %s", ticker, exc)
                 df = cache_load(ticker)
