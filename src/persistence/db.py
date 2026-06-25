@@ -158,6 +158,45 @@ def save_scan_run(
             conn.close()
 
 
+def latest_scan_run() -> dict | None:
+    """Read-only: the most recent ``scan_runs`` row, for the /status dashboard.
+
+    FAIL-OPEN: any DB error logs a WARNING and returns None (never raises into
+    the Telegram daemon).
+
+    Returns
+    -------
+    dict | None
+        ``{"run_id", "created_at", "tickers_scanned", "scan_passed",
+           "signals_fired", "market_regime"}`` or None on error / empty table.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, created_at, tickers_scanned, scan_passed, signals_fired, "
+            "market_regime FROM scan_runs ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row["id"],
+            "created_at": row.get("created_at"),
+            "tickers_scanned": row.get("tickers_scanned"),
+            "scan_passed": row.get("scan_passed"),
+            "signals_fired": row.get("signals_fired"),
+            "market_regime": row.get("market_regime"),
+        }
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("latest_scan_run read skipped — %s", exc)
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def save_scan_results(
         run_id: int,
         results: list[TickerResult],
