@@ -29,7 +29,7 @@ import os
 import sys
 import time
 from dataclasses import replace
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent

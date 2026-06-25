@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import timedelta
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -229,8 +228,6 @@ def main() -> None:
     ic_c, t_c, n_c = rank_ic(comp.to_numpy(), target)
     print(f"  {'COMPOSITE':<22} {ic_c:+8.4f} {t_c:+7.2f} {n_c:>6}")
 
-    years = cand["entry_date"].agg(["min", "max"])
-    span_y = max(1.0, (years["max"] - years["min"]).days / 365.25)
     by_year = cand["entry_date"].dt.year
     ics = []
     for y, idx in cand.groupby(by_year, sort=True).indices.items():

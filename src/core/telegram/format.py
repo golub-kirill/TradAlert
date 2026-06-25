@@ -140,16 +140,6 @@ def _move_pct(frm: Any, to: Any, sign: int, *, loss: bool = False) -> str:
     return f"{pct:+.1f}%"
 
 
-def _mark(state: Any) -> str:
-    if state is True:
-        return "✅"
-    if state is False:
-        return "❌"
-    if state is None:
-        return "▫️"
-    return str(state)
-
-
 def _regime_line(regime_label: str | None, risk_on: float | None, is_long: bool) -> str:
     """'🌐 BULL_NORMAL · risk-on 0.75 ✅ tailwind' — direction-aware tailwind/headwind."""
     parts: list[str] = []

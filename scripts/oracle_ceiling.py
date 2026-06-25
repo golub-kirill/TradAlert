@@ -33,7 +33,6 @@ Exploratory harness: no journal, no HTML, no CSV.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from collections import defaultdict

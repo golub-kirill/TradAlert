@@ -34,7 +34,6 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 
-import numpy as np   # noqa: E402
 import pandas as pd  # noqa: E402
 import yaml          # noqa: E402
 

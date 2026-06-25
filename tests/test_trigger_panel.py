@@ -24,7 +24,7 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 from core.filter_engine import (  # noqa: E402
-    FilterEngine, GateCheck, MarketRegime, SignalResult,
+    FilterEngine, GateCheck, MarketRegime,
 )
 from core.indicators.vbp import (  # noqa: E402
     nearest_high_volume_node_above, nearest_high_volume_node_below,
