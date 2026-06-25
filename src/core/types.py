@@ -94,12 +94,17 @@ class GateCheck:
     detail   : Value text shown beside the mark, e.g. "62.3", "2.50×".
     strength : Optional grade in [0, 1] for continuous factors → rendered as a
                ●●●○ bar. None marks a hard binary (rendered ✓/✗).
+    neutral  : Display-only value reading with NO directional verdict — rendered
+               with no ✓/✗ or ●●●○ mark (just name + detail). Set on the no-signal
+               /chart scoreboard so the panel shows factor values without implying
+               a long/short trade. ``passed``/``strength`` are ignored when True.
     """
     group: str
     name: str
     passed: bool
     detail: str = ""
     strength: float | None = None
+    neutral: bool = False
 
 
 @dataclass

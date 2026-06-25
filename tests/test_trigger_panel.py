@@ -220,6 +220,34 @@ def test_scoreboard_builds_full_panel_without_a_fire():
     assert sig.stop_price == 0.0 and sig.target_price == 0.0   # no SL/TP overlay
 
 
+def test_scoreboard_is_neutral_no_direction_no_risk_calc():
+    """No-signal /chart: the panel must not imply a trade. Direction is 'none',
+    every factor row is a value-only reading (neutral), and the trade-geometry
+    rows (R:R, Stop) — the 'risk calc' — are absent."""
+    eng = _engine()  # no _stub → nothing fires
+    sig = eng.scoreboard("ABC", _firing_df(),
+                         regime=MarketRegime(trend="BULL", volatility="NORMAL"))
+    assert sig.direction == "none"                      # no long/short asserted
+    assert sig.checks and all(c.neutral for c in sig.checks)  # value-only readings
+    assert all(c.strength is None for c in sig.checks)        # no ●●●○ direction bar
+    names = {(c.group, c.name) for c in sig.checks}
+    assert ("RISK", "R:R") not in names                # risk/reward calc omitted
+    assert ("RISK", "Stop") not in names               # stop geometry omitted
+    assert ("LOCATION", "Clear path") not in names     # path-to-target omitted
+    # The factor VALUES are still surfaced (the point of the scoreboard).
+    assert {"TREND", "MOMENTUM", "VOLATILITY"} <= {g for g, _ in names}
+
+
+def test_neutral_scoreboard_chart_renders(tmp_path):
+    """A no-signal neutral scoreboard renders the chart without a SL/TP overlay."""
+    from core.indicators.chart import chart
+    eng = _engine()  # nothing fires
+    regime = MarketRegime(trend="BULL", volatility="NORMAL")
+    sig = eng.scoreboard("ABC", _firing_df(), regime=regime)
+    out = chart("ABC", _firing_df(), signal=sig, output_dir=tmp_path, regime=regime)
+    assert out.exists() and out.stat().st_size > 0
+
+
 def test_live_context_budget_row_flags_over_budget():
     from main import _append_live_context_checks
     over = SimpleNamespace(direction="long", checks=[GateCheck("TREND", "x", True)])
