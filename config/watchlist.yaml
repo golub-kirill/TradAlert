@@ -10,8 +10,14 @@
 # Composition note: v3 adds a deep Canadian (.TO) bench plus liquid US large-caps,
 # so individual stocks are now a larger share than the prior ETF-heavy v2. Single-
 # name gap/earnings risk is higher; the earnings buffer + gap-risk gate + open-risk
-# budget (5.0) are the controls. The ATR%>=1.0 entry gate auto-skips quiet names
-# (bonds/FX/low-vol) on any given day — they stay listed for asset-class breadth.
+# budget (5.0) are the controls.
+#
+# 2026-06-24 prune: the bond/Treasury/FX/low-vol ETFs (TLT IEF SHY TIP LQD HYG EMB
+# MUB UUP FXE FXY USMV VIG) were removed — they sat below the ATR%>=1.0 floor in
+# 100% of 50 live runs (0 passes, 0 fires) and contribute 0 backtest trades, so the
+# prune is backtest-neutral (regime/breadth/sector/positioning source their data
+# independently — none read the watchlist). Same pass: TSX 60 completed + liquid
+# Canadian mid-caps added for a deeper commission-free .TO bench.
 #
 # Suffix conventions
 #   .TO   Toronto Stock Exchange (TSX)
@@ -54,10 +60,8 @@ tier_a:
 
   # ── Factor / style ────────────────────────────────────────────────────────
   - QUAL                                # quality
-  - USMV                                # low volatility
   - VLUE                                # value
   - SPLV                                # low vol large
-  - VIG                                 # dividend growth
 
   # ── International equity ──────────────────────────────────────────────────
   - EFA                                 # developed ex-US
@@ -72,16 +76,6 @@ tier_a:
   - EWY                                 # South Korea
   - EWT                                 # Taiwan
 
-  # ── Bonds / rates ─────────────────────────────────────────────────────────
-  - TLT                                 # 20+ year Treasuries
-  - IEF                                 # 7-10 year Treasuries
-  - SHY                                 # 1-3 year Treasuries
-  - TIP                                 # TIPS
-  - LQD                                 # investment grade corp
-  - HYG                                 # high yield corp
-  - EMB                                 # emerging market debt
-  - MUB                                 # munis
-
   # ── Commodities ───────────────────────────────────────────────────────────
   - GLD                                 # gold
   - SLV                                 # silver
@@ -90,11 +84,6 @@ tier_a:
   - DBA                                 # agriculture
   - CPER                                # copper
   - URA                                 # uranium
-
-  # ── Currencies ────────────────────────────────────────────────────────────
-  - UUP                                 # USD bull
-  - FXE                                 # euro
-  - FXY                                 # yen
 
   # ── Real estate ───────────────────────────────────────────────────────────
   - VNQ                                 # US REITs
@@ -231,6 +220,11 @@ tier_a:
   - IFC.TO                              # Intact Financial
   - BN.TO                               # Brookfield Corp
   - BAM.TO                              # Brookfield Asset Management
+  - FFH.TO                              # Fairfax Financial
+  - GWO.TO                              # Great-West Lifeco
+  - X.TO                                # TMX Group
+  - ONEX.TO                             # Onex
+  - EFN.TO                              # Element Fleet Management
 
   # ── Canadian energy / pipelines ───────────────────────────────────────────
   - ENB.TO                              # Enbridge
@@ -254,6 +248,11 @@ tier_a:
   - FM.TO                               # First Quantum
   - LUN.TO                              # Lundin Mining
   - IVN.TO                              # Ivanhoe Mines
+  - CCO.TO                              # Cameco
+  - AGI.TO                              # Alamos Gold
+  - WFG.TO                              # West Fraser Timber
+  - MX.TO                               # Methanex
+  - CCL.B.TO                            # CCL Industries
 
   # ── Canadian rail / industrials ───────────────────────────────────────────
   - CNR.TO                              # CN Rail
@@ -262,6 +261,13 @@ tier_a:
   - TIH.TO                              # Toromont
   - TFII.TO                             # TFI International
   - STN.TO                              # Stantec
+  - CAE.TO                              # CAE
+  - MG.TO                               # Magna International
+  - BBD.B.TO                            # Bombardier
+  - WCN.TO                              # Waste Connections
+  - GFL.TO                              # GFL Environmental
+  - FTT.TO                              # Finning International
+  - AC.TO                               # Air Canada
 
   # ── Canadian tech ─────────────────────────────────────────────────────────
   - SHOP.TO                             # Shopify (re-added — survivorship)
@@ -270,6 +276,9 @@ tier_a:
   - GIB-A.TO                            # CGI
   - DSG.TO                              # Descartes Systems
   - KXS.TO                              # Kinaxis
+  - CLS.TO                              # Celestica
+  - TRI.TO                              # Thomson Reuters
+  - FSV.TO                              # FirstService
 
   # ── Canadian telecom / utilities ──────────────────────────────────────────
   - BCE.TO                              # BCE
@@ -280,6 +289,9 @@ tier_a:
   - H.TO                                # Hydro One
   - CU.TO                               # Canadian Utilities
   - AQN.TO                              # Algonquin Power
+  - QBR.B.TO                            # Quebecor
+  - CPX.TO                              # Capital Power
+  - BIP.UN.TO                           # Brookfield Infrastructure
 
   # ── Canadian consumer ─────────────────────────────────────────────────────
   - ATD.TO                              # Alimentation Couche-Tard
@@ -288,6 +300,10 @@ tier_a:
   - QSR.TO                              # Restaurant Brands
   - MRU.TO                              # Metro
   - WN.TO                               # George Weston
+  - GIL.TO                              # Gildan Activewear
+  - SAP.TO                              # Saputo
+  - CTC.A.TO                            # Canadian Tire
+  - DOO.TO                              # BRP Inc
 
 # ── Tier B: RP ranking only ────────────────────
 tier_b:
