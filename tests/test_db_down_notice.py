@@ -7,6 +7,7 @@ detection and the fail-open send_notice() path.
 from __future__ import annotations
 
 from core import position_manager as pm
+from core.telegram import push
 from core.telegram.push import send_notice
 
 
@@ -32,13 +33,24 @@ def test_db_reachable_true_when_connected(monkeypatch):
     assert pm.db_reachable() is True
 
 
-def test_send_notice_noop_when_disabled():
-    # No raise, no send when telegram is disabled.
+def test_send_notice_noop_when_disabled(monkeypatch):
+    # A valid token IS present, so ONLY the enabled=False guard prevents a send.
+    # Record asyncio.run: removing the disabled short-circuit makes it fire -> red.
+    monkeypatch.setenv("TG_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TG_CHAT_ID", "123")
+    calls = []
+    monkeypatch.setattr(push.asyncio, "run", lambda *a, **k: calls.append(1))
     send_notice("hi", {"telegram": {"enabled": False}})
+    assert calls == []   # nothing dispatched when disabled
 
 
-def test_send_notice_noop_when_token_missing(monkeypatch):
+def test_send_notice_noop_when_token_missing(monkeypatch, caplog):
     monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TG_CHAT_ID", raising=False)
-    # Enabled but no token -> logs + returns fail-open, never raises.
-    send_notice("hi", {"telegram": {"enabled": True}})
+    calls = []
+    monkeypatch.setattr(push.asyncio, "run", lambda *a, **k: calls.append(1))
+    with caplog.at_level("WARNING"):
+        send_notice("hi", {"telegram": {"enabled": True}})
+    assert calls == []   # enabled but no token -> never dispatched
+    # the missing-token short-circuit specifically fired (not the not-numeric path)
+    assert any("TG_BOT_TOKEN/TG_CHAT_ID missing" in r.message for r in caplog.records)

@@ -181,4 +181,10 @@ def test_size_multiplier_composite():
     assert r.size_multiplier == pytest.approx(0.5)
     assert MarketRegime(trend="BULL", volatility="LOW",
                         macro=_Axis(0.0)).size_multiplier == 0.0
+    # Unequal axes separate the geometric mean from arithmetic/product/min:
+    # geo(0.25, 1.0) = 0.5, but arithmetic = 0.625 and product = min = 0.25, so
+    # only the true geometric-mean composite passes (a formula swap turns red).
+    assert MarketRegime(trend="BULL", volatility="LOW",
+                        macro=_Axis(0.25), behavioral=_Axis(1.0)
+                        ).size_multiplier == pytest.approx(0.5)
     assert MarketRegime(trend="BULL", volatility="LOW").size_multiplier == 1.0

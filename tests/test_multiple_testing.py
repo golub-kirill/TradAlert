@@ -246,3 +246,15 @@ def test_stationary_bootstrap_indices_in_range():
     idx = _stationary_bootstrap_indices(50, 6.0, 50, rng)
     assert idx.shape == (50,)
     assert idx.min() >= 0 and idx.max() < 50
+
+
+def test_stationary_bootstrap_preserves_block_structure():
+    # The whole point of the stationary bootstrap is contiguous blocks (cur+1 mod n
+    # between geometric restarts). A large mean_block -> tiny restart prob -> almost
+    # every step is a +1 wrap. An iid mutation (cur = randint each step) destroys
+    # that, so requiring most steps be contiguous turns such a mutation red.
+    rng = np.random.default_rng(0)
+    n, size = 50, 400
+    idx = _stationary_bootstrap_indices(n, 1000.0, size, rng)
+    contiguous = sum(1 for t in range(1, size) if idx[t] == (idx[t - 1] + 1) % n)
+    assert contiguous / (size - 1) > 0.8   # iid would be ≈ 1/n = 0.02
