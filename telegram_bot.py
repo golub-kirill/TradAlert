@@ -59,7 +59,7 @@ from core.paths import DATA_DIR, FILTERS_YAML, SCREENSHOTS_DIR, SETTINGS_YAML  #
 from exceptions import ValidationError  # noqa: E402
 from core.telegram import format as fmt  # noqa: E402
 from core.telegram.config import load_telegram_config  # noqa: E402
-from core.telegram.keyboards import confirm, position_actions  # noqa: E402
+from core.telegram.keyboards import confirm, position_actions, status_actions  # noqa: E402
 
 logger = logging.getLogger("telegram_bot")
 
@@ -435,7 +435,7 @@ def _owner_only(handler):
 _CB_ARITY = {
     "chart": 1, "chartpos": 1, "stop": 1, "stopbe": 1, "stop1r": 1,
     "close": 1, "closemenu": 1, "partial": 2, "recalc": 1, "confirm": 2, "cancel": 0,
-    "logmenu": 4, "fill": 5, "skip": 2, "editmenu": 1, "edit": 2,
+    "logmenu": 4, "fill": 5, "skip": 2, "editmenu": 1, "edit": 2, "status": 1,
 }
 
 # ½ / ⅓ scale-out fractions for the partial-close buttons.
@@ -926,6 +926,17 @@ async def _try_pending_edit(update, context) -> bool:
     return True
 
 
+async def _cb_status(update, context, args):
+    """Refresh the /status dashboard in place (the 🔄 Refresh button)."""
+    query = update.callback_query
+    text = await asyncio.to_thread(_render_status)
+    try:
+        await query.edit_message_text(text, reply_markup=status_actions())
+    except Exception:
+        pass  # "message is not modified" when nothing changed since last render
+    await query.answer("refreshed")
+
+
 _CB_DISPATCH = {
     "open": _cb_open,
     "logmenu": _cb_logmenu,
@@ -944,6 +955,7 @@ _CB_DISPATCH = {
     "skip": _cb_skip,
     "editmenu": _cb_editmenu,
     "edit": _cb_edit,
+    "status": _cb_status,
 }
 
 
@@ -1232,16 +1244,50 @@ def _realized_summary() -> str | None:
         return None
 
 
-@_owner_only
-async def cmd_status(update, context):
-    open_pos = await asyncio.to_thread(pm.load_open_positions)
-    lines = [f"💼 <b>{len(open_pos)}</b> open position(s)"]
-    if open_pos:
-        lines.append(" · ".join(sorted(open_pos.keys())))
-    summary = await asyncio.to_thread(_realized_summary)
+def _render_status() -> str:
+    """Build the /status dashboard text (sync; all blocking DB/IO, fail-open per panel):
+    open positions + open-risk-vs-budget, realized R, and the latest scan's
+    fired/scanned counts + top stand-down blocks."""
+    lines = ["📊 <b>Status</b>"]
+    try:
+        open_pos = pm.load_open_positions()
+        head = f"💼 <b>{len(open_pos)}</b> open position(s)"
+        budget = pm.open_risk_advisory(_max_open_risk())
+        if budget:
+            head += f" · {budget}"
+        lines.append(head)
+        if open_pos:
+            lines.append(" · ".join(sorted(open_pos.keys())))
+    except Exception as exc:
+        logger.debug("[status] open-positions panel skipped — %s", exc)
+
+    summary = _realized_summary()
     if summary:
         lines.append(summary)
-    await update.message.reply_text("\n".join(lines))
+
+    try:
+        from persistence.db import latest_scan_run, stand_down_summary
+        run = latest_scan_run()
+        if run:
+            scan_line = (f"🔎 last scan: {run.get('signals_fired') or 0} fired · "
+                         f"{run.get('tickers_scanned') or 0} scanned · "
+                         f"{run.get('market_regime') or '—'}")
+            sd = stand_down_summary(run["run_id"])
+            gates = (sd or {}).get("rejection_gates") or []
+            if gates:
+                top = " · ".join(f"{g['gate']} ×{g['n']}" for g in gates[:3])
+                scan_line += f"\n   🚧 top blocks: {top}"
+            lines.append(scan_line)
+    except Exception as exc:
+        logger.debug("[status] scan panel skipped — %s", exc)
+
+    return "\n".join(lines)
+
+
+@_owner_only
+async def cmd_status(update, context):
+    text = await asyncio.to_thread(_render_status)
+    await update.message.reply_text(text, reply_markup=status_actions())
 
 
 @_owner_only

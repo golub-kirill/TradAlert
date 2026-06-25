@@ -441,10 +441,14 @@ class SweepEngine:
 
         # ── baseline first (always sequential) ───────────────────────────
         if progress:
-            progress("Running baseline...")
+            progress("Running baseline... (one full backtest; no config progress until it finishes)")
         base_pt = self.baseline()
         logger.info("Baseline: %d trades E[R]=%+.3f",
                     base_pt.stats.trades_count, base_pt.stats.expectancy_r)
+        if progress:
+            _bs = base_pt.stats
+            progress(f"baseline done: {_bs.trades_count}t E[R]{_bs.expectancy_r:+.3f} "
+                     f"WR{_bs.win_rate:.0%} PF{_bs.profit_factor:.2f}")
 
         # ── build job list ────────────────────────────────────────────────
         jobs: list[dict] = []
@@ -519,10 +523,14 @@ class SweepEngine:
         t_total = time.time()
 
         if progress:
-            progress("Running baseline...")
+            progress("Running baseline... (one full backtest; no config progress until it finishes)")
         base_pt = self.baseline()
         logger.info("Baseline: %d trades E[R]=%+.3f",
                     base_pt.stats.trades_count, base_pt.stats.expectancy_r)
+        if progress:
+            _bs = base_pt.stats
+            progress(f"baseline done: {_bs.trades_count}t E[R]{_bs.expectancy_r:+.3f} "
+                     f"WR{_bs.win_rate:.0%} PF{_bs.profit_factor:.2f}")
 
         # Candidate pool: per spec, its non-baseline values.
         values_by_spec: dict[str, tuple[ParamSpec, list]] = {}
@@ -680,6 +688,7 @@ class SweepEngine:
         futures = {}
         points: list[SweepPoint] = [None] * len(jobs)  # preserve order
         src_path = os.path.join(os.path.dirname(__file__), "..")
+        t0 = time.time()
 
         with ProcessPoolExecutor(
                 max_workers=self._n_workers,
@@ -725,7 +734,17 @@ class SweepEngine:
                     points[idx].mutations = dict(job["mutations"])
                 n_done += 1
                 if progress:
-                    progress(f"[{n_done}/{len(jobs)}] {job['progress_text']}")
+                    msg = f"[{n_done}/{len(jobs)}] {job['progress_text']}"
+                    try:                                   # enrich with the result (guarded)
+                        s = points[idx].stats
+                        msg += (f" → {s.trades_count}t E[R]{s.expectancy_r:+.3f} "
+                                f"WR{s.win_rate:.0%}")
+                    except Exception:
+                        pass
+                    _el = time.time() - t0
+                    _eta = _el / n_done * (len(jobs) - n_done)
+                    msg += f"  [{_el:.0f}s elapsed · ETA {_eta:.0f}s]"
+                    progress(msg)
 
             if n_failed:
                 logger.warning(

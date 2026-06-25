@@ -82,8 +82,10 @@ class _Query:
     async def edit_message_reply_markup(self, reply_markup=None):
         self.markup_edits.append(reply_markup)
 
-    async def edit_message_text(self, text):
+    async def edit_message_text(self, text, reply_markup=None, **kw):
         self.text_edits.append(text)
+        if reply_markup is not None:
+            self.markup_edits.append(reply_markup)
 
 
 class _SentMsg:
@@ -844,3 +846,60 @@ def test_basic_metrics_uses_live_now_price(monkeypatch):
     # no live price → falls back to the last close → reads flat
     m2 = tb._basic_metrics(pos, df)
     assert m2["now"] == 100.0 and m2["unrealized_r"] == pytest.approx(0.0)
+
+
+# ── /status dashboard (P2) ────────────────────────────────────────────────────
+
+def test_parse_callback_status():
+    assert tb.parse_callback("status:refresh") == ("status", ("refresh",))
+    assert tb.parse_callback("status") is None        # needs the sub-verb arg
+
+
+def test_status_actions_has_refresh_button():
+    from core.telegram.keyboards import status_actions
+    datas = [b.callback_data for row in status_actions().inline_keyboard for b in row]
+    assert datas == ["status:refresh"]
+
+
+def test_render_status_assembles_all_panels(monkeypatch):
+    monkeypatch.setattr(tb.pm, "load_open_positions", lambda: {"NVDA": object(), "AAPL": object()})
+    monkeypatch.setattr(tb.pm, "open_risk_advisory", lambda budget: "open risk 2.0/5.0R")
+    monkeypatch.setattr(tb, "_realized_summary", lambda: "📈 realized +1.50R over 3 closed")
+    import persistence.db as _db
+    monkeypatch.setattr(_db, "latest_scan_run",
+                        lambda: {"run_id": 9, "signals_fired": 2, "tickers_scanned": 40,
+                                 "market_regime": "BULL_NORMAL"})
+    monkeypatch.setattr(_db, "stand_down_summary",
+                        lambda rid: {"rejection_gates": [{"gate": "ATR%", "n": 14},
+                                                         {"gate": "price", "n": 3}]})
+    txt = tb._render_status()
+    assert "2</b> open position(s)" in txt
+    assert "open risk 2.0/5.0R" in txt
+    assert "AAPL · NVDA" in txt                                   # sorted tickers
+    assert "realized +1.50R" in txt
+    assert "2 fired · 40 scanned · BULL_NORMAL" in txt
+    assert "ATR% ×14" in txt
+
+
+def test_render_status_fail_open_when_db_down(monkeypatch):
+    # a raising panel must not blow up the dashboard (fail-open per panel)
+    monkeypatch.setattr(tb.pm, "load_open_positions",
+                        lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.setattr(tb, "_realized_summary", lambda: None)
+    import persistence.db as _db
+    monkeypatch.setattr(_db, "latest_scan_run",
+                        lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+    txt = tb._render_status()
+    assert "Status" in txt          # header still renders; no exception raised
+
+
+def test_cb_status_refreshes_in_place(monkeypatch):
+    monkeypatch.setattr(tb, "OWNER_ID", _OWNER)
+    monkeypatch.setattr(tb, "_render_status", lambda: "📊 Status\n💼 0 open position(s)")
+    upd = _Update(uid=_OWNER, data="status:refresh")
+    asyncio.run(tb._route(upd, _Context()))
+    assert upd.callback_query.text_edits == ["📊 Status\n💼 0 open position(s)"]
+    datas = [b.callback_data for row in upd.callback_query.markup_edits[-1].inline_keyboard
+             for b in row]
+    assert datas == ["status:refresh"]                           # Refresh kbd re-attached
+    assert any("refresh" in a[0].lower() for a in upd.callback_query.answers)

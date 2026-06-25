@@ -113,3 +113,8 @@ def confirm(action: str, arg: str) -> _Kb:
         _Btn("✅ Yes", callback_data=f"confirm:{action}:{arg}"),
         _Btn("✖ No", callback_data="cancel"),
     ]])
+
+
+def status_actions() -> _Kb:
+    """Single Refresh button under the /status dashboard (re-renders it in place)."""
+    return _Kb([[_Btn("🔄 Refresh", callback_data="status:refresh")]])
