@@ -1247,35 +1247,45 @@ def _realized_summary() -> str | None:
 def _render_status() -> str:
     """Build the /status dashboard text (sync; all blocking DB/IO, fail-open per panel):
     open positions + open-risk-vs-budget, realized R, and the latest scan's
-    fired/scanned counts + top stand-down blocks."""
+    fired/scanned counts + top stand-down blocks.
+
+    DB-sourced strings (budget, tickers, gate reasons, regime) are HTML-ESCAPED:
+    the daemon sends with parse_mode=HTML, so a reason like ``rr < min_rr`` would
+    otherwise be read as a stray tag and Telegram rejects the WHOLE reply
+    (BadRequest: unsupported start tag) — the structural <b>…</b> stay literal."""
+    import html
+
+    def esc(x) -> str:
+        return html.escape(str(x), quote=False)
+
     lines = ["📊 <b>Status</b>"]
     try:
         open_pos = pm.load_open_positions()
         head = f"💼 <b>{len(open_pos)}</b> open position(s)"
         budget = pm.open_risk_advisory(_max_open_risk())
         if budget:
-            head += f" · {budget}"
+            head += f" · {esc(budget)}"
         lines.append(head)
         if open_pos:
-            lines.append(" · ".join(sorted(open_pos.keys())))
+            lines.append(esc(" · ".join(sorted(open_pos.keys()))))
     except Exception as exc:
         logger.debug("[status] open-positions panel skipped — %s", exc)
 
     summary = _realized_summary()
     if summary:
-        lines.append(summary)
+        lines.append(esc(summary))
 
     try:
         from persistence.db import latest_scan_run, stand_down_summary
         run = latest_scan_run()
         if run:
-            scan_line = (f"🔎 last scan: {run.get('signals_fired') or 0} fired · "
-                         f"{run.get('tickers_scanned') or 0} scanned · "
-                         f"{run.get('market_regime') or '—'}")
+            scan_line = (f"🔎 last scan: {int(run.get('signals_fired') or 0)} fired · "
+                         f"{int(run.get('tickers_scanned') or 0)} scanned · "
+                         f"{esc(run.get('market_regime') or '—')}")
             sd = stand_down_summary(run["run_id"])
             gates = (sd or {}).get("rejection_gates") or []
             if gates:
-                top = " · ".join(f"{g['gate']} ×{g['n']}" for g in gates[:3])
+                top = " · ".join(f"{esc(g['gate'])} ×{int(g['n'])}" for g in gates[:3])
                 scan_line += f"\n   🚧 top blocks: {top}"
             lines.append(scan_line)
     except Exception as exc:
