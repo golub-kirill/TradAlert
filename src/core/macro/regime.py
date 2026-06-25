@@ -40,7 +40,6 @@ EarningsBreadth = Literal["IMPROVING", "STABLE", "DETERIORATING"]
 class MacroState:
     """Per-axis macro regime classification + composite score."""
     policy_stance_us: PolicyStance = "HOLD"
-    policy_stance_ca: PolicyStance = "HOLD"
     curve_state: CurveState = "NORMAL"
     credit_state: CreditState = "NORMAL"
     liquidity_trend: LiquidityTrend = "FLAT"
@@ -57,22 +56,11 @@ class MacroState:
     # derived position-size multiplier — set by classify_macro_state.
     size_multiplier: float = 1.0
 
-    def for_ticker(self, ticker: str) -> "MacroState":
-        """Return a per-ticker copy with Canadian adjustments."""
-        if not ticker.endswith(".TO"):
-            return self
-        import copy
-        c = copy.copy(self)
-        # .TO tickers use BoC policy stance instead of Fed
-        c.policy_stance_us = self.policy_stance_ca
-        return c
-
 
 # ── axis value mappings ──────────────────────────────────────────────────────
 
 _RISK_ON_VALUES = {
     "policy_stance_us": {"HIKING": 0.0, "HOLD": 0.5, "CUTTING": 1.0},
-    "policy_stance_ca": {"HIKING": 0.0, "HOLD": 0.5, "CUTTING": 1.0},
     "curve_state": {"INVERTED": 0.3, "STEEPENING_FROM_INVERTED": 0.0, "FLAT": 0.6, "NORMAL": 1.0},
     "credit_state": {"WIDE": 0.0, "WIDENING": 0.2, "NORMAL": 0.7, "TIGHT": 1.0},
     "liquidity_trend": {"CONTRACTING": 0.2, "FLAT": 0.6, "EXPANDING": 1.0},
@@ -221,22 +209,6 @@ def classify_macro_state(
     else:
         missing.append("policy_stance_us")
 
-    # Policy stance CA (BoC overnight) — 6-month delta, frequency-agnostic
-    boc = _series("V39079")
-    if boc is not None and len(boc) >= 2:
-        current = boc.iloc[-1]
-        ago_6m = _val_ago("V39079", 6)
-        if ago_6m is not None:
-            delta = current - ago_6m
-            if delta > 0.25:
-                state.policy_stance_ca = "HIKING"
-            elif delta < -0.25:
-                state.policy_stance_ca = "CUTTING"
-            else:
-                state.policy_stance_ca = "HOLD"
-    # policy_stance_ca isn't a scored axis (absent from _DEFAULT_AXIS_WEIGHTS), so a
-    # missing BoC stance must not be counted in `missing` / penalize confidence.
-
     # Curve state (10y - 3m spread)
     dgs10 = _val("DGS10")
     dgs3mo = _val("DGS3MO")
@@ -299,6 +271,12 @@ def classify_macro_state(
         common = walcl.index.intersection(tga.index).intersection(rrp.index)
         if len(common) >= 12:
             net_liq = walcl.loc[common] - tga.loc[common] - rrp.loc[common]
+            # `common` is unique, but .loc[common] reindexes against each
+            # series' own index and resurrects duplicate dates (a revised or
+            # double-printed FRED print). Collapse to one row per date so the
+            # net_liq.loc[label] lookups below stay scalar — a Series there
+            # makes the delta truth-tests raise.
+            net_liq = net_liq[~net_liq.index.duplicated(keep="last")]
             # 2-month and 4-month deltas, frequency-agnostic
             val_now = net_liq.iloc[-1]
             # Reconstruct net_liq at those points for accuracy
