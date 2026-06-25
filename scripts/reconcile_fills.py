@@ -62,7 +62,7 @@ def _r_multiple(side: str, entry: float, stop: float, exit_price: float) -> floa
     return gain / risk
 
 
-def reconcile(closed, commission_r: float = 0.0):
+def reconcile(closed, commission_r: float = 0.0, partials_by_id=None):
     """Score closed positions into realized R, bucketed by side.
 
     `closed` is an iterable of objects with .side/.entry_price/.stop_price/
@@ -71,12 +71,20 @@ def reconcile(closed, commission_r: float = 0.0):
     backtester) so a later trailed stop_price can't drift it; rows without an
     initial_stop (legacy, pre-migration) fall back to stop_price.
 
+    `partials_by_id` is an optional ``{position_id: [(exit_price, fraction), ...]}``
+    of manual scale-outs. When present, realized R is the size-weighted blend of
+    each scaled-out leg and the remaining fraction at the final exit:
+        R = Σ fraction_i · R(price_i)  +  (1 − Σ fraction_i) · R(exit_price)
+    A position with NO partials has remaining = 1.0, so R == R(exit_price) — the
+    pre-partials behaviour, byte-for-byte. One commission is charged per position.
+
     Returns a dict:
         by_side   : {side: [r, ...]}          scored realized R per side
         scored    : [(side, r, ticker, exit_date), ...]
         no_stop   : int   closed but no usable stop → unscorable
         bad_risk  : int   stop present but risk <= 0 (degenerate geometry)
     """
+    partials_by_id = partials_by_id or {}
     by_side: dict[str, list[float]] = defaultdict(list)
     scored: list[tuple] = []
     no_stop = 0
@@ -88,14 +96,19 @@ def reconcile(closed, commission_r: float = 0.0):
         if risk_stop is None:
             no_stop += 1
             continue
-        r = _r_multiple(p.side, float(p.entry_price), float(risk_stop),
-                        float(p.exit_price))
-        if r is None:
+        risk = _risk(p.side, float(p.entry_price), float(risk_stop))
+        if risk <= 0:
             bad_risk += 1
             continue
+        entry, side = float(p.entry_price), p.side
+        legs = [(float(px), float(f)) for px, f in (partials_by_id.get(p.id) or [])]
+        remaining = max(0.0, 1.0 - sum(f for _px, f in legs))
+        legs.append((float(p.exit_price), remaining))
+        r = sum(f * (((px - entry) if side == "long" else (entry - px)) / risk)
+                for px, f in legs)
         r -= commission_r
-        by_side[p.side].append(r)
-        scored.append((p.side, r, p.ticker, p.exit_date))
+        by_side[side].append(r)
+        scored.append((side, r, p.ticker, p.exit_date))
     return {"by_side": dict(by_side), "scored": scored,
             "no_stop": no_stop, "bad_risk": bad_risk}
 
@@ -243,7 +256,15 @@ def main() -> None:
     closed = [p for p in positions if not p.is_open]
     open_positions = [p for p in positions if p.is_open]
 
-    result = reconcile(closed, commission_r)
+    # Manual scale-outs weight a position's realized R (a no-partials position is
+    # unaffected). Loaded per closed id — small live journal, run occasionally.
+    partials_by_id = {}
+    for p in closed:
+        parts = pm.get_partials(p.id)
+        if parts:
+            partials_by_id[p.id] = [(pp.exit_price, pp.fraction) for pp in parts]
+
+    result = reconcile(closed, commission_r, partials_by_id)
     _print_report(result, exp, ref, open_positions, args.drift, commission_r)
 
 

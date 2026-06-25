@@ -193,6 +193,30 @@ def test_position_card():
     assert "HOLD — no exit signal" in p and "risk-on 0.72" in p
 
 
+def test_position_card_closed_reads_realized():
+    pos = Position(id=11, ticker="TXN", side="long", entry_price=329.99,
+                   entry_date=date(2026, 6, 22), stop_price=298.92, initial_stop=298.92,
+                   exit_price=361.06, exit_date=date(2026, 6, 30))
+    out = fmt.format_position_card(pos, closed=True, unrealized_r=1.0,
+                                   unrealized_pct=9.4, days_held=8)
+    p = _plain(out)
+    assert "realized +1.00R" in p           # "realized", not "PnL"
+    assert "8d held" in p                    # "held", not "open"
+
+
+def test_position_card_shows_scale_out():
+    pos = Position(id=12, ticker="JNJ", side="long", entry_price=232.77,
+                   entry_date=date(2026, 5, 28), stop_price=221.85)
+    # half scaled out → "scaled 50% out · 50% open"; no line when fully open
+    out = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78, remaining_frac=0.5)
+    p = _plain(out)
+    assert "scaled 50% out" in p and "50% open" in p
+    full = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78, remaining_frac=1.0)
+    assert "scaled" not in _plain(full)
+    none = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78)
+    assert "scaled" not in _plain(none)
+
+
 # ── rich visuals (bars / gauges / pcts / expandable) ─────────────────────────────
 
 def test_entry_rr_bar_and_expandable_detail():

@@ -256,7 +256,7 @@ def main() -> None:
         from core.telegram.push import send_alerts
         send_alerts(results, settings, macro_state=macro_state,
                     run_date=datetime.now(timezone.utc).date(),
-                    stand_down=stand_down)
+                    stand_down=stand_down, run_id=run_id)
     except Exception as exc:
         logging.getLogger(__name__).warning("[telegram] push skipped — %s", exc)
 

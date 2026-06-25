@@ -11,7 +11,9 @@ A row is "passed on" when:
   • `passed = 0`                                      → scan-blocked (gate = its `reason`), OR
   • `passed = 1 AND signal_kind IN ('none') / NULL`   → passed scan but nothing fired
                                                         (gate = its `reason`, which now holds
-                                                        the signal-stage reason).
+                                                        the signal-stage reason), OR
+  • `passed = 1 AND declined = 1`                     → a FIRED entry the owner skipped via the
+                                                        Telegram 🚫 Skip button (gate = 'declined').
 
 For each such (ticker, scan_date, gate) the forward return from the bar on/after
 scan_date is market-adjusted vs SPY over the identical span (same `.asof` approach
@@ -190,10 +192,12 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
         where_days = " AND r.created_at >= (NOW() - INTERVAL %s DAY) "
         params = (int(days_back),)
     cur.execute(
-        "SELECT sr.ticker, DATE(r.created_at) AS scan_date, sr.reason AS gate "
+        "SELECT sr.ticker, DATE(r.created_at) AS scan_date, sr.reason AS gate, "
+        "       sr.declined AS declined "
         "FROM scan_results sr JOIN scan_runs r ON r.id = sr.run_id "
         "WHERE (sr.passed = 0 OR (sr.passed = 1 AND (sr.signal_kind IS NULL "
-        "       OR sr.signal_kind = 'none'))) "
+        "       OR sr.signal_kind = 'none')) "
+        "       OR (sr.passed = 1 AND sr.declined = 1)) "
         + where_days +
         "ORDER BY scan_date, sr.ticker",
         params,
@@ -202,7 +206,13 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
     cur.close()
     out = []
     for row in rows:
-        gate = row["gate"] if row["gate"] else "(unspecified)"
+        # An owner-declined FIRED signal is a distinct passed-on category (the gate
+        # didn't reject it — the owner did) → label it 'declined' so the per-gate
+        # rollup separates "I skipped a fire" from "a gate blocked it".
+        if row.get("declined"):
+            gate = "declined"
+        else:
+            gate = row["gate"] if row["gate"] else "(unspecified)"
         out.append({"ticker": row["ticker"], "scan_date": row["scan_date"], "gate": gate})
     return out
 

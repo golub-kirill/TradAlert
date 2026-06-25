@@ -39,7 +39,7 @@ load_dotenv(ROOT / "config" / "secrets.env")
 sys.path.insert(0, str(ROOT / "src"))
 
 import yaml  # noqa: E402
-from telegram import Update  # noqa: E402
+from telegram import ForceReply, Update  # noqa: E402
 from telegram.constants import ParseMode  # noqa: E402
 from telegram.ext import (  # noqa: E402
     Application,
@@ -70,6 +70,22 @@ OWNER_ID: int | None = None
 
 # matplotlib is not thread-safe — serialize chart renders across all handlers.
 _CHART_LOCK = asyncio.Lock()
+
+# Pending custom-fill prompts: owner chat_id → (prompt_msg_id, ticker, stop, side).
+# Set when "✍️ Custom" is tapped; consumed (one-shot) only by a REPLY to that exact
+# ForceReply prompt (prompt_msg_id), so it can't cross-talk with a pending edit.
+_PENDING_FILL: dict[int, tuple[int | None, str, float, str]] = {}
+
+# Pending field edits: owner chat_id → (prompt_msg_id, position_id, column). Same
+# reply-bound, one-shot consumption as _PENDING_FILL.
+_PENDING_EDIT: dict[int, tuple[int | None, int, str]] = {}
+
+# Edit field alias → positions column. The bot/CLI exposes friendly names; the
+# data layer (update_position) whitelists the actual columns.
+_EDIT_FIELDS = {
+    "entry": "entry_price", "stop": "stop_price", "exit": "exit_price",
+    "initial": "initial_stop", "notes": "notes",
+}
 
 # Held for the process lifetime so the OS releases the lock on exit/crash.
 _LOCK_FH = None
@@ -233,6 +249,22 @@ def _load_bars(ticker: str, fresh: bool = False):
         return None
 
 
+def _live_price(ticker: str) -> float | None:
+    """Live quote ONLY (no cache fallback) — used for an honest fill price.
+
+    Unlike ``_resolve_exit_price`` this never falls back to the stale cached
+    close: a fill logged "@ live" must be a real live quote or fail, so the user
+    is told to use @ ref / custom rather than silently journaling a stale price.
+    """
+    try:
+        from core.fetchers.live_price import get_live_price
+        p = get_live_price(ticker)
+        return float(p) if p else None
+    except Exception as exc:
+        logger.debug("[fill] live price %s failed — %s", ticker, exc)
+        return None
+
+
 def _resolve_exit_price(ticker: str) -> float | None:
     """Latest tradeable price for a close: live price (fail-open) → last cached close."""
     try:
@@ -252,19 +284,25 @@ def _resolve_exit_price(ticker: str) -> float | None:
 
 # ── position metrics + engine verdict (read-only) ────────────────────────────
 
-def _basic_metrics(pos, df) -> dict:
-    """Unrealized R/%, distance-to-stop, days held, time-stop countdown for a card."""
+def _basic_metrics(pos, df, now_price: float | None = None) -> dict:
+    """Unrealized R/%, distance-to-stop, days held, time-stop countdown for a card.
+
+    ``now_price`` (the LIVE price) drives "now" and the live PnL/distance figures;
+    it falls back to the last daily close when no live price is available. The bar
+    df is still used for days-held and the time-stop countdown.
+    """
     import pandas as pd
 
     last_close = float(df["close"].iloc[-1])
+    cur = float(now_price) if now_price is not None else last_close
     sign = 1 if pos.side == "long" else -1
     risk = abs(pos.entry_price - pos.stop_price) if pos.stop_price else None
-    m: dict = {"now": last_close}
+    m: dict = {"now": cur}
     if pos.entry_price:
-        m["unrealized_pct"] = sign * (last_close - pos.entry_price) / pos.entry_price * 100
+        m["unrealized_pct"] = sign * (cur - pos.entry_price) / pos.entry_price * 100
     if risk:
-        m["unrealized_r"] = sign * (last_close - pos.entry_price) / risk
-        m["to_stop_r"] = sign * (last_close - pos.stop_price) / risk
+        m["unrealized_r"] = sign * (cur - pos.entry_price) / risk
+        m["to_stop_r"] = sign * (cur - pos.stop_price) / risk
     try:
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)
@@ -277,6 +315,23 @@ def _basic_metrics(pos, df) -> dict:
             m["time_stop_left"] = int(mh) - bars_held
     except Exception as exc:
         logger.debug("[metrics] time-stop calc failed for %s — %s", pos.ticker, exc)
+    return m
+
+
+def _closed_metrics(pos) -> dict:
+    """Realized R/% + days held for a CLOSED position card (no live price needed)."""
+    m: dict = {}
+    if pos.exit_price is None or not pos.entry_price:
+        return m
+    sign = 1 if pos.side == "long" else -1
+    m["unrealized_pct"] = sign * (pos.exit_price - pos.entry_price) / pos.entry_price * 100
+    risk_stop = pos.initial_stop if pos.initial_stop is not None else pos.stop_price
+    if risk_stop:
+        risk = abs(pos.entry_price - risk_stop)
+        if risk > 0:
+            m["unrealized_r"] = sign * (pos.exit_price - pos.entry_price) / risk
+    if pos.entry_date and pos.exit_date:
+        m["days_held"] = (pos.exit_date - pos.entry_date).days
     return m
 
 
@@ -377,9 +432,13 @@ def _owner_only(handler):
 
 # callback_data 'verb:args…' → exact expected arg count.
 _CB_ARITY = {
-    "chart": 1, "chartpos": 1, "stop": 1,
-    "close": 1, "recalc": 1, "confirm": 2, "cancel": 0,
+    "chart": 1, "chartpos": 1, "stop": 1, "stopbe": 1, "stop1r": 1,
+    "close": 1, "closemenu": 1, "partial": 2, "recalc": 1, "confirm": 2, "cancel": 0,
+    "logmenu": 4, "fill": 5, "skip": 2, "editmenu": 1, "edit": 2,
 }
+
+# ½ / ⅓ scale-out fractions for the partial-close buttons.
+_PARTIAL_FRACTIONS = {"half": 0.5, "third": round(1.0 / 3.0, 4)}
 # `open` accepts 3 (legacy, no side → long) or 4 (with explicit side) — so alert
 # cards pushed before the side was encoded keep working.
 _OPEN_ARITIES = (3, 4)
@@ -400,6 +459,35 @@ def parse_callback(data: str | None):
     if verb not in _CB_ARITY or len(args) != _CB_ARITY[verb]:
         return None
     return verb, args
+
+
+# ── pure stop-level helpers (unit-testable; no DB / no network) ──────────────
+
+def _one_r_stop(pos) -> float | None:
+    """The +1R stop level (locks in 1R of profit) from the INITIAL risk unit.
+
+    long:  entry + (entry - initial_stop);  short: entry - (initial_stop - entry).
+    Uses the frozen ``initial_stop`` (the reconciliation risk unit), falling back
+    to the current ``stop_price`` for legacy rows. None when there is no usable
+    stop or the geometry is degenerate (no risk unit to project)."""
+    risk_stop = pos.initial_stop if pos.initial_stop is not None else pos.stop_price
+    if risk_stop is None:
+        return None
+    r = pm.risk_unit(pos.side, float(pos.entry_price), float(risk_stop))
+    if r <= 0:
+        return None
+    entry = float(pos.entry_price)
+    level = entry + r if pos.side == "long" else entry - r
+    return round(level, 4)
+
+
+def _stop_market_note(side: str, stop: float, current: float | None) -> str:
+    """' ⚠ …' when the new stop sits on the wrong side of the latest price (so it
+    would stop out immediately), else ''. Empty when no price is available."""
+    if current is None:
+        return ""
+    breached = (current <= stop) if side == "long" else (current >= stop)
+    return " ⚠ price already past it — would stop out" if breached else ""
 
 
 # ── callback handlers (each answers its own query exactly once) ──────────────
@@ -444,6 +532,129 @@ async def _cb_open(update, context, args):
         await query.answer("⚠️ open failed (see log)")
 
 
+async def _do_fill(ticker: str, price: float, stop: float | None, side: str):
+    """Journal a fill via the adapter. Returns ``(new_id|None, status_message)`` —
+    the shared body for the live/ref buttons and the custom force-reply."""
+    stop_val = stop if (stop and stop > 0) else None
+    try:
+        new_id = await asyncio.to_thread(
+            get_adapter().open, ticker.upper(), price, date.today(), side, stop_val)
+    except ValidationError as exc:
+        return None, f"⚠️ {exc.detail}"
+    if not new_id:
+        return None, "⚠️ open failed (see log)"
+    notes = []
+    if stop_val is None:
+        notes.append("no stop set")
+    budget = await asyncio.to_thread(pm.open_risk_advisory, _max_open_risk())
+    if budget:
+        notes.append(budget)
+    suffix = (" · " + " · ".join(notes)) if notes else ""
+    return new_id, f"✅ logged id={new_id} {side.upper()} {ticker.upper()} @ {price:.2f}{suffix}"
+
+
+async def _cb_logmenu(update, context, args):
+    """``logmenu:TICKER:ref:stop:side`` — open the fill-price picker on the card."""
+    from core.telegram.keyboards import fill_source_menu
+    query = update.callback_query
+    ticker, ref_s, stop_s, side = args
+    try:
+        ref, stop = float(ref_s), float(stop_s)
+    except ValueError:
+        await query.answer("bad price")
+        return
+    side = side if side in ("long", "short") else "long"
+    await query.answer()
+    menu = fill_source_menu(ticker, ref, stop, side)
+    try:
+        await query.edit_message_reply_markup(reply_markup=menu)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"How did you fill {ticker.upper()}?", reply_markup=menu)
+
+
+async def _cb_fill(update, context, args):
+    """``fill:SRC:TICKER:ref:stop:side`` — journal the fill.
+
+    SRC: ``live`` (a real live quote — never the stale cache), ``ref`` (the alert
+    price), or ``cust`` (prompt for a typed price via force-reply).
+    """
+    query = update.callback_query
+    src, ticker, ref_s, stop_s, side = args
+    side = side if side in ("long", "short") else "long"
+    try:
+        ref, stop = float(ref_s), float(stop_s)
+    except ValueError:
+        await query.answer("bad price")
+        return
+
+    if src == "cust":
+        await query.answer()
+        prompt = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✍️ Reply with the fill price for {ticker.upper()} ({side}).",
+            reply_markup=ForceReply(selective=True))
+        # Bind the pending fill to THIS prompt's message id so a reply only resolves
+        # the prompt it actually answered (no cross-talk with a pending edit).
+        _PENDING_FILL[update.effective_chat.id] = (_prompt_id(prompt), ticker, stop, side)
+        return
+
+    if src == "live":
+        price = await asyncio.to_thread(_live_price, ticker)
+        if price is None:
+            await query.answer("⚠️ no live quote — use @ ref or ✍️ Custom", show_alert=True)
+            return
+    else:  # ref
+        price = ref
+
+    new_id, msg = await _do_fill(ticker, price, stop, side)
+    if new_id:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    await query.answer(msg, show_alert=msg.startswith("⚠️"))
+
+
+def _prompt_id(msg) -> int | None:
+    """Message id of a sent ForceReply prompt (None if unavailable)."""
+    return getattr(msg, "message_id", None)
+
+
+def _reply_matches(update, prompt_id) -> bool:
+    """True iff this message is a reply to the specific ForceReply prompt
+    ``prompt_id`` — so a typed answer only resolves the prompt it actually
+    answered (no cross-talk between a pending fill and a pending edit, and no
+    hijack of an unrelated free-text message)."""
+    if prompt_id is None:
+        return False
+    reply = getattr(update.message, "reply_to_message", None)
+    return reply is not None and getattr(reply, "message_id", None) == prompt_id
+
+
+async def _try_custom_fill(update, context) -> bool:
+    """One-shot: if THIS message replies to a pending custom-fill prompt, journal
+    the typed price and return True (consumed); else return False (not for us)."""
+    pending = _PENDING_FILL.get(update.effective_chat.id)
+    if pending is None:
+        return False
+    prompt_id, ticker, stop, side = pending
+    if not _reply_matches(update, prompt_id):
+        return False
+    _PENDING_FILL.pop(update.effective_chat.id, None)
+    text = (update.message.text or "").strip()
+    try:
+        price = float(text.split()[0])
+    except (ValueError, IndexError):
+        await update.message.reply_text(
+            f"⚠️ couldn't read a price for {ticker.upper()} — fill not logged")
+        return True
+    _new_id, msg = await _do_fill(ticker, price, stop, side)
+    await update.message.reply_text(msg)
+    return True
+
+
 async def _cb_chart(update, context, args):
     """``chart:TICKER`` — render and send a fresh chart."""
     query = update.callback_query
@@ -468,6 +679,42 @@ async def _cb_stop(update, context, args):
     await update.callback_query.answer(f"Send  /stop {pid} PRICE", show_alert=True)
 
 
+async def _cb_stopbe(update, context, args):
+    """``stopbe:ID`` — one tap: move the stop to breakeven (the entry price)."""
+    await _move_stop(update, args, target=lambda pos: round(float(pos.entry_price), 4),
+                     label="breakeven")
+
+
+async def _cb_stop1r(update, context, args):
+    """``stop1r:ID`` — one tap: move the stop to the +1R level (locks in 1R)."""
+    await _move_stop(update, args, target=_one_r_stop, label="+1R",
+                     none_msg="no initial stop on #%d — can't compute +1R")
+
+
+async def _move_stop(update, args, *, target, label, none_msg=None):
+    """Shared body for the one-tap stop moves: resolve the position, compute the
+    new stop via ``target(pos)``, journal it with ``update_stop``, and report —
+    warning if the new stop already sits past the live price."""
+    query = update.callback_query
+    pid = int(args[0])
+    pos = await asyncio.to_thread(pm.get_position, pid)
+    if pos is None or not pos.is_open:
+        await query.answer("no open position #%d" % pid)
+        return
+    new_stop = target(pos)
+    if new_stop is None:
+        await query.answer("⚠️ " + ((none_msg or "can't move stop on #%d") % pid),
+                           show_alert=True)
+        return
+    ok = await asyncio.to_thread(get_adapter().update_stop, pid, new_stop)
+    if not ok:
+        await query.answer("⚠️ stop update failed")
+        return
+    current = await asyncio.to_thread(_resolve_exit_price, pos.ticker)
+    note = _stop_market_note(pos.side, new_stop, current)
+    await query.answer(f"✅ stop → {label} {new_stop:.2f}{note}", show_alert=bool(note))
+
+
 async def _cb_close(update, context, args):
     """``close:ID`` — gate the destructive close behind a Yes/No confirm."""
     query = update.callback_query
@@ -478,6 +725,59 @@ async def _cb_close(update, context, args):
         text=f"⚠️ Close position #{pid}? Logs an exit at the latest price.",
         reply_markup=confirm("close", str(pid)),
     )
+
+
+async def _cb_closemenu(update, context, args):
+    """``closemenu:ID`` — show the close/scale picker (½ / ⅓ / Full)."""
+    from core.telegram.keyboards import close_menu
+    query = update.callback_query
+    pid = int(args[0])
+    pos = await asyncio.to_thread(pm.get_position, pid)
+    if pos is None or not pos.is_open:
+        await query.answer("no open position #%d" % pid)
+        return
+    await query.answer()
+    menu = close_menu(pid)
+    try:
+        await query.edit_message_reply_markup(reply_markup=menu)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Close #{pid} {pos.ticker}?", reply_markup=menu)
+
+
+async def _cb_partial(update, context, args):
+    """``partial:SRC:ID`` — journal a ½/⅓ scale-out at the latest price (manual
+    risk tool). The remaining fraction closes later via the Full close; reconcile
+    weights realized R by the fractions."""
+    query = update.callback_query
+    src, pid_s = args
+    pid = int(pid_s)
+    frac = _PARTIAL_FRACTIONS.get(src)
+    if frac is None:
+        await query.answer("unknown size")
+        return
+    pos = await asyncio.to_thread(pm.get_position, pid)
+    if pos is None or not pos.is_open:
+        await query.answer("no open position #%d" % pid)
+        return
+    price = await asyncio.to_thread(_resolve_exit_price, pos.ticker)
+    if price is None:
+        await query.answer("⚠️ no price available", show_alert=True)
+        return
+    try:
+        new_id = await asyncio.to_thread(
+            get_adapter().scale_out, pid, price, date.today(), frac)
+    except ValidationError as exc:
+        await query.answer(f"⚠️ {exc.detail}", show_alert=True)
+        return
+    if not new_id:
+        await query.answer("⚠️ scale-out failed (see log)")
+        return
+    remaining = await asyncio.to_thread(pm.remaining_fraction, pid)
+    await query.answer(
+        f"✅ scaled {frac:.0%} of {pos.ticker} @ {price:.2f} · {remaining:.0%} left",
+        show_alert=True)
 
 
 async def _cb_recalc(update, context, args):
@@ -523,15 +823,126 @@ async def _cb_cancel(update, context, args):
     await _safe_edit_text(query, "cancelled")
 
 
+async def _cb_skip(update, context, args):
+    """``skip:RUNID:TICKER`` — journal the owner skipping a fired entry (declined),
+    feeding opportunity_tracker's passed-on outcomes (was skipping it right?)."""
+    from persistence.db import mark_declined
+    query = update.callback_query
+    run_id_s, ticker = args
+    try:
+        run_id = int(run_id_s)
+    except ValueError:
+        await query.answer("bad run id")
+        return
+    ok = await asyncio.to_thread(mark_declined, run_id, ticker)
+    if ok:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.answer(f"🚫 skipped {ticker.upper()} — logged as passed-on")
+    else:
+        await query.answer("⚠️ couldn't log skip (see log)")
+
+
+# ── edit a journaled position (open or closed) ───────────────────────────────
+
+async def _apply_edit(pid: int, col: str, raw: str):
+    """Validate + apply one field edit via the adapter. Returns ``(ok, message)`` —
+    shared by the /edit command and the ✏️ Edit force-reply."""
+    if col == "notes":
+        value = raw
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            return False, f"⚠️ '{raw}' is not a number"
+    try:
+        ok = await asyncio.to_thread(
+            lambda: get_adapter().edit_position(pid, **{col: value}))
+    except ValidationError as exc:
+        return False, f"⚠️ {exc.detail}"
+    if ok:
+        shown = value if col == "notes" else f"{float(value):.4f}"
+        return True, f"✅ #{pid} {col} → {shown}"
+    return False, f"⚠️ edit failed for #{pid} (not found?)"
+
+
+async def _cb_editmenu(update, context, args):
+    """``editmenu:ID`` — show the field picker (open vs closed offer different fields)."""
+    from core.telegram.keyboards import edit_menu
+    query = update.callback_query
+    pid = int(args[0])
+    pos = await asyncio.to_thread(pm.get_position, pid)
+    if pos is None:
+        await query.answer("no position #%d" % pid)
+        return
+    await query.answer()
+    menu = edit_menu(pid, pos.is_open)
+    try:
+        await query.edit_message_reply_markup(reply_markup=menu)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Edit #{pid} {pos.ticker}?", reply_markup=menu)
+
+
+async def _cb_edit(update, context, args):
+    """``edit:FIELD:ID`` — prompt (force-reply) for the new value of one field."""
+    query = update.callback_query
+    field, pid_s = args
+    col = _EDIT_FIELDS.get(field)
+    if col is None:
+        await query.answer("unknown field")
+        return
+    pid = int(pid_s)
+    pos = await asyncio.to_thread(pm.get_position, pid)
+    if pos is None:
+        await query.answer("no position #%d" % pid)
+        return
+    await query.answer()
+    prompt = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✏️ Reply with the new <b>{field}</b> for #{pid} {pos.ticker}.",
+        reply_markup=ForceReply(selective=True))
+    # Bind the pending edit to THIS prompt's message id (see _reply_matches).
+    _PENDING_EDIT[update.effective_chat.id] = (_prompt_id(prompt), pid, col)
+
+
+async def _try_pending_edit(update, context) -> bool:
+    """One-shot: if THIS message replies to a pending field-edit prompt, apply the
+    typed value and return True (consumed); else return False (not for us)."""
+    pending = _PENDING_EDIT.get(update.effective_chat.id)
+    if pending is None:
+        return False
+    prompt_id, pid, col = pending
+    if not _reply_matches(update, prompt_id):
+        return False
+    _PENDING_EDIT.pop(update.effective_chat.id, None)
+    raw = (update.message.text or "").strip()
+    _ok, msg = await _apply_edit(pid, col, raw)
+    await update.message.reply_text(msg)
+    return True
+
+
 _CB_DISPATCH = {
     "open": _cb_open,
+    "logmenu": _cb_logmenu,
+    "fill": _cb_fill,
     "chart": _cb_chart,
     "chartpos": _cb_chartpos,
     "stop": _cb_stop,
+    "stopbe": _cb_stopbe,
+    "stop1r": _cb_stop1r,
     "close": _cb_close,
+    "closemenu": _cb_closemenu,
+    "partial": _cb_partial,
     "recalc": _cb_recalc,
     "confirm": _cb_confirm,
     "cancel": _cb_cancel,
+    "skip": _cb_skip,
+    "editmenu": _cb_editmenu,
+    "edit": _cb_edit,
 }
 
 
@@ -565,16 +976,30 @@ async def _safe_edit_text(query, text: str) -> None:
 # ── command handlers ─────────────────────────────────────────────────────────
 
 _HELP = (
-    "<b>TradAlert bot</b>\n"
-    "/positions — open positions (with action buttons)\n"
-    "/pos ID — one position card\n"
-    "/recalc [ID|all] — recompute P&amp;L + engine exit verdict\n"
-    "/open TICKER PRICE [--stop S] [--short] — journal a fill\n"
-    "/close ID [PRICE] — close (latest price if omitted)\n"
-    "/stop ID PRICE — move the stop\n"
-    "/chart TICKER — fresh chart\n"
-    "/status — open count + realized R\n"
-    "/scan — run the daily scan now"
+    "📟 <b>TradAlert</b> — interactive controls\n"
+    "<blockquote>journal-only · every button drives the positions table, never a broker</blockquote>\n"
+    "\n"
+    "<b>📊 View</b>\n"
+    "<code>/positions</code> — open positions, each with action buttons\n"
+    "<code>/pos ID</code> — one card (open <i>or</i> closed)\n"
+    "<code>/status</code> — open count + realized R\n"
+    "<code>/chart TICKER</code> — fresh chart + factor scoreboard\n"
+    "\n"
+    "<b>📈 Journal</b>\n"
+    "<code>/open TICKER PRICE [--stop S] [--short]</code> — log a fill\n"
+    "<code>/close ID [PRICE]</code> — close (live price if omitted)\n"
+    "<code>/stop ID PRICE</code> — move the stop\n"
+    "<code>/edit ID FIELD VALUE</code> — fix a fill · fields: "
+    "<i>entry · stop · exit · initial · notes</i>\n"
+    "<code>/recalc [ID|all]</code> — recompute PnL + engine exit read\n"
+    "\n"
+    "<b>⚙️ Run</b>\n"
+    "<code>/scan</code> — run the daily scan now\n"
+    "\n"
+    "<b>🔘 Buttons</b>\n"
+    "<i>Entry</i> → 📈 Log opened (live · ref · ✍️ custom) · 🚫 Skip · 📊 Chart\n"
+    "<i>Position</i> → 🟰 Breakeven · 🔒 +1R · ✏️ Stop · ➖ Close (½·⅓·Full) · "
+    "✏️ Edit · 🔄 Recalc"
 )
 
 
@@ -584,18 +1009,34 @@ async def cmd_help(update, context):
 
 
 async def _send_position_card(context, chat_id, pos, *, with_engine: bool) -> None:
-    """Render one position card (+ action buttons) and send it."""
+    """Render one position card (+ action buttons) and send it.
+
+    A CLOSED position gets a realized-R card with only the ✏️ Edit / 📈 Chart
+    actions (the live stop/close/recalc buttons need an open position)."""
+    if not pos.is_open:
+        text = fmt.format_position_card(pos, closed=True, **_closed_metrics(pos))
+        await context.bot.send_message(
+            chat_id=chat_id, text=text, reply_markup=position_actions(pos.id, is_open=False))
+        return
     df = await asyncio.to_thread(_load_bars, pos.ticker)
+    # "now" / live PnL use the LIVE price (fail-open to the last close), not the
+    # cached daily close — a position opened at today's close otherwise reads as
+    # flat all day while the tape moves.
+    live = await asyncio.to_thread(_resolve_exit_price, pos.ticker)
     metrics: dict = {}
     verdict = None
     if df is not None:
-        metrics = await asyncio.to_thread(_basic_metrics, pos, df)
+        metrics = await asyncio.to_thread(_basic_metrics, pos, df, live)
         if with_engine:
             try:
                 verdict = await asyncio.to_thread(_engine_verdict, pos, df)
             except Exception as exc:
                 logger.warning("[recalc] engine verdict failed for %s — %s", pos.ticker, exc)
-    text = fmt.format_position_card(pos, engine_verdict=verdict, **metrics)
+    # Surface any manual scale-outs (remaining < 100%); fail-open to no line.
+    partials = await asyncio.to_thread(pm.get_partials, pos.id)
+    remaining = round(1.0 - sum(p.fraction for p in partials), 6) if partials else None
+    text = fmt.format_position_card(pos, engine_verdict=verdict,
+                                    remaining_frac=remaining, **metrics)
     await context.bot.send_message(
         chat_id=chat_id, text=text, reply_markup=position_actions(pos.id))
 
@@ -743,6 +1184,28 @@ async def cmd_stop(update, context):
 
 
 @_owner_only
+async def cmd_edit(update, context):
+    """``/edit ID FIELD VALUE`` — correct a journaled position (open or closed)."""
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text(
+            "usage: /edit ID FIELD VALUE\nfields: entry · stop · exit · initial · notes")
+        return
+    try:
+        pid = int(args[0])
+    except ValueError:
+        await update.message.reply_text("ID must be a number")
+        return
+    col = _EDIT_FIELDS.get(args[1].lower())
+    if col is None:
+        await update.message.reply_text(
+            f"unknown field '{args[1]}' — use: entry · stop · exit · initial · notes")
+        return
+    _ok, msg = await _apply_edit(pid, col, " ".join(args[2:]))
+    await update.message.reply_text(msg)
+
+
+@_owner_only
 async def cmd_chart(update, context):
     if not context.args:
         await update.message.reply_text("usage: /chart TICKER")
@@ -799,15 +1262,21 @@ async def cmd_scan(update, context):
 
 # ── catch-all + error handler ────────────────────────────────────────────────
 
-async def _reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Non-command messages: hint the owner, drop strangers."""
+async def _on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Non-command messages from the owner: a pending custom-fill price (force-reply
+    answer) is journaled; anything else gets the /help hint. Strangers are dropped."""
     user = update.effective_user
-    if user is not None and OWNER_ID is not None and user.id == OWNER_ID:
-        if update.message is not None:
-            await update.message.reply_text("Unknown input — try /help")
-    else:
+    if user is None or OWNER_ID is None or user.id != OWNER_ID:
         logger.warning("[telegram] ignoring message from non-owner user_id=%s",
                        getattr(user, "id", None))
+        return
+    if update.message is None:
+        return
+    if await _try_custom_fill(update, context):
+        return
+    if await _try_pending_edit(update, context):
+        return
+    await update.message.reply_text("Unknown input — try /help")
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -831,11 +1300,12 @@ def build_application(token: str) -> Application:
     app.add_handler(CommandHandler("open", cmd_open))
     app.add_handler(CommandHandler("close", cmd_close))
     app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("edit", cmd_edit))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(_route))
-    app.add_handler(MessageHandler(filters.ALL, _reject))
+    app.add_handler(MessageHandler(filters.ALL, _on_message))
     app.add_error_handler(_on_error)
     return app
 

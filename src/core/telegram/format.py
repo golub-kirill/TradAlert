@@ -321,13 +321,17 @@ def format_position_card(pos: Any, *, now: float | None = None,
                          days_held: int | None = None, to_target_r: float | None = None,
                          to_stop_r: float | None = None, time_stop_left: int | None = None,
                          max_hold: int | None = None, mode: str | None = None,
-                         engine_verdict: str | None = None, risk_on: float | None = None) -> str:
-    held = f" · {days_held}d open" if days_held is not None else ""
+                         engine_verdict: str | None = None, risk_on: float | None = None,
+                         remaining_frac: float | None = None, closed: bool = False) -> str:
+    if days_held is not None:
+        held = f" · {days_held}d {'held' if closed else 'open'}"
+    else:
+        held = " · closed" if closed else ""
     header = f"📊 <b>{_esc(pos.ticker)}</b> #{pos.id} · {str(pos.side).upper()}{held}"
 
     lines: list[str] = []
     if unrealized_r is not None:
-        pl = f"💰 PnL {_b(_r(unrealized_r))}"
+        pl = f"💰 {'realized' if closed else 'PnL'} {_b(_r(unrealized_r))}"
         if unrealized_pct is not None:
             pl += f" ({_pct(unrealized_pct)})"
         if now is not None:
@@ -338,9 +342,16 @@ def format_position_card(pos: Any, *, now: float | None = None,
             lines.append(f"🛑 {_gauge(frac)} 🎯")
     else:
         base = f"entry {_f2(pos.entry_price)}"
+        if unrealized_pct is not None:           # realized/unrealized % even when R is undefined
+            base += f" ({_pct(unrealized_pct)})"
         if now is not None:
             base += f"  ·  now {_f2(now)}"
         lines.append("💰 " + base)
+
+    # A partly scaled-out position: show how much remains open (manual ½/⅓ closes).
+    if remaining_frac is not None and remaining_frac < 0.999:
+        scaled = max(0.0, 1.0 - remaining_frac)
+        lines.append(f"✂️ scaled {scaled:.0%} out · {remaining_frac:.0%} open")
 
     legs = []
     if to_target_r is not None:
