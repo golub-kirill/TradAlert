@@ -9,7 +9,6 @@ the (gitignored) price/behavioral cache.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from backtest import loader
 from core.behavioral import classify_behavioral_state

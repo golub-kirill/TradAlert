@@ -130,4 +130,7 @@ def test_portfolio_default_no_borrow_when_rate_zero():
     result = bt.run_prepped(_flat_prepped(), skipped={})
     shorts = [t for t in result.trades if t.direction == "short"]
     assert shorts
+    # Pin that the rate was actually READ and stamped (not merely defaulted to 0.0
+    # by a Trade that never saw the config) — mirrors the rate=0.05 sibling test.
+    assert shorts[0].borrow_annual_rate == 0.0
     assert shorts[0].borrow_drag_r() == 0.0

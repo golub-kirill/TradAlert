@@ -132,6 +132,16 @@ class Position:
         return self.exit_date is None
 
 
+@dataclass
+class Partial:
+    """One partial scale-out against an open position (a manual ½/⅓ close)."""
+    id: int
+    position_id: int
+    exit_price: float
+    exit_date: date
+    fraction: float
+
+
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
 _SELECT_OPEN_SQL = """
@@ -201,6 +211,18 @@ _UPDATE_STOP_SQL = """
                    WHERE id = %(id)s
                      AND exit_date IS NULL \
                    """
+
+_INSERT_PARTIAL_SQL = """
+                      INSERT INTO position_partials (position_id, exit_price, exit_date, fraction)
+                      VALUES (%(position_id)s, %(exit_price)s, %(exit_date)s, %(fraction)s) \
+                      """
+
+_SELECT_PARTIALS_SQL = """
+                       SELECT id, position_id, exit_price, exit_date, fraction
+                       FROM position_partials
+                       WHERE position_id = %(position_id)s
+                       ORDER BY id \
+                       """
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -400,6 +422,184 @@ def update_stop(position_id: int, stop_price: float | None) -> bool:
     finally:
         if conn and conn.is_connected():
             conn.close()
+
+
+# Columns the bot/CLI may edit on a journaled position. Whitelisted so the
+# dynamic UPDATE can never inject an arbitrary column name (values are always
+# parameterized).
+_EDITABLE_COLUMNS = ("entry_price", "stop_price", "initial_stop", "exit_price", "notes")
+
+
+def update_position(position_id: int, *, entry_price: float | None = None,
+                    stop_price: float | None = None, initial_stop: float | None = None,
+                    exit_price: float | None = None, notes: str | None = None) -> bool:
+    """Edit fields on a journaled position (OPEN or CLOSED). Returns True on update.
+
+    Used to correct a mis-logged fill (wrong entry/exit price), adjust the risk
+    denominator, or annotate. Only the passed (non-None) fields change.
+
+    Raises ``ValidationError`` (NOT swallowed) on an invalid edit so the caller can
+    surface the reason; returns False on a DB error or a no-op (id not found).
+    Safety rules:
+      * every price must be finite and > 0;
+      * the INITIAL stop (the frozen risk denominator) must stay on the correct
+        side of entry (``risk_unit`` > 0) — re-checked when entry or initial_stop
+        changes. The current ``stop_price`` is NOT side-constrained (it may trail
+        past entry, e.g. a breakeven / +1R move);
+      * ``exit_price`` may only be set on a CLOSED position (use ``close_position``
+        to close an open one) — prevents the exit_price-set / exit_date-NULL limbo.
+    """
+    changes = {col: val for col, val in (
+        ("entry_price", entry_price), ("stop_price", stop_price),
+        ("initial_stop", initial_stop), ("exit_price", exit_price),
+        ("notes", notes)) if val is not None}
+    if not changes:
+        raise ValidationError("no fields to edit")
+
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_BY_ID_SQL, {"id": position_id})
+        row = cursor.fetchone()
+        if row is None:
+            raise ValidationError(f"no position #{position_id}")
+        pos = _row_to_position(row)
+
+        def _price(label: str, v) -> float:
+            """Coerce + validate one price edit → ValidationError on bad input
+            (never a raw ValueError, per the documented contract)."""
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise ValidationError(f"{label} must be a number, got {v!r}")
+            if not math.isfinite(v) or v <= 0:
+                raise ValidationError(f"{label} must be > 0, got {v:g}")
+            return v
+
+        # Coerce + validate each edited price ONCE; notes pass through unchanged.
+        coerced: dict = {}
+        if entry_price is not None:
+            coerced["entry_price"] = _price("entry", entry_price)
+        if stop_price is not None:
+            coerced["stop_price"] = _price("stop", stop_price)   # positive; may trail past entry
+        if initial_stop is not None:
+            coerced["initial_stop"] = _price("initial stop", initial_stop)
+        if exit_price is not None:
+            coerced["exit_price"] = _price("exit", exit_price)
+            if pos.is_open:
+                raise ValidationError(
+                    f"#{position_id} is open — use /close to set an exit")
+        if notes is not None:
+            coerced["notes"] = notes
+
+        # The initial stop is the risk denominator → must stay on the correct side
+        # of entry; re-validate whenever entry or the initial stop moves.
+        new_entry = coerced.get("entry_price", pos.entry_price)
+        new_init = coerced.get("initial_stop", pos.initial_stop)
+        if (entry_price is not None or initial_stop is not None) and new_init is not None:
+            if risk_unit(pos.side, new_entry, new_init) <= 0:
+                rel = "below" if pos.side == "long" else "above"
+                raise ValidationError(
+                    f"initial stop {new_init:g} must be {rel} entry {new_entry:g} "
+                    f"for a {pos.side} (it is the risk denominator)")
+
+        set_parts, params = [], {"id": position_id}
+        for col, val in coerced.items():
+            set_parts.append(f"{col} = %({col})s")           # col ∈ _EDITABLE_COLUMNS (whitelisted)
+            params[col] = val
+        sql = "UPDATE positions SET " + ", ".join(set_parts) + " WHERE id = %(id)s"
+
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        conn.commit()
+        ok = cursor.rowcount == 1
+        if ok:
+            logger.info("positions ← edited id=%d (%s)", position_id, ", ".join(changes))
+        return ok
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to edit position id=%d — %s", position_id, exc)
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+# ── partial scale-outs ──────────────────────────────────────────────────────────
+
+def add_partial(position_id: int, exit_price: float, exit_date: date,
+                fraction: float) -> int | None:
+    """Record a partial scale-out of an OPEN position. Returns the new partial id.
+
+    Raises ``ValidationError`` (NOT swallowed) when the position is missing/closed,
+    the fraction is outside (0, 1], or the cumulative scaled-out fraction would
+    exceed 1.0 (over-closing) — so the caller can surface the reason and no bad row
+    enters the journal. Returns None on a DB error (fail-open, like the other writers).
+    The remaining fraction (1 − Σ) closes later via ``close_position``; reconcile
+    weights realized R by these fractions.
+    """
+    try:
+        frac = float(fraction)
+    except (TypeError, ValueError):
+        raise ValidationError(f"fraction must be a number, got {fraction!r}")
+    if not (0.0 < frac <= 1.0):
+        raise ValidationError(f"fraction must be in (0, 1], got {frac:g}")
+    conn = None
+    try:
+        conn = _connect()
+        # ValidationError (open-state / over-scale) is a different type than
+        # (MySQLError, ConfigError), so it propagates to the caller rather than
+        # being turned into None by the handler below.
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_BY_ID_SQL, {"id": position_id})
+        prow = cursor.fetchone()
+        if prow is None or prow["exit_date"] is not None:
+            raise ValidationError(f"no open position #{position_id} to scale out")
+        cursor.execute(_SELECT_PARTIALS_SQL, {"position_id": position_id})
+        used = sum(float(r["fraction"]) for r in cursor.fetchall())
+        if used + frac > 1.0 + 1e-6:
+            raise ValidationError(
+                f"scaling {frac:g} would exceed the position "
+                f"({used:g} already scaled out)")
+        cursor = conn.cursor()
+        cursor.execute(_INSERT_PARTIAL_SQL, {
+            "position_id": position_id, "exit_price": exit_price,
+            "exit_date": exit_date, "fraction": frac})
+        conn.commit()
+        new_id = cursor.lastrowid
+        logger.info("position_partials ← #%d scaled %.4f @ %.4f on %s",
+                    position_id, frac, exit_price, exit_date)
+        return new_id
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to add partial for #%d — %s", position_id, exc)
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def get_partials(position_id: int) -> list[Partial]:
+    """All partial scale-outs for a position, oldest first. Empty on DB error."""
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_SELECT_PARTIALS_SQL, {"position_id": position_id})
+        return [Partial(id=r["id"], position_id=r["position_id"],
+                        exit_price=float(r["exit_price"]), exit_date=r["exit_date"],
+                        fraction=float(r["fraction"])) for r in cursor.fetchall()]
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to load partials for #%d — %s", position_id, exc)
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def remaining_fraction(position_id: int) -> float:
+    """Fraction of the position still open = 1 − Σ partial fractions (clamped ≥ 0)."""
+    used = sum(p.fraction for p in get_partials(position_id))
+    return max(0.0, round(1.0 - used, 6))
 
 
 # ── internals ─────────────────────────────────────────────────────────────────

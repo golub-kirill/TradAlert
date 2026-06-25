@@ -1,7 +1,33 @@
 # TradAlert
 
-Swing-trading scanner and backtester. Momentum + mean-reversion entries,
-held-long exits, portfolio-aware bar-replay, OFAT / walk-forward sweeps.
+> Swing-trading scanner, signal engine, and 25-year backtester — **one engine,
+> replayed bit-for-bit** between the live scan and historical sweeps.
+
+TradAlert scans a watchlist for momentum and mean-reversion swing entries, sizes them
+with macro/behavioral regime context, manages held positions with disciplined exits,
+and journals everything to MySQL and Telegram. The **same** `FilterEngine` drives both
+the live scan and the backtester, so a live signal and its historical replay are
+byte-identical — the backtest is the ground truth for every live decision.
+
+**Highlights**
+
+- 📈 **One engine, two modes** — `main.py` (live scan) and `backtest/run_backtest.py`
+  (baseline · OFAT sweep · walk-forward · robustness) share `core.FilterEngine`; live ≡ backtest by construction.
+- 🧭 **Regime-aware sizing** — macro (FRED/BoC) × behavioral (COT / breadth / sector-rotation)
+  composite scales position *size*, never the signal direction.
+- 🛡️ **Risk discipline** — ATR stops, R:R gate, max-hold time-stop, breakeven stop (ADR-004),
+  and a portfolio open-risk budget.
+- 📲 **Telegram cockpit** — push alerts (chart + trigger panel) plus an interactive,
+  owner-only daemon that is **journal-only and never auto-trades**.
+- 🔬 **Honest validation** — paired same-snapshot A/Bs, walk-forward, and reconciliation
+  meters that compare real live fills against backtest expectancy.
+
+## Contents
+
+[Layout](#layout) · [Cold start](#cold-start) · [Entry points](#entry-points) ·
+[Environment variables](#environment-variables-configsecretsenv) ·
+[Configuration files](#configuration-files) · [Indicators](#indicators) ·
+[Signal pipeline](#signal-pipeline) · [MySQL tables](#mysql-tables) · [Outstanding work](#outstanding-work)
 
 ## Layout
 
@@ -13,7 +39,7 @@ backtest/run_backtest  Backtester: baseline, sweep, walk-forward, robustness
 backtest/repair_parquet Cross-platform parquet re-save utility
 
 config/
-  filters.yaml         Scan + signal + regime + stop-loss + size-mult gate
+  filters.yaml         Scan + signal + regime + stop-loss + exit rules
   settings.yaml        Macro/behavioral layers, risk budget, telegram, storage
   watchlist.yaml       Two-tier ticker universe (tier_a tradeable, tier_b RP-only)
   sector_map.yaml      Optional ticker → sector ETF mapping for sector_gate
@@ -147,7 +173,7 @@ Window / IO flags:
 Strategy refinement flags — each **CLI flag** defaults off, but the YAML supplies the
 operative default: the shipped `filters.yaml` already enables max-hold
 (`25`/`if_not_profit`), the breakeven stop (`1.0R`, ADR-004) and the anti-gap trigger
-filter, so the no-flag baseline runs **with** those (it is the `run_id=15` headline, not
+filter, so the no-flag baseline runs **with** those (it is the shipped headline config, not
 a bare strategy). Pass a flag to force its key on for an A/B even when the YAML default is off:
 
 | Flag                | Effect                                                                                                                                                                                                                                                                                                                                                                                              | Config key                             |
@@ -228,7 +254,7 @@ recorded stop can't be scored (no risk unit).
 
 The daily scan can push fired signals (entries/exits) to Telegram as a chart photo
 + a compact card caption (direction, entry/stop/target, R:R, regime). Entry cards
-also carry a `🔎 TREND ✅ · MOM ✅ · LOC ▫️ · …` factor line — a per-group summary of
+also carry a `🔎 TREND ❌ · MOM ✅ · LOC ▫️ · …` factor line — a per-group summary of
 the same trigger-panel checks rendered on the chart (one source of truth). Set
 `TG_BOT_TOKEN` + **numeric** `TG_CHAT_ID` in `config/secrets.env`, then enable in
 `config/settings.yaml`:
@@ -245,21 +271,30 @@ line and never affects the scan. Requires `python-telegram-bot`.
 
 ### Telegram daemon (interactive)
 
-`telegram_bot.py` is the phase-2 interactive daemon: it long-polls Telegram and
-answers the alert/position buttons + owner-only commands. Set `daemon_enabled: true`
+`telegram_bot.py` is an interactive, **owner-only** daemon: it long-polls Telegram
+and answers the alert/position buttons plus typed commands. Set `daemon_enabled: true`
 in `settings.yaml::telegram` (so the push attaches inline buttons) and run:
 
 ```bash
 python telegram_bot.py        # owner-only; needs TG_BOT_TOKEN + numeric TG_CHAT_ID
 ```
 
-Commands: `/positions` `/pos ID` `/recalc [ID|all]` `/open TICKER PRICE [--stop S] [--short]`
-`/close ID [PRICE]` `/stop ID PRICE` `/chart TICKER` `/status` `/scan` `/help`. Inline
-buttons: **Log opened** (journals a fill via the broker-adapter seam), **Chart** (fresh
-render), and per-position **Stop / Close / Recalc / Chart** — `Close` is gated behind a
-Yes/No confirm. `/recalc` re-reads the latest bars and runs the engine exit-check
-(read-only). Every position mutation goes through `core.execution.adapter` (journal only —
-never auto-executes a real trade).
+**Commands:** `/positions` · `/pos ID` · `/recalc [ID|all]` ·
+`/open TICKER PRICE [--stop S] [--short]` · `/close ID [PRICE]` · `/stop ID PRICE` ·
+`/edit ID FIELD VALUE` · `/chart TICKER` · `/status` · `/scan` · `/help`.
+
+**Inline buttons:**
+
+- **Entry card** — `📈 Log opened` → a fill picker (`💹 @ live` real quote · `🏷 @ ref`
+  alert price · `✍️ Custom` typed), `📊 Chart` (fresh render), `🚫 Skip` (journals a
+  pass-on for the opportunity tracker).
+- **Open position** — `🟰 Breakeven` / `🔒 +1R` one-tap stop moves, `✏️ Stop` (typed),
+  `➖ Close…` (`½` / `⅓` / `⬛ Full`), `🔄 Recalc` (read-only exit-check), `✏️ Edit`, `📈 Chart`.
+- **Closed position** — `✏️ Edit` (fix a mis-logged fill) · `📈 Chart` (realized-R card).
+- Destructive actions (a full close) are gated behind a `✅ Yes` / `✖ No` confirm.
+
+Every position mutation goes through `core.execution.adapter` — **journal only; it never
+auto-executes a real trade** (the owner places each fill manually).
 
 Single-instance: the daemon takes `data/telegram_bot.lock` and exits cleanly if another
 poller holds it (Telegram returns **409 Conflict** if two pollers drain `getUpdates` — stop
@@ -278,7 +313,7 @@ Loaded by `python-dotenv` at startup.
 | `DB_HOST`        | MySQL journaling, `position_CLI.py`  | Default `localhost`.                                                                                   |
 | `DB_PORT`        | MySQL journaling, `position_CLI.py`  | Default `3306`.                                                                                        |
 | `DB_USER`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
-| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |                                                                                                        |
+| `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
 | `SEC_USER_AGENT` | reserved                             | Not yet read — the EDGAR Form-4 fetcher (`scripts/form4_fetch.py`) hardcodes its contact UA; documented in `secrets.env.example` but unconsumed.                                                |
@@ -313,7 +348,6 @@ Loaded by `python-dotenv` at startup.
 | `signals.stop_loss.min_rr_short`                                                 | Optional: R:R gate for shorts only; absent → falls back to `min_rr`.                      |
 | `signals.hard_to_borrow_list`                                                    | Optional: symbols that cannot be shorted (longs unaffected). Default `[]`.                |
 | `signals.borrow.{annual_rate_default,per_ticker}`                                | Optional: short stock-borrow cost → per-trade R drag. Default `0.0` (off).                |
-| `signals.size_mult_gate.{enabled,min}`                                           | Block entries when composite macro × behavioral size mult < `min`.                        |
 
 ### `config/settings.yaml`
 
@@ -335,7 +369,7 @@ Loaded by `python-dotenv` at startup.
 ### `config/watchlist.yaml`
 
 ```yaml
-tier_a: # scanned + tradeable (~100 tickers)
+tier_a: # scanned + tradeable (~225 names; SPY/QQQ/^VIX are context)
   - SPY                   # context (regime classifier; must be present)
   - QQQ                   # context
   - ^VIX                  # context-only (not scanned)
@@ -376,8 +410,8 @@ FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, held_long, he
 
 Direction `long`/`short` for fresh entries; `exit_long`/`exit_short` for held
 positions (`held_long`/`held_short=True`). `SignalResult.size_mult` carries the composite macro ×
-behavioral multiplier; backtester scales R-distance by it,
-`signals.size_mult_gate` blocks entries below `min`.
+behavioral multiplier; the backtester scales R-distance by it (sizing layer, never the
+direction).
 
 ## MySQL tables
 

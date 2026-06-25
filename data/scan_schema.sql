@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS scan_results (
     -- NEEDS_REVIEW = fired on stale/gapped data; reconcile_live.py excludes these.
     tier         ENUM('LIVE','NEEDS_REVIEW') NOT NULL DEFAULT 'LIVE',
     review_reason VARCHAR(255) NULL,
+    -- owner skipped this FIRED entry via the Telegram 🚫 Skip button (set later by
+    -- db.mark_declined). opportunity_tracker counts a declined fire as passed-on
+    -- (gate='declined'). Not written by the INSERT — defaults 0, updated on tap.
+    declined     TINYINT(1)   NOT NULL DEFAULT 0,
     score        DECIMAL(5,2) NULL,
     reason       VARCHAR(255) NULL,
     `close`      DOUBLE       NULL,

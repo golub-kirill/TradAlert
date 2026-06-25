@@ -31,9 +31,6 @@ mplfinance
 matplotlib
 pillow
 
-# Spreadsheet read for AAII sentiment
-xlrd
-
 curl-cffi
 pytest
 

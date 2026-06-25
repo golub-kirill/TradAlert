@@ -1,15 +1,4 @@
--- TradAlert manual-positions schema (positions).
---
--- Operated by src/core/position_manager.py (CRUD) and position_CLI.py.
--- Open positions have exit_date IS NULL; a ticker carries at most one open
--- position at a time (enforced by convention in position_manager, not a DB
--- constraint). DDL mirrors the live table (SHOW CREATE TABLE positions) —
--- reconcile against your live table if it differs. Run once on a fresh deploy.
---
---   mysql -u <user> -p <db> < data/positions_schema.sql
---
--- Read by scripts/reconcile_fills.py for live-vs-backtest reconciliation on
--- real fills.
+
 
 CREATE TABLE IF NOT EXISTS positions (
     id          INT           NOT NULL AUTO_INCREMENT,
@@ -17,11 +6,24 @@ CREATE TABLE IF NOT EXISTS positions (
     side        ENUM('long','short') NOT NULL DEFAULT 'long',
     entry_price DECIMAL(12,4) NOT NULL,
     entry_date  DATE          NOT NULL,
-    stop_price  DECIMAL(12,4) DEFAULT NULL,            -- current stop (may trail)
-    initial_stop DECIMAL(12,4) DEFAULT NULL,           -- stop at open; risk denominator (never moved)
+    stop_price  DECIMAL(12,4) DEFAULT NULL,
+    initial_stop DECIMAL(12,4) DEFAULT NULL,
     exit_price  DECIMAL(12,4) DEFAULT NULL,
-    exit_date   DATE          DEFAULT NULL,            -- NULL while open
+    exit_date   DATE          DEFAULT NULL,
     notes       VARCHAR(255)  DEFAULT NULL,
     PRIMARY KEY (id),
     KEY idx_open (ticker, exit_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS position_partials (
+    id          INT           NOT NULL AUTO_INCREMENT,
+    position_id INT           NOT NULL,
+    exit_price  DECIMAL(12,4) NOT NULL,
+    exit_date   DATE          NOT NULL,
+    fraction    DECIMAL(6,4)  NOT NULL,
+    created_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_partials_position (position_id),
+    CONSTRAINT fk_partials_position
+        FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

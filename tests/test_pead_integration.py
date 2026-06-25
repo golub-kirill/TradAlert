@@ -46,7 +46,6 @@ def _cfg(*, pead_enabled: bool, gap_risk: bool = False) -> dict:
     cfg["signals"]["pead"]["enabled"] = pead_enabled
     cfg["signals"]["gap_risk"] = {"enabled": gap_risk, "max_prev_bar_range_atr": 3.0}
     cfg["signals"]["sector_gate"] = {"enabled": False}
-    cfg["signals"]["size_mult_gate"] = {"enabled": False}
     cfg["events"] = {"earnings_buffer_days": 0, "stop_dates": []}
     return cfg
 

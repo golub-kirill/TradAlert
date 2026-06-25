@@ -29,7 +29,7 @@ _VALUES: dict[str, Any] = {
     "filters.signals.momentum.short_entry.max_bars_since_cross": 3,
     "filters.signals.gap_risk.enabled": False,
     "filters.signals.gap_risk.max_prev_bar_range_atr": 3.0,
-    "filters.signals.size_mult_gate.min": 0.25,
+    "filters.signals.overextension.bb_z_max": 2.5,
     "filters.signals.pead.enabled": False,
     "filters.signals.pead.min_priors": 8,
     "filters.signals.pead.tercile_pct": 0.667,

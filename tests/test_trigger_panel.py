@@ -24,7 +24,7 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 from core.filter_engine import (  # noqa: E402
-    FilterEngine, GateCheck, MarketRegime, SignalResult,
+    FilterEngine, GateCheck, MarketRegime,
 )
 from core.indicators.vbp import (  # noqa: E402
     nearest_high_volume_node_above, nearest_high_volume_node_below,
@@ -45,7 +45,6 @@ def _engine() -> FilterEngine:
     cfg["signals"]["gap_risk"] = {"enabled": False}
     cfg["signals"]["sector_gate"] = {"enabled": False}
     cfg["signals"]["require_trigger_bar_up"] = False
-    cfg["signals"]["size_mult_gate"] = {"enabled": False}
     cfg["events"] = {"earnings_buffer_days": 0, "stop_dates": []}
     eng = FilterEngine.from_dict(cfg)
     eng._today = date(2025, 6, 15)
@@ -160,27 +159,29 @@ def test_vbp_nearest_node_below_mirrors_above():
 
 # ── telegram factor line ──────────────────────────────────────────────────────
 
-def test_checklist_summarizes_groups():
-    from core.telegram.push import _checklist
+def test_panel_splits_decisive_and_advisory():
+    """S7: only the MOMENTUM gates are decisive; only 52W is advisory — the broad
+    TREND/VOL/etc. groups are dropped from the card so it isn't read as a score."""
+    from core.telegram.push import _panel
     checks = [
-        GateCheck("TREND", "a", True), GateCheck("TREND", "b", True),
-        GateCheck("MOMENTUM", "x", True), GateCheck("MOMENTUM", "y", False),
-        GateCheck("RISK", "r", False),
+        GateCheck("MOMENTUM", "RSI", True, "55 [50-70]"),
+        GateCheck("MOMENTUM", "MACD hist", True, "+0.10"),
+        GateCheck("TREND", "Trend", True, "UPTREND"),
+        GateCheck("LOCATION", "52W pos", True, "87%"),
+        GateCheck("VOLATILITY", "BB z", True, "+0.40"),
     ]
-    states = dict(_checklist(SimpleNamespace(checks=checks)))
-    assert states["TREND"] is True     # all pass
-    assert states["MOM"] is None       # mixed
-    assert states["RISK"] is False     # none pass
-    assert "LOC" not in states and "VOL" not in states  # empty groups omitted
+    decisive, advisory = _panel(SimpleNamespace(checks=checks))
+    assert [n for n, _ in decisive] == ["RSI", "MACD hist"]   # MOMENTUM only
+    assert advisory == [("52W pos", "87%")]                   # 52W only; TREND/bb_z dropped
 
 
-def test_checklist_empty_when_no_checks():
-    from core.telegram.push import _checklist
-    assert _checklist(SimpleNamespace(checks=[])) == []
-    assert _checklist(SimpleNamespace(checks=None)) == []
+def test_panel_empty_when_no_checks():
+    from core.telegram.push import _panel
+    assert _panel(SimpleNamespace(checks=[])) == ([], [])
+    assert _panel(SimpleNamespace(checks=None)) == ([], [])
 
 
-def test_format_entry_renders_factor_line():
+def test_format_entry_renders_decisive_and_advisory():
     from core.telegram import format as fmt
     tr = SimpleNamespace(
         ticker="ABC",
@@ -190,9 +191,11 @@ def test_format_entry_renders_factor_line():
             expected_hold_days=(10, 15), market_regime="BULL_NORMAL"),
         scan=SimpleNamespace(close=100.0),
     )
-    text = fmt.format_entry(tr, checklist=[("TREND", True), ("MOM", None), ("RISK", False)])
-    assert "🔎" in text
-    assert "TREND ✅" in text and "MOM ▫️" in text and "RISK ❌" in text
+    text = fmt.format_entry(tr, panel=([("RSI", "55"), ("MACD hist", "+0.10")],
+                                       [("52W pos", "87%")]))
+    assert "🔎 fired on" in text and "RSI 55" in text          # decisive section
+    assert "ℹ️ advisory" in text and "52W pos 87%" in text     # advisory section
+    assert "TREND ✅" not in text                               # old multi-group tally gone
 
 
 # ── live risk-budget + size_mult surfacing ────────────────────────────────────
@@ -203,6 +206,46 @@ def test_panel_includes_size_row():
     sig = eng.signal("ABC", _firing_df(), with_checks=True)
     size = _by_name(sig.checks, "RISK", "Size")
     assert size is not None and size.detail.endswith("x")   # size_mult surfaced
+
+
+def test_scoreboard_builds_full_panel_without_a_fire():
+    """The on-demand /chart scoreboard populates the full factor panel even when no
+    entry is firing (passed=False, no SL/TP), so the chart shows the indicators."""
+    eng = _engine()  # no _stub → nothing fires
+    sig = eng.scoreboard("ABC", _firing_df(),
+                         regime=MarketRegime(trend="BULL", volatility="NORMAL"))
+    assert sig.passed is False                 # display only — not a fired entry
+    assert sig.checks                          # full factor panel populated
+    assert {"TREND", "MOMENTUM", "LOCATION", "VOLATILITY", "RISK"} <= {c.group for c in sig.checks}
+    assert sig.stop_price == 0.0 and sig.target_price == 0.0   # no SL/TP overlay
+
+
+def test_scoreboard_is_neutral_no_direction_no_risk_calc():
+    """No-signal /chart: the panel must not imply a trade. Direction is 'none',
+    every factor row is a value-only reading (neutral), and the trade-geometry
+    rows (R:R, Stop) — the 'risk calc' — are absent."""
+    eng = _engine()  # no _stub → nothing fires
+    sig = eng.scoreboard("ABC", _firing_df(),
+                         regime=MarketRegime(trend="BULL", volatility="NORMAL"))
+    assert sig.direction == "none"                      # no long/short asserted
+    assert sig.checks and all(c.neutral for c in sig.checks)  # value-only readings
+    assert all(c.strength is None for c in sig.checks)        # no ●●●○ direction bar
+    names = {(c.group, c.name) for c in sig.checks}
+    assert ("RISK", "R:R") not in names                # risk/reward calc omitted
+    assert ("RISK", "Stop") not in names               # stop geometry omitted
+    assert ("LOCATION", "Clear path") not in names     # path-to-target omitted
+    # The factor VALUES are still surfaced (the point of the scoreboard).
+    assert {"TREND", "MOMENTUM", "VOLATILITY"} <= {g for g, _ in names}
+
+
+def test_neutral_scoreboard_chart_renders(tmp_path):
+    """A no-signal neutral scoreboard renders the chart without a SL/TP overlay."""
+    from core.indicators.chart import chart
+    eng = _engine()  # nothing fires
+    regime = MarketRegime(trend="BULL", volatility="NORMAL")
+    sig = eng.scoreboard("ABC", _firing_df(), regime=regime)
+    out = chart("ABC", _firing_df(), signal=sig, output_dir=tmp_path, regime=regime)
+    assert out.exists() and out.stat().st_size > 0
 
 
 def test_live_context_budget_row_flags_over_budget():

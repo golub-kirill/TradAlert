@@ -33,12 +33,15 @@ _DIRECTION_KIND = {
 }
 
 
-def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_down=None) -> None:
+def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_down=None,
+                run_id=None) -> None:
     """Select fired signals and push them. Never raises into the caller.
 
     `stand_down` is the optional DB-backed rejection rollup from
     persistence.db.stand_down_summary (or None); it enriches the stand-down
-    message's "Top blocks" line and is ignored when signals fired.
+    message's "Top blocks" line and is ignored when signals fired. `run_id` (the
+    scan's id) rides into each entry card's "🚫 Skip" button so a skipped fire can
+    be journaled for opportunity_tracker.
     """
     cfg = load_telegram_config(settings)
     if not cfg.enabled:
@@ -67,7 +70,7 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
 
     try:
         asyncio.run(_send_all(token, chat_id, cfg, selected, len(results),
-                              risk_on, n_open, regime_label, rday, rejections))
+                              risk_on, n_open, regime_label, rday, rejections, run_id))
     except Exception as exc:  # broad on purpose — alerting must never break the scan
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
@@ -127,7 +130,7 @@ def _select(results, cfg: TelegramConfig):
 # ── async send ───────────────────────────────────────────────────────────────────
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
-                    rejections=None):
+                    rejections=None, run_id=None):
     from core.telegram.bot import TelegramNotifier
 
     async with TelegramNotifier(token, chat_id, parse_mode=cfg.parse_mode) as nf:
@@ -146,7 +149,7 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
 
         for tr, kind in selected:
             text, chart = _render(tr, kind, risk_on, n_open)
-            markup = _markup(tr, kind, cfg)
+            markup = _markup(tr, kind, cfg, run_id)
             if chart is not None and not cfg.compact:
                 await nf.send_photo(chart, caption=text, reply_markup=markup)
             else:
@@ -161,7 +164,7 @@ def _render(tr, kind, risk_on, n_open):
     chart = _latest_chart(tr.ticker)
     if kind in ("long_entry", "short_entry"):
         text = fmt.format_entry(tr, risk_on=risk_on, n_open=n_open,
-                                checklist=_checklist(tr.signal) or None)
+                                panel=_panel(tr.signal))
         # Data-freshness tier: a stale-after-refetch or gapped entry is flagged, not sent as
         # a clean LIVE alert (main.py sets it; default "LIVE" → unchanged for normal fires).
         if getattr(tr.signal, "tier", "LIVE") == "NEEDS_REVIEW":
@@ -180,40 +183,25 @@ def _render(tr, kind, risk_on, n_open):
     return text, chart
 
 
-# Telegram factor line: a per-group summary of the engine's entry-gate checks.
-# Same source as the chart trigger panel (SignalResult.checks), so the two
-# surfaces can never disagree with the real decision. Order is fixed for a
-# stable read: TREND · MOM · LOC · VOL · RISK.
-_GROUP_LABELS = (
-    ("TREND", "TREND"),
-    ("MOMENTUM", "MOM"),
-    ("LOCATION", "LOC"),
-    ("VOLATILITY", "VOL"),
-    ("RISK", "RISK"),
-)
+# Entry-card panel (audit S7): split the engine's gate checks into what DECIDED the
+# signal (the MOMENTUM entry gates) vs non-gating ADVISORY context (52-week position),
+# so the card no longer reads as a broad multi-factor "score". Same source as the chart
+# panel (SignalResult.checks); event_risk is surfaced separately by format_entry.
+def _panel(signal):
+    """``(decisive, advisory)`` rows for the entry card — each ``[(name, detail)]``.
 
-
-def _checklist(signal):
-    """[(label, state)] group marks from ``signal.checks``.
-
-    state is True when every factor in the group passes, False when none do,
-    None when mixed (rendered ✅ / ❌ / ▫️). Empty list when the signal carries
-    no checks (``with_checks`` was off) → the factor line is omitted.
+    decisive = the MOMENTUM gates that actually fired the signal; advisory = the
+    52-week position (context, never gating). Empty lists when the signal has no
+    checks (``with_checks`` was off) → both lines are omitted.
     """
     checks = getattr(signal, "checks", None) or []
-    by_group: dict[str, list[bool]] = {}
-    for c in checks:
-        by_group.setdefault(c.group, []).append(bool(c.passed))
-    out = []
-    for group, label in _GROUP_LABELS:
-        states = by_group.get(group)
-        if not states:
-            continue
-        out.append((label, True if all(states) else False if not any(states) else None))
-    return out
+    decisive = [(c.name, c.detail) for c in checks if c.group == "MOMENTUM"]
+    advisory = [(c.name, c.detail) for c in checks
+                if c.group == "LOCATION" and c.name == "52W pos"]
+    return decisive, advisory
 
 
-def _markup(tr, kind, cfg: TelegramConfig):
+def _markup(tr, kind, cfg: TelegramConfig, run_id=None):
     # Buttons only when the daemon exists to answer them, and only on entries in P1.
     if not cfg.daemon_enabled or kind not in ("long_entry", "short_entry"):
         return None
@@ -221,7 +209,8 @@ def _markup(tr, kind, cfg: TelegramConfig):
         from core.telegram.keyboards import entry_actions
         s, sc = tr.signal, tr.scan
         side = "short" if s.direction == "short" else "long"
-        return entry_actions(tr.ticker, float(sc.close), float(s.stop_price), side=side)
+        return entry_actions(tr.ticker, float(sc.close), float(s.stop_price),
+                             side=side, run_id=run_id)
     except Exception:
         return None
 

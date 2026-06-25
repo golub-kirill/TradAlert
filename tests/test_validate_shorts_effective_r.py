@@ -34,9 +34,16 @@ def test_check4_uses_effective_r_when_present():
     df = _ledger(with_effective=True)
     c4 = _check4(df, df.copy())
     assert "R=effective_r" in c4.detail
+    # The Sharpe/Calmar must be DRIVEN by effective_r ([1,-1,0.5,-1] -> -0.121 /
+    # -0.33), not raw r_multiple ([2,-1,2,-1] -> 0.289 / 2.00). Pinning the value
+    # makes the M7 bug (revert to r_multiple while keeping the label) turn red.
+    assert "Sharpe -0.121 -> -0.121" in c4.detail
+    assert "Calmar -0.33" in c4.detail
+    assert "0.289" not in c4.detail
 
 
 def test_check4_falls_back_to_r_multiple_for_old_ledgers():
     df = _ledger(with_effective=False)
     c4 = _check4(df, df.copy())
     assert "R=r_multiple" in c4.detail
+    assert "Sharpe 0.289 -> 0.289" in c4.detail   # the r_multiple-derived value

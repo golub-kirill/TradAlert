@@ -25,12 +25,8 @@ __all__ = [
     "ScanResult",
     "SignalResult",
     "TickerResult",
-    "SIGNAL_TYPE",
     "DIRECTION",
     "sign_of",
-    "TICKER_TREND",
-    "TREND_STATE",
-    "VOL_STATE",
 ]
 
 Direction = Literal["long", "short", "exit_long", "exit_short", "none"]
@@ -94,12 +90,17 @@ class GateCheck:
     detail   : Value text shown beside the mark, e.g. "62.3", "2.50×".
     strength : Optional grade in [0, 1] for continuous factors → rendered as a
                ●●●○ bar. None marks a hard binary (rendered ✓/✗).
+    neutral  : Display-only value reading with NO directional verdict — rendered
+               with no ✓/✗ or ●●●○ mark (just name + detail). Set on the no-signal
+               /chart scoreboard so the panel shows factor values without implying
+               a long/short trade. ``passed``/``strength`` are ignored when True.
     """
     group: str
     name: str
     passed: bool
     detail: str = ""
     strength: float | None = None
+    neutral: bool = False
 
 
 @dataclass
@@ -154,18 +155,8 @@ class SignalResult:
     event_risk: str = ""      # e.g. "FOMC in 2d (2026-03-18)"
 
 
-# Typo-protected constants for signal types and directions. Literal aliases
-# catch mypy but not runtime typos; use these constants instead of bare strings
-# at the many == comparison sites. Values intentionally match the Literal
-# aliases above.
-
-class SIGNAL_TYPE:
-    MOMENTUM: str = "momentum"
-    MEAN_REVERSION: str = "mean_reversion"
-    REGIME: str = "regime"
-    PEAD: str = "pead"
-    NONE: str = "none"
-
+# Typo-protected direction constants. The Literal aliases catch mypy but not
+# runtime typos; DIRECTION + sign_of guard the long/short branch sites.
 
 class DIRECTION:
     LONG: str = "long"
@@ -190,25 +181,6 @@ def sign_of(direction: str) -> int:
     raise ValueError(
         f"sign_of: direction must be 'long' or 'short', got {direction!r}"
     )
-
-
-class TICKER_TREND:
-    UPTREND: str = "UPTREND"
-    DOWNTREND: str = "DOWNTREND"
-    CHOP: str = "CHOP"
-    NA: str = "N/A"
-
-
-class TREND_STATE:
-    BULL: str = "BULL"
-    BEAR: str = "BEAR"
-    CHOP: str = "CHOP"
-
-
-class VOL_STATE:
-    LOW: str = "LOW"
-    NORMAL: str = "NORMAL"
-    HIGH: str = "HIGH"
 
 
 @dataclass

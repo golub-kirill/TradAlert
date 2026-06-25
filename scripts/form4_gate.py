@@ -26,7 +26,6 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 import numpy as np   # noqa: E402
 import pandas as pd  # noqa: E402
-import yaml          # noqa: E402
 
 CACHE_DIR = _ROOT / "data" / "behavioral" / "form4"
 WINDOW_DAYS = 90

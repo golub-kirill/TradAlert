@@ -210,6 +210,42 @@ def save_scan_results(
     return inserted
 
 
+_MARK_DECLINED_SQL = """
+                     UPDATE scan_results
+                     SET declined = 1
+                     WHERE run_id = %(run_id)s
+                       AND UPPER(ticker) = UPPER(%(ticker)s) \
+                     """
+
+
+def mark_declined(run_id: int, ticker: str) -> bool:
+    """Flag a fired entry as owner-declined (the Telegram 🚫 Skip button).
+
+    Sets ``scan_results.declined = 1`` for (run_id, ticker) so opportunity_tracker
+    counts the skipped fire as a passed-on observation (gate='declined'). Returns
+    True when a row was updated; fail-open (False, logged) on a DB error.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_MARK_DECLINED_SQL, {"run_id": run_id, "ticker": ticker})
+        conn.commit()
+        ok = cursor.rowcount >= 1
+        if ok:
+            logger.info("scan_results ← declined run_id=%d %s", run_id, ticker)
+        else:
+            logger.warning("mark_declined: no matching scan_results row run_id=%d %s",
+                           run_id, ticker)
+        return ok
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to mark declined run_id=%d %s — %s", run_id, ticker, exc)
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 _STAND_DOWN_SELECT_SQL = """
                          SELECT ticker, passed, signal_kind, tier, reason, error
                          FROM scan_results

@@ -76,3 +76,28 @@ def test_reconcile_counts_unscorable():
 def test_reconcile_applies_commission():
     out = rf.reconcile([_closed("long", 100, 90, 120)], commission_r=0.005)
     assert out["by_side"]["long"] == pytest.approx([1.995])
+
+
+# ── partial scale-out weighting ──────────────────────────────────────────────
+
+def test_reconcile_no_partials_is_identical():
+    p = _closed("long", 100, 90, 120)   # risk 10 → +2R
+    a = rf.reconcile([p], commission_r=0.0)
+    b = rf.reconcile([p], commission_r=0.0, partials_by_id={})
+    c = rf.reconcile([p], commission_r=0.0, partials_by_id={1: []})
+    assert a["by_side"] == b["by_side"] == c["by_side"]
+    assert a["by_side"]["long"] == pytest.approx([2.0])
+
+
+def test_reconcile_weights_partials_by_fraction():
+    # risk 10; scale ½ at 110 (+1R) then close remaining ½ at 130 (+3R) → blend +2R
+    p = _closed("long", 100, 90, 130)
+    out = rf.reconcile([p], commission_r=0.0, partials_by_id={1: [(110.0, 0.5)]})
+    assert out["by_side"]["long"] == pytest.approx([2.0])
+
+
+def test_reconcile_partials_short_side():
+    # short risk 10; scale ⅓ at 90 (+1R), remaining ⅔ at 70 (+3R) → 1/3+2 = 7/3
+    p = _closed("short", 100, 110, 70)
+    out = rf.reconcile([p], commission_r=0.0, partials_by_id={1: [(90.0, 1 / 3)]})
+    assert out["by_side"]["short"] == pytest.approx([7 / 3])

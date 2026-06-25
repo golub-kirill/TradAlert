@@ -35,6 +35,25 @@ def test_journal_close_and_update_delegate(monkeypatch):
     assert seen["stop"] == (7, 95.0)
 
 
+def test_journal_scale_out_delegates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pm, "add_partial",
+                        lambda i, px, d, f: seen.update(scale=(i, px, d, f)) or 11)
+    rid = ad.JournalAdapter().scale_out(7, 123.45, date(2026, 6, 6), 0.5)
+    assert rid == 11
+    assert seen["scale"] == (7, 123.45, date(2026, 6, 6), 0.5)
+
+
+def test_journal_edit_position_delegates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pm, "update_position",
+                        lambda pid, **kw: seen.update(pid=pid, **kw) or True)
+    ok = ad.JournalAdapter().edit_position(11, entry_price=329.99, notes="fix")
+    assert ok is True
+    assert seen == dict(pid=11, entry_price=329.99, stop_price=None,
+                        initial_stop=None, exit_price=None, notes="fix")
+
+
 def test_get_adapter_is_journal_only():
     # The no-auto-execution guarantee: the factory only ever yields the journal adapter.
     assert isinstance(ad.get_adapter({}), ad.JournalAdapter)

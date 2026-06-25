@@ -140,21 +140,6 @@ def _move_pct(frm: Any, to: Any, sign: int, *, loss: bool = False) -> str:
     return f"{pct:+.1f}%"
 
 
-def _mark(state: Any) -> str:
-    if state is True:
-        return "✅"
-    if state is False:
-        return "❌"
-    if state is None:
-        return "▫️"
-    return str(state)
-
-
-def _factor_line(checklist: Sequence[tuple[str, Any]]) -> str:
-    """'TREND ✅ · MOM ✅ · LOC ▫️ · …' from the engine gate results (one source of truth)."""
-    return " · ".join(f"{_esc(lbl)} {_mark(state)}" for lbl, state in checklist)
-
-
 def _regime_line(regime_label: str | None, risk_on: float | None, is_long: bool) -> str:
     """'🌐 BULL_NORMAL · risk-on 0.75 ✅ tailwind' — direction-aware tailwind/headwind."""
     parts: list[str] = []
@@ -169,13 +154,15 @@ def _regime_line(regime_label: str | None, risk_on: float | None, is_long: bool)
 # ── entry (long & short) ────────────────────────────────────────────────────────
 
 def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = None,
-                 checklist: Sequence[tuple[str, Any]] | None = None,
+                 panel: tuple[Sequence[Any], Sequence[Any]] | None = None,
                  borrow_pct: float | None = None, htb: bool = False) -> str:
     """Clean card for a fired long/short entry. Attach the chart as the photo.
 
     Headline: entry→target (with upside %), stop (with downside %), and an R:R
-    fill bar. Secondary detail (hold, size, factor line, regime, open count) goes
-    in an expandable blockquote. `checklist` lights the factor line when present.
+    fill bar. Secondary detail (hold, size, decisive/advisory panel, regime, open
+    count) goes in an expandable blockquote. `panel` is ``(decisive, advisory)`` —
+    the gates that fired vs non-gating context — kept separate so the card is not
+    read as a broad multi-factor score (audit S7).
     """
     s, sc = tr.signal, tr.scan
     is_long = s.direction == "long"
@@ -206,8 +193,14 @@ def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = 
     event_risk = getattr(s, "event_risk", "")
     if event_risk:
         detail.append(f"🗓 event risk: {_esc(event_risk)}")
-    if checklist:
-        detail.append("🔎 " + _factor_line(checklist))
+    if panel:
+        decisive, advisory = panel
+        if decisive:
+            detail.append("🔎 fired on · " + " · ".join(
+                f"{_esc(n)} {_esc(d)}" for n, d in decisive))
+        if advisory:
+            detail.append("ℹ️ advisory · " + " · ".join(
+                f"{_esc(n)} {_esc(d)}" for n, d in advisory))
     if not is_long and (borrow_pct is not None or htb):
         bits = []
         if borrow_pct is not None:
@@ -318,13 +311,17 @@ def format_position_card(pos: Any, *, now: float | None = None,
                          days_held: int | None = None, to_target_r: float | None = None,
                          to_stop_r: float | None = None, time_stop_left: int | None = None,
                          max_hold: int | None = None, mode: str | None = None,
-                         engine_verdict: str | None = None, risk_on: float | None = None) -> str:
-    held = f" · {days_held}d open" if days_held is not None else ""
+                         engine_verdict: str | None = None, risk_on: float | None = None,
+                         remaining_frac: float | None = None, closed: bool = False) -> str:
+    if days_held is not None:
+        held = f" · {days_held}d {'held' if closed else 'open'}"
+    else:
+        held = " · closed" if closed else ""
     header = f"📊 <b>{_esc(pos.ticker)}</b> #{pos.id} · {str(pos.side).upper()}{held}"
 
     lines: list[str] = []
     if unrealized_r is not None:
-        pl = f"💰 PnL {_b(_r(unrealized_r))}"
+        pl = f"💰 {'realized' if closed else 'PnL'} {_b(_r(unrealized_r))}"
         if unrealized_pct is not None:
             pl += f" ({_pct(unrealized_pct)})"
         if now is not None:
@@ -335,9 +332,16 @@ def format_position_card(pos: Any, *, now: float | None = None,
             lines.append(f"🛑 {_gauge(frac)} 🎯")
     else:
         base = f"entry {_f2(pos.entry_price)}"
+        if unrealized_pct is not None:           # realized/unrealized % even when R is undefined
+            base += f" ({_pct(unrealized_pct)})"
         if now is not None:
             base += f"  ·  now {_f2(now)}"
         lines.append("💰 " + base)
+
+    # A partly scaled-out position: show how much remains open (manual ½/⅓ closes).
+    if remaining_frac is not None and remaining_frac < 0.999:
+        scaled = max(0.0, 1.0 - remaining_frac)
+        lines.append(f"✂️ scaled {scaled:.0%} out · {remaining_frac:.0%} open")
 
     legs = []
     if to_target_r is not None:

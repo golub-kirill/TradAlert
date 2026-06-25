@@ -82,9 +82,12 @@ def test_entry_escapes_event_risk():
     assert "<b>now</b> &" not in out  # raw markup never leaks
 
 
-def test_entry_checklist_renders_factor_line():
-    out = _plain(fmt.format_entry(_entry(), checklist=[("TREND", True), ("LOC", None), ("RISK", False)]))
-    assert "TREND ✅" in out and "LOC ▫️" in out and "RISK ❌" in out
+def test_entry_renders_decisive_advisory_sections():
+    out = _plain(fmt.format_entry(
+        _entry(), panel=([("RSI", "55"), ("MACD hist", "+0.10")], [("52W pos", "87%")])))
+    assert "fired on" in out and "RSI 55" in out          # decisive section
+    assert "advisory" in out and "52W pos 87%" in out     # advisory section
+    assert "TREND ✅" not in out                           # old multi-group tally gone
 
 
 def test_short_entry_borrow_and_tailwind():
@@ -190,10 +193,34 @@ def test_position_card():
     assert "HOLD — no exit signal" in p and "risk-on 0.72" in p
 
 
+def test_position_card_closed_reads_realized():
+    pos = Position(id=11, ticker="TXN", side="long", entry_price=329.99,
+                   entry_date=date(2026, 6, 22), stop_price=298.92, initial_stop=298.92,
+                   exit_price=361.06, exit_date=date(2026, 6, 30))
+    out = fmt.format_position_card(pos, closed=True, unrealized_r=1.0,
+                                   unrealized_pct=9.4, days_held=8)
+    p = _plain(out)
+    assert "realized +1.00R" in p           # "realized", not "PnL"
+    assert "8d held" in p                    # "held", not "open"
+
+
+def test_position_card_shows_scale_out():
+    pos = Position(id=12, ticker="JNJ", side="long", entry_price=232.77,
+                   entry_date=date(2026, 5, 28), stop_price=221.85)
+    # half scaled out → "scaled 50% out · 50% open"; no line when fully open
+    out = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78, remaining_frac=0.5)
+    p = _plain(out)
+    assert "scaled 50% out" in p and "50% open" in p
+    full = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78, remaining_frac=1.0)
+    assert "scaled" not in _plain(full)
+    none = fmt.format_position_card(pos, now=241.30, unrealized_r=0.78)
+    assert "scaled" not in _plain(none)
+
+
 # ── rich visuals (bars / gauges / pcts / expandable) ─────────────────────────────
 
 def test_entry_rr_bar_and_expandable_detail():
-    out = fmt.format_entry(_entry(), risk_on=0.75, n_open=4, checklist=[("TREND", True)])
+    out = fmt.format_entry(_entry(), risk_on=0.75, n_open=4, panel=([("RSI", "55")], []))
     assert "<blockquote expandable>" in out          # secondary detail tucked away
     assert len(out) <= fmt.CAPTION_LIMIT
     p = _plain(out)
@@ -225,5 +252,5 @@ def test_meters_are_html_safe():
     # No meter/divider character ever introduces a raw ampersand into the HTML.
     out = fmt.format_entry(_entry(direction="short", ticker="X&Y", close=88.40),
                            risk_on=0.35, borrow_pct=4.0, htb=True,
-                           checklist=[("TREND", False)])
+                           panel=([("RSI", "55")], []))
     assert "X&amp;Y" in out and "X&Y" not in out

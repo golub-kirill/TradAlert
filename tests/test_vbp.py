@@ -51,12 +51,15 @@ def test_zero_range_bar_lands_in_one_bin_and_conserves_volume():
 
 
 def test_nearest_high_volume_node_above_price():
-    # Heavy node at 30..40; price 15 → nearest qualifying node is above it.
-    df = _bars([(10, 12, 11, 10), (30, 40, 35, 1000), (14, 16, 15, 10)])
+    # Two heavy nodes above price 15 — a NEARER one (20..22) and a farther one
+    # (30..40). 'nearest above' must return the closer node; pin its exact bin
+    # midpoint AND volume so a min()->max() flip (returns the farther node) bites.
+    df = _bars([(10, 12, 11, 10), (20, 22, 21, 1000), (30, 40, 35, 1000), (14, 16, 15, 10)])
     vbp = compute_vbp(df, lookback=10, n_bins=12)
     node = nearest_high_volume_node_above(vbp, price=15.0, volume_percentile=70)
     assert node is not None
-    assert node[0] > 15.0
+    assert node[0] == pytest.approx(21.25)   # nearest qualifying midpoint, not 31.25+
+    assert node[1] == pytest.approx(1000.0)  # and its volume
 
 
 def test_short_window_returns_empty():

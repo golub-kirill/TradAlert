@@ -84,6 +84,15 @@ def test_fresh_schema_defines_tier_and_review_reason():
     assert {"tier", "review_reason"} <= cols
 
 
+def test_fresh_schema_defines_declined():
+    # The Telegram 🚫 Skip button sets scan_results.declined via db.mark_declined;
+    # it is UPDATE-only (defaults 0), so it isn't in the INSERT but must exist.
+    schema = (_ROOT / "data" / "scan_schema.sql").read_text(encoding="utf-8")
+    cols = _create_block_columns(schema, "scan_results")
+    assert "declined" in cols
+    assert "declined" not in set(_insert_columns())   # not written by the INSERT
+
+
 # ── save_scan_results behaviour (fake cursor; no DB) ─────────────────────────
 
 class _FakeCursor:

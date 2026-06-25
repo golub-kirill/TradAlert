@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # ----- constants -------------------------------------------------------------
 
 LOOKBACK_BARS: int = 90
-_WEBP_QUALITY: int = 90
-_DPI: int = 150
+_WEBP_QUALITY: int = 95
+_DPI: int = 200
 _FIGSIZE = (20, 12)
 
 DEFAULT_OUT_DIR = Path("data/screenshots")
@@ -719,7 +719,12 @@ _TRIGGER_GROUP_TITLES = {
 
 
 def _mark_glyph(check):
-    """(glyph, color) for one gate check: graded ●●●○ when ``strength`` is set, else ✓/✗."""
+    """(glyph, color) for one gate check: graded ●●●○ when ``strength`` is set, else ✓/✗.
+
+    A ``neutral`` check (the no-signal scoreboard) carries no verdict, so it gets
+    no mark — the row shows just its name + value."""
+    if getattr(check, "neutral", False):
+        return "", _C_TEXT
     color = _C_UP if check.passed else _C_DOWN
     strength = getattr(check, "strength", None)
     if strength is not None:
@@ -746,6 +751,11 @@ def _render_trigger_panel(fig, ticker, signal, checks):
     summary; each row shows the factor name, its value, and a graded ●●●○ bar (for
     continuous factors) or ✓/✗ (for binaries). Heights auto-scale to the chart
     height so a long check set never overflows the panel."""
+    # Neutral scoreboard (no fired signal): rows are value-only readings, so the
+    # per-group pass count and the overall "Triggers x/y" tally are suppressed —
+    # the panel must not imply a directional verdict.
+    neutral = bool(checks) and all(getattr(c, "neutral", False) for c in checks)
+
     grouped: dict = {}
     for c in checks:
         grouped.setdefault(c.group, []).append(c)
@@ -753,8 +763,12 @@ def _render_trigger_panel(fig, ticker, signal, checks):
     for g in _TRIGGER_GROUP_ORDER:
         rows = grouped.get(g)
         if rows:
-            n_ok = sum(1 for r in rows if r.passed)
-            sections.append(("{}   {}/{}".format(_TRIGGER_GROUP_TITLES[g], n_ok, len(rows)), rows))
+            if neutral:
+                title = _TRIGGER_GROUP_TITLES[g]
+            else:
+                n_ok = sum(1 for r in rows if r.passed)
+                title = "{}   {}/{}".format(_TRIGGER_GROUP_TITLES[g], n_ok, len(rows))
+            sections.append((title, rows))
     if not sections:
         return
 
@@ -793,14 +807,18 @@ def _render_trigger_panel(fig, ticker, signal, checks):
              fontsize=18, color=_C_TEXT_BRIGHT, fontweight="bold",
              ha="left", va="top", fontfamily="DejaVu Sans",
              zorder=101, transform=fig.transFigure)
-    badge_label, badge_color = _trigger_badge(signal)
-    if badge_label:
-        fig.text(x1 - pad_x, header_top - pad_y - 0.002, badge_label,
-                 fontsize=11, color=badge_color, fontweight="bold",
-                 ha="right", va="top", fontfamily="DejaVu Sans",
-                 zorder=101, transform=fig.transFigure)
-    fig.text(x0 + pad_x, header_top - pad_y - 0.026,
-             "Triggers   {}/{}".format(total_passed, total),
+    # No direction badge in neutral mode (_trigger_badge already returns "" for a
+    # non-directional signal, but skip explicitly so intent is clear).
+    if not neutral:
+        badge_label, badge_color = _trigger_badge(signal)
+        if badge_label:
+            fig.text(x1 - pad_x, header_top - pad_y - 0.002, badge_label,
+                     fontsize=11, color=badge_color, fontweight="bold",
+                     ha="right", va="top", fontfamily="DejaVu Sans",
+                     zorder=101, transform=fig.transFigure)
+    subtitle = "factor readings · no signal" if neutral else "Triggers   {}/{}".format(
+        total_passed, total)
+    fig.text(x0 + pad_x, header_top - pad_y - 0.026, subtitle,
              fontsize=9.5, color=_C_TEXT, ha="left", va="top",
              fontfamily="DejaVu Sans", zorder=101, transform=fig.transFigure)
 

@@ -31,6 +31,13 @@ class ExecutionAdapter(Protocol):
 
     def update_stop(self, position_id: int, stop_price: float | None) -> bool: ...
 
+    def scale_out(self, position_id: int, exit_price: float, exit_date: date,
+                  fraction: float) -> int | None: ...
+
+    def edit_position(self, position_id: int, *, entry_price: float | None = None,
+                      stop_price: float | None = None, initial_stop: float | None = None,
+                      exit_price: float | None = None, notes: str | None = None) -> bool: ...
+
 
 class JournalAdapter:
     """Records to the local `positions` table only — no market interaction."""
@@ -48,6 +55,17 @@ class JournalAdapter:
 
     def update_stop(self, position_id: int, stop_price: float | None) -> bool:
         return position_manager.update_stop(position_id, stop_price)
+
+    def scale_out(self, position_id: int, exit_price: float, exit_date: date,
+                  fraction: float) -> int | None:
+        return position_manager.add_partial(position_id, exit_price, exit_date, fraction)
+
+    def edit_position(self, position_id: int, *, entry_price: float | None = None,
+                      stop_price: float | None = None, initial_stop: float | None = None,
+                      exit_price: float | None = None, notes: str | None = None) -> bool:
+        return position_manager.update_position(
+            position_id, entry_price=entry_price, stop_price=stop_price,
+            initial_stop=initial_stop, exit_price=exit_price, notes=notes)
 
 
 def get_adapter(settings: dict | None = None) -> ExecutionAdapter:

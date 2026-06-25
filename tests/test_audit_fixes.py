@@ -1,6 +1,6 @@
 """
 Regression tests for audit-driven changes:
-  - signals.size_mult_gate blocks/allows entries by composite size multiplier.
+  - signals.overextension vetoes entries stretched far from the mean (Bollinger z).
   - Reporting (equity curve + stats) aggregates Trade.effective_r, so the
     macro/behavioral position-size multiplier and borrow drag reach the
     headline numbers.
@@ -48,31 +48,45 @@ def _low_size_regime(mult: float) -> MarketRegime:
     return MarketRegime(trend="BULL", volatility="NORMAL", macro=macro)
 
 
-# ── size_mult_gate ────────────────────────────────────────────────────────────
+# ── overextension veto (S1) ─────────────────────────────────────────────────────
 
 _SIG_OVERRIDE = {"signals": {"gap_risk": {"enabled": False},
                              "sector_gate": {"enabled": False}}}
 
 
-def test_size_mult_gate_blocks_low_multiplier():
+def test_overextension_veto_blocks_stretched_long():
     ov = {"signals": {**_SIG_OVERRIDE["signals"],
-                      "size_mult_gate": {"enabled": True, "min": 0.25}}}
+                      "overextension": {"enabled": True, "bb_z_max": 2.5}}}
     eng = _engine(ov)
     eng._evaluate_entry = lambda *a, **k: ("long", "momentum", "test-fire")
-    regime = _low_size_regime(0.05)  # composite = sqrt(0.05) ≈ 0.224 < 0.25
-    sig = eng._signal_entry("X", _firing_df(), regime, None, None)
+    df = _firing_df()
+    df.loc[df.index[-1], "bb_z"] = 3.0   # stretched far above the mean
+    sig = eng._signal_entry("X", df, _low_size_regime(1.0), None, None)
     assert sig.passed is False
-    assert "size_mult" in sig.reason
+    assert "overextend" in sig.reason.lower()
 
 
-def test_size_mult_gate_off_allows_low_multiplier():
+def test_overextension_veto_off_allows_stretched_long():
     ov = {"signals": {**_SIG_OVERRIDE["signals"],
-                      "size_mult_gate": {"enabled": False, "min": 0.25}}}
+                      "overextension": {"enabled": False, "bb_z_max": 2.5}}}
     eng = _engine(ov)
     eng._evaluate_entry = lambda *a, **k: ("long", "momentum", "test-fire")
-    sig = eng._signal_entry("X", _firing_df(), _low_size_regime(0.05), None, None)
+    df = _firing_df()
+    df.loc[df.index[-1], "bb_z"] = 3.0
+    sig = eng._signal_entry("X", df, _low_size_regime(1.0), None, None)
     assert sig.passed is True
     assert sig.direction == "long"
+
+
+def test_overextension_veto_allows_within_band():
+    ov = {"signals": {**_SIG_OVERRIDE["signals"],
+                      "overextension": {"enabled": True, "bb_z_max": 2.5}}}
+    eng = _engine(ov)
+    eng._evaluate_entry = lambda *a, **k: ("long", "momentum", "test-fire")
+    df = _firing_df()
+    df.loc[df.index[-1], "bb_z"] = 1.0   # within band → not vetoed
+    sig = eng._signal_entry("X", df, _low_size_regime(1.0), None, None)
+    assert sig.passed is True
 
 
 # ── effective_r in reporting ──────────────────────────────────────────────────

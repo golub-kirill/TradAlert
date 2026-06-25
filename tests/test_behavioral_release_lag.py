@@ -7,7 +7,6 @@ COT +3 days (Tuesday report -> Friday release). (NAAIM purged 2026-06-21; AAII e
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from core.behavioral import _RELEASE_LAG_DAYS, _release_align
 

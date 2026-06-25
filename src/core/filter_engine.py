@@ -368,6 +368,43 @@ class FilterEngine:
             logger.debug("signal NONE %s: %s", ticker, result.reason)
         return result
 
+    def scoreboard(
+            self,
+            ticker: str,
+            df: pd.DataFrame,
+            *,
+            regime: MarketRegime,
+            market_dfs: dict[str, pd.DataFrame] | None = None,
+            direction: Direction = "long",
+            signal_type: SignalType = "momentum",
+    ) -> SignalResult:
+        """Display-only factor scoreboard for ANY ticker — no entry required.
+
+        Renders the indicator factors ``_build_gate_checks`` produces, but in
+        ``neutral`` mode: NO direction is asserted (``direction="none"`` → no
+        long/short badge) and NO trade geometry is computed (stop/target stay 0,
+        the R:R/Stop rows and the path-to-target check are omitted). The on-demand
+        /chart can show the full indicator readings without implying a trade or a
+        risk/reward calc when nothing is firing. ``direction`` only selects which
+        reference value to display (the long band by default). **Live/UI only** —
+        never on the backtest decision path, so the run_id headline stays
+        byte-identical.
+        """
+        row, prev = df.iloc[-1], df.iloc[-2]
+        ticker_trend = self._ticker_trend(df)
+        atr_mult = self.cfg.signals.stop_loss.atr_multiplier
+        min_rr = self.cfg.signals.stop_loss.min_rr
+        checks = self._build_gate_checks(
+            row, prev, df, regime, ticker_trend, direction, signal_type,
+            0.0, 0.0, min_rr, atr_mult, None, market_dfs, neutral=True,
+        )
+        return SignalResult(
+            passed=False, direction="none", signal_type=signal_type,
+            min_rr=min_rr, size_mult=round(regime.size_multiplier, 4),
+            market_regime=regime.label, ticker_trend=ticker_trend,
+            reason="scoreboard (display only)", checks=checks,
+        )
+
     # ── entry mode ──────────────────────────────────────────────────
 
     def _signal_entry(
@@ -501,23 +538,30 @@ class FilterEngine:
                 f"R:R below minimum {min_rr}", regime, ticker_trend,
             )
 
-        # size_mult_gate: block entries when the composite macro × behavioral
-        # position-size multiplier is below the configured floor.
-        #
-        # Currently INERT even when `enabled: true`: regime.size_multiplier is the
-        # geometric mean of two axes each floored at 0.25
-        # (settings.{macro,behavioral}.size_mult_floor), so it is >= 0.25 == the
-        # gate `min` and the strict `< min` never fires. To actually gate, lower an
-        # axis floor below `min` or raise `min` above 0.25 — both BLOCK entries and
-        # move the headline, so re-validate first.
-        smg = self.cfg.signals.size_mult_gate
-        if smg.enabled:
-            min_mult = float(smg.min)
-            if regime.size_multiplier < min_mult:
-                return self._fail_result(
-                    f"size_mult {regime.size_multiplier:.2f} < gate min {min_mult:.2f}",
-                    regime, ticker_trend,
-                )
+        # Overextension veto (opt-in; default OFF → byte-identical baseline): block a
+        # fresh entry already stretched far from the mean (parabolic chasing). Uses the
+        # Bollinger z-score (close − bb_mid)/σ already on the row. Longs veto above
+        # +bb_z_max; shorts below −bb_z_max. PEAD entries bypass (the earnings gap IS
+        # the signal). Changes trade composition → validate (DSR + White's RC) before
+        # shipping ON. (Replaced the inert size_mult_gate, whose floored composite could
+        # never drop below its own gate min.)
+        oxt = self.cfg.signals.overextension
+        if oxt.enabled and signal_type != "pead":
+            try:
+                bb_z = float(row["bb_z"])
+            except (KeyError, TypeError, ValueError):
+                bb_z = 0.0
+            if bb_z == bb_z:  # finite (NaN-safe)
+                if is_long_dir and bb_z > oxt.bb_z_max:
+                    return self._fail_result(
+                        f"overextended: bb_z {bb_z:.2f} > {oxt.bb_z_max:.2f}",
+                        regime, ticker_trend,
+                    )
+                if not is_long_dir and bb_z < -oxt.bb_z_max:
+                    return self._fail_result(
+                        f"overextended short: bb_z {bb_z:.2f} < {-oxt.bb_z_max:.2f}",
+                        regime, ticker_trend,
+                    )
 
         checks = (
             self._build_gate_checks(
@@ -559,6 +603,7 @@ class FilterEngine:
             atr_mult: float,
             earnings_date: date | None,
             market_dfs: dict[str, pd.DataFrame] | None,
+            neutral: bool = False,
     ) -> list[GateCheck]:
         """
         Re-derive a direction-aware, factor-grouped read of *why this signal
@@ -572,6 +617,13 @@ class FilterEngine:
 
         Semantics flip by ``direction``: strength, "clear path", and regime
         tailwind/headwind all invert long ↔ short.
+
+        ``neutral`` (the no-signal /chart scoreboard) renders every factor as a
+        value-only reading: no ✓/✗ or ●●●○ mark, no graded ``strength``, and the
+        trade-geometry rows (Clear path, R:R, Stop) are omitted — so the panel
+        shows the indicator values without implying a long/short trade or a
+        risk/reward calc. ``direction`` then only selects which value to display
+        (the long reference), never a displayed verdict.
         """
         checks: list[GateCheck] = []
         is_long = direction == "long"
@@ -581,7 +633,8 @@ class FilterEngine:
                 detail: str = "", strength: float | None = None) -> None:
             checks.append(GateCheck(
                 group=group, name=name, passed=bool(passed),
-                detail=detail, strength=strength,
+                detail=detail, strength=None if neutral else strength,
+                neutral=neutral,
             ))
 
         def clamp01(x: float) -> float:
@@ -694,7 +747,7 @@ class FilterEngine:
                     (rs > 0) if is_long else (rs < 0), f"{rs:+.1f}%",
                     clamp01(0.5 + sgn * rs / 40))
 
-        if close is not None and atr is not None and atr > 0:
+        if not neutral and close is not None and atr is not None and atr > 0:
             try:
                 from core.indicators.vbp import (
                     compute_vbp, nearest_high_volume_node_above,
@@ -731,10 +784,13 @@ class FilterEngine:
             add("VOLATILITY", "ATR%", min_atr <= atr_pct <= max_atr, f"{atr_pct:.1f}%")
 
         # ── RISK ─────────────────────────────────────────────────────────────
-        add("RISK", "R:R", True, f"{float(min_rr):.2f}")
-        if close is not None and atr is not None and close > 0:
-            stop_dist = atr * atr_mult
-            add("RISK", "Stop", True, f"{stop_dist / close * 100:.1f}% / {atr_mult:.1f}ATR")
+        # The R:R + Stop rows are the trade's risk/reward geometry — omitted on the
+        # neutral no-signal scoreboard (no trade is implied, so no risk calc).
+        if not neutral:
+            add("RISK", "R:R", True, f"{float(min_rr):.2f}")
+            if close is not None and atr is not None and close > 0:
+                stop_dist = atr * atr_mult
+                add("RISK", "Stop", True, f"{stop_dist / close * 100:.1f}% / {atr_mult:.1f}ATR")
         # Position-size multiplier (macro × behavioral) — the validated portfolio
         # sizes each entry by this, so the live read must show it.
         smult = clamp01(float(regime.size_multiplier))
