@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from datetime import date as _date
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.deps import query
+from api.deps import load_yaml, query
 from api.jobs import get as job_get, launch, python_exe, status as job_status
 
 router = APIRouter(tags=["backtests"])
@@ -40,14 +41,52 @@ _MODES = {
 }
 
 
+def _flatten(d: dict, prefix: str = "") -> dict:
+    out: dict = {}
+    for k, v in (d or {}).items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(_flatten(v, key + "."))
+        else:
+            out[key] = v
+    return out
+
+
+def _config_diff(config_json: str | None):
+    """Params a run differed from the shipped filters.yaml, plus its date window."""
+    if not config_json:
+        return [], None
+    try:
+        cfg = json.loads(config_json)
+    except Exception:
+        return [], None
+    meta = cfg.pop("_meta", {}) or {}
+    flat_run = _flatten(cfg)
+    flat_def = _flatten(load_yaml("filters.yaml"))
+    diff = []
+    for k, dv in flat_def.items():
+        rv = flat_run.get(k)
+        if rv is not None and rv != dv:
+            diff.append({"key": k, "value": rv, "default": dv})
+    window = None
+    if meta.get("start_date") or meta.get("end_date"):
+        window = f"{meta.get('start_date') or 'all'} → {meta.get('end_date') or 'latest'}"
+    return diff, window
+
+
 @router.get("/backtests")
 def backtests(limit: int = 20):
-    return query(
+    rows = query(
         "SELECT id, started_at, start_date, end_date, trades_count, total_r, "
-        "expectancy_r, profit_factor, win_rate, max_drawdown_r, notes "
+        "expectancy_r, profit_factor, win_rate, max_drawdown_r, notes, config_json "
         "FROM backtest_runs ORDER BY id DESC LIMIT %s",
         (int(limit),),
     )
+    for r in rows:
+        diff, window = _config_diff(r.pop("config_json", None))
+        r["params"] = diff
+        r["window"] = window
+    return rows
 
 
 @router.get("/backtests/{run_id}/trades")
@@ -146,7 +185,12 @@ class BacktestReq(BaseModel):
     max_open_risk: float | None = None
     breakeven_trigger_r: float | None = None
     max_hold_days: int | None = None
+    max_hold_mode: str | None = None  # if_not_profit | hard
+    trail_atr_mult: float | None = None
     allow_shorts: bool = False
+    chronic_penalty: bool = False
+    vix_slope_gate: bool = False
+    anti_gap_entry: bool = False
     tickers: list[str] | None = None
 
 
@@ -154,6 +198,8 @@ class BacktestReq(BaseModel):
 def run(req: BacktestReq):
     _check_date(req.start, "start")
     _check_date(req.end, "end")
+    if req.max_hold_mode is not None and req.max_hold_mode not in ("if_not_profit", "hard"):
+        raise HTTPException(400, "max_hold_mode must be if_not_profit or hard")
     if req.tickers:
         for t in req.tickers:
             if not _TICKER_RE.match(t):
@@ -169,8 +215,18 @@ def run(req: BacktestReq):
         cmd += ["--breakeven-trigger-r", str(req.breakeven_trigger_r)]
     if req.max_hold_days is not None:
         cmd += ["--max-hold-days", str(req.max_hold_days)]
+    if req.max_hold_mode is not None:
+        cmd += ["--max-hold-mode", req.max_hold_mode.replace("_", "-")]
+    if req.trail_atr_mult is not None:
+        cmd += ["--trail-atr-mult", str(req.trail_atr_mult)]
     if req.allow_shorts:
         cmd += ["--allow-shorts"]
+    if req.chronic_penalty:
+        cmd += ["--chronic-penalty"]
+    if req.vix_slope_gate:
+        cmd += ["--vix-slope-gate"]
+    if req.anti_gap_entry:
+        cmd += ["--anti-gap-entry"]
     if req.tickers:
         cmd += ["--tickers", *req.tickers]
     jid = launch(cmd)

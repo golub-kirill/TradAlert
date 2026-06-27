@@ -53,6 +53,11 @@ export interface ScannerLatest {
   stand_down: unknown | null;
 }
 
+export interface ParamDiff {
+  key: string;
+  value: unknown;
+  default: unknown;
+}
 export interface BacktestRun {
   id: number;
   started_at: string;
@@ -65,6 +70,8 @@ export interface BacktestRun {
   win_rate: number | null;
   max_drawdown_r: number | null;
   notes: string | null;
+  params?: ParamDiff[]; // run params that differed from the shipped config
+  window?: string | null; // date window from the run's _meta
 }
 
 export interface EquityPoint {
@@ -147,7 +154,12 @@ export interface BacktestRunReq {
   max_open_risk?: number;
   breakeven_trigger_r?: number;
   max_hold_days?: number;
+  max_hold_mode?: "if_not_profit" | "hard";
+  trail_atr_mult?: number;
   allow_shorts?: boolean;
+  chronic_penalty?: boolean;
+  vix_slope_gate?: boolean;
+  anti_gap_entry?: boolean;
   tickers?: string[] | null;
 }
 
