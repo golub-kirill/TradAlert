@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import type { Position } from "../api/types";
 import { Card, Note } from "../components/Card";
+import { DateField } from "../components/DateField";
 import { Kpis } from "../components/Kpi";
 import { useToast } from "../components/Toast";
 import { useApi } from "../hooks/useApi";
@@ -352,11 +353,7 @@ function OpenForm({ onClose, onDone }: { onClose: () => void; onDone: () => void
       </label>
       <label className="fld">
         Entry date
-        <input
-          type="date"
-          value={date}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value)}
-        />
+        <DateField value={date} onChange={setDate} />
       </label>
       <label className="fld">
         Notes

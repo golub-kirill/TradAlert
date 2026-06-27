@@ -3,6 +3,7 @@ import { getBacktests, getBacktestTrades, runBacktest, streamJob } from "../api/
 import { ApiError } from "../api/client";
 import type { BacktestMode, BacktestRunReq } from "../api/types";
 import { Card, Note } from "../components/Card";
+import { DateField } from "../components/DateField";
 import { useApi } from "../hooks/useApi";
 import { useToast } from "../components/Toast";
 import { fnum, pct, rstr, signClass, today } from "../lib/format";
@@ -80,19 +81,11 @@ export function Backtest() {
         <div className="dates">
           <div className="fld">
             From
-            <input
-              type="date"
-              value={from}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrom(e.target.value)}
-            />
+            <DateField value={from} onChange={setFrom} />
           </div>
           <div className="fld">
             To
-            <input
-              type="date"
-              value={to}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTo(e.target.value)}
-            />
+            <DateField value={to} onChange={setTo} />
           </div>
           <div className="fld">
             Mode
