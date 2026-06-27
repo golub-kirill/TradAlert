@@ -14,6 +14,7 @@ import { useToast } from "../components/Toast";
 import { useRefresh } from "../state/refresh";
 import { Card, Note } from "../components/Card";
 import { Kpis } from "../components/Kpi";
+import { SignalCard } from "../components/SignalCard";
 import { fnum, today } from "../lib/format";
 
 export function Scanner() {
@@ -138,68 +139,18 @@ export function Scanner() {
 
       <Card title="Fired signals" icon="ti-bolt">
         {fired.length ? (
-          fired.map((f, i) => {
-            const isExit = (f.signal_kind || "").startsWith("exit");
-            const isHeld = held.has(f.ticker);
-            const busy = acting === f.ticker;
-            return (
-              <div className="sig" key={i}>
-                <div className="h">
-                  <span className="tk">
-                    {f.ticker} ·{" "}
-                    {isExit
-                      ? (f.signal_kind === "exit_short" ? "cover" : "exit") +
-                        (f.signal_type ? ` (${f.signal_type})` : "")
-                      : (f.signal_type || "").replaceAll("_", " ") || f.signal_kind}
-                  </span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    {isExit ? (
-                      <span className="badge b-rev">
-                        {f.signal_kind === "exit_short" ? "Cover" : "Exit"}
-                      </span>
-                    ) : (
-                      <span className={"badge " + (f.tier === "NEEDS_REVIEW" ? "b-rev" : "b-ok")}>
-                        {f.tier === "NEEDS_REVIEW" ? "Needs review" : "Live"}
-                      </span>
-                    )}
-                    {isExit ? (
-                      isHeld ? (
-                        <button className="btn" disabled={busy} onClick={() => onClose(f)}>
-                          <i className="ti ti-x" />
-                          Close
-                        </button>
-                      ) : (
-                        <span className="mut" style={{ fontSize: 11 }}>
-                          flat
-                        </span>
-                      )
-                    ) : isHeld ? (
-                      <span className="mut" style={{ fontSize: 11 }}>
-                        held
-                      </span>
-                    ) : (
-                      <button
-                        className="btn pri"
-                        disabled={busy || f.close == null}
-                        onClick={() => onOpen(f)}
-                      >
-                        <i className="ti ti-plus" />
-                        Open
-                      </button>
-                    )}
-                  </span>
-                </div>
-                <div className="m">
-                  {isExit
-                    ? f.reason || "exit signal"
-                    : `close ${fnum(f.close, 2)} · stop ${fnum(f.stop_price, 2)} · target ${fnum(
-                        f.target_price,
-                        2,
-                      )}${f.review_reason ? " · " + f.review_reason : ""}`}
-                </div>
-              </div>
-            );
-          })
+          <div className="sgrid">
+            {fired.map((f, i) => (
+              <SignalCard
+                key={i}
+                f={f}
+                held={held.has(f.ticker)}
+                busy={acting === f.ticker}
+                onOpen={onOpen}
+                onClose={onClose}
+              />
+            ))}
+          </div>
         ) : (
           <Note>No fired signals in the latest scan.</Note>
         )}

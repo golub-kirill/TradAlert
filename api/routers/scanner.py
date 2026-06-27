@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from api.deps import query
+from api.deps import load_company_names, query
 from api.jobs import launch, python_exe
 
 router = APIRouter(tags=["scanner"])
@@ -34,6 +34,9 @@ def latest():
         "ORDER BY signal_kind, ticker",
         (rid,),
     )
+    names = load_company_names()
+    for r in fired:
+        r["name"] = names.get(r["ticker"])
     stand_down = None
     try:
         from persistence.db import stand_down_summary

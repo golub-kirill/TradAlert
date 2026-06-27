@@ -36,6 +36,7 @@ export interface LatestRun {
 
 export interface FiredSignal {
   ticker: string;
+  name: string | null; // full company name (UI enrichment)
   signal_kind: string; // entry_long | entry_short | exit_long | exit_short
   signal_type: string | null;
   close: number | null;

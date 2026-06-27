@@ -52,3 +52,13 @@ def load_yaml(name: str) -> dict:
     except Exception as exc:
         logger.warning("config read failed for %s: %s", name, exc)
         return {}
+
+
+def load_company_names() -> dict:
+    """ticker -> full company name (warmed by scripts/fetch_company_names.py). Fail-open."""
+    import json
+    try:
+        with open(ROOT / "data" / "company_names.json", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
