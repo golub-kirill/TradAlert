@@ -18,6 +18,14 @@ function rr(f: FiredSignal): number | null {
 
 const CHIP: Record<Side, string> = { buy: "Buy", hold: "Hold", sell: "Sell" };
 
+const TYPE_LABEL: Record<string, string> = {
+  regime: "Regime exit",
+  momentum: "Momentum",
+  mean_reversion: "Mean reversion",
+  time_stop: "Time stop",
+  pead: "Earnings drift",
+};
+
 export function SignalCard({
   f,
   held,
@@ -34,7 +42,9 @@ export function SignalCard({
   const side = sideOf(f, held);
   const isExit = side === "sell";
   const chip = isExit && f.signal_kind === "exit_short" ? "Cover" : CHIP[side];
-  const kind = ((f.signal_type || f.signal_kind || "") as string).replaceAll("_", " ");
+  const typeLabel =
+    TYPE_LABEL[f.signal_type || ""] ||
+    (f.signal_type ? f.signal_type.replaceAll("_", " ") : f.signal_kind.replaceAll("_", " "));
   const reason = isExit ? f.reason : f.review_reason;
   const ratio = rr(f);
 
@@ -43,7 +53,7 @@ export function SignalCard({
       <div className="scard-top">
         <div style={{ minWidth: 0 }}>
           <div className="scard-tkr">{f.ticker}</div>
-          <div className="scard-name">{f.name || kind || "—"}</div>
+          <div className="scard-name">{f.name || typeLabel}</div>
         </div>
         <span className={"schip " + side}>{chip}</span>
       </div>
@@ -71,8 +81,8 @@ export function SignalCard({
 
       <div className="scard-foot">
         <span className="scard-tier">
-          <span className="mut">{kind}</span>
-          {f.tier === "NEEDS_REVIEW" ? <span className="badge b-rev">Needs review</span> : null}
+          <span className="stag">{typeLabel}</span>
+          {f.tier === "NEEDS_REVIEW" ? <span className="badge b-rev">Review</span> : null}
         </span>
         {side === "buy" ? (
           <button className="btn success" disabled={busy || f.close == null} onClick={() => onOpen(f)}>

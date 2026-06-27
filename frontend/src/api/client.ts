@@ -8,6 +8,7 @@ import type {
   ConfigResponse,
   EquityCurve,
   FiredSignal,
+  MonthlyPerf,
   Health,
   JobRef,
   JobStatus,
@@ -76,6 +77,7 @@ export const getBacktests = (limit = 20) => request<BacktestRun[]>(`/backtests?l
 export const getBacktestTrades = (id: number, limit = 500) =>
   request<BacktestTrade[]>(`/backtests/${id}/trades?limit=${limit}`);
 export const getEquity = (id: number) => request<EquityCurve>(`/backtests/${id}/equity`);
+export const getMonthly = (id: number) => request<MonthlyPerf>(`/backtests/${id}/monthly`);
 export const getChart = (ticker: string, days = 160) =>
   request<ChartData>(`/charts/${encodeURIComponent(ticker)}?days=${days}`);
 export const getConfig = () => request<ConfigResponse>("/config");

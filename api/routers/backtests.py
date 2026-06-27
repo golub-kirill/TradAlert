@@ -88,6 +88,57 @@ def equity(run_id: int):
     return {"run_id": run_id, "points": points}
 
 
+@router.get("/backtests/{run_id}/monthly")
+def monthly(run_id: int):
+    """Per-month equity candles (open/high/low/close of cumulative R) + W/L counts.
+
+    Drives the Overview performance chart: green months (close>=open) vs red, plus
+    overall win-rate and the share of up months.
+    """
+    rows = query(
+        "SELECT exit_date, COALESCE(effective_r, r_multiple) AS r FROM backtest_trades "
+        "WHERE run_id=%s AND exit_date IS NOT NULL ORDER BY exit_date, id",
+        (int(run_id),),
+    )
+    cum = 0.0
+    months: dict[str, dict] = {}
+    order: list[str] = []
+    wins = losses = 0
+    for row in rows:
+        ym = str(row["exit_date"])[:7]  # YYYY-MM
+        rv = float(row["r"] or 0.0)
+        if ym not in months:
+            months[ym] = {"month": ym, "open": cum, "high": cum, "low": cum, "close": cum,
+                          "r": 0.0, "wins": 0, "losses": 0}
+            order.append(ym)
+        m = months[ym]
+        cum += rv
+        m["close"] = cum
+        m["high"] = max(m["high"], cum)
+        m["low"] = min(m["low"], cum)
+        m["r"] += rv
+        if rv > 0:
+            m["wins"] += 1
+            wins += 1
+        else:
+            m["losses"] += 1
+            losses += 1
+    out = []
+    for ym in order:
+        m = months[ym]
+        out.append({k: (round(v, 4) if isinstance(v, float) else v) for k, v in m.items()})
+    up_months = sum(1 for m in out if m["close"] >= m["open"])
+    total = wins + losses
+    return {
+        "run_id": run_id,
+        "months": out,
+        "win_rate": round(wins / total, 4) if total else None,
+        "up_month_pct": round(up_months / len(out), 4) if out else None,
+        "wins": wins,
+        "losses": losses,
+    }
+
+
 class BacktestReq(BaseModel):
     start: str | None = None
     end: str | None = None

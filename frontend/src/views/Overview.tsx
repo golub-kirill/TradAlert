@@ -1,8 +1,8 @@
 import { Card, Note } from "../components/Card";
 import { Kpis, type KpiItem } from "../components/Kpi";
-import { Sparkline } from "../components/Sparkline";
+import { MonthlyCandles } from "../components/MonthlyCandles";
 import { useApi } from "../hooks/useApi";
-import { getBacktests, getEquity, getPositions, getScannerLatest } from "../api/client";
+import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api/client";
 import { fnum, pct, rstr, signClass } from "../lib/format";
 
 export function Overview() {
@@ -12,11 +12,7 @@ export function Overview() {
 
   const r = runs.data?.[0];
   const latestId = r?.id;
-  const eq = useApi(
-    () => (latestId ? getEquity(latestId) : Promise.resolve({ run_id: 0, points: [] })),
-    [latestId],
-  );
-  const eqVals = (eq.data?.points ?? []).map((p) => p.equity_r);
+  const monthly = useApi(() => (latestId ? getMonthly(latestId) : Promise.resolve(null)), [latestId]);
   const kpis: KpiItem[] = [
     { label: "Net total R", value: fnum(r?.total_r, 2), tone: (r?.total_r ?? 0) >= 0 ? "pos" : "neg" },
     { label: "Win rate", value: pct(r?.win_rate, 1) },
@@ -33,13 +29,23 @@ export function Overview() {
     <>
       <Kpis items={kpis} />
 
-      <Card title={"Equity curve" + (latestId ? ` · run #${latestId} (R)` : "")} icon="ti-trending-up">
-        {eq.loading ? (
+      <Card
+        title={"Performance" + (latestId ? ` · run #${latestId} (R)` : "")}
+        icon="ti-chart-candle"
+        right={
+          monthly.data ? (
+            <span className="mut" style={{ fontSize: 12 }}>
+              Win {pct(monthly.data.win_rate)} · Up months {pct(monthly.data.up_month_pct)}
+            </span>
+          ) : undefined
+        }
+      >
+        {monthly.loading ? (
           <Note>Loading…</Note>
-        ) : eqVals.length < 2 ? (
+        ) : !monthly.data || monthly.data.months.length === 0 ? (
           <Note>No trades to chart for the latest run.</Note>
         ) : (
-          <Sparkline values={eqVals} />
+          <MonthlyCandles months={monthly.data.months} />
         )}
       </Card>
 

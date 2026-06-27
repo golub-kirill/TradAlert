@@ -119,15 +119,10 @@ export function Positions() {
         title="Held positions"
         icon="ti-briefcase"
         right={
-          <span className="row" style={{ border: "none", padding: 0, gap: 12 }}>
-            <span className="mut" style={{ fontSize: 11 }}>
-              stop · close · edit
-            </span>
-            <button className="btn pri" onClick={() => setShowOpen((s) => !s)}>
-              <i className="ti ti-plus" />
-              Open position
-            </button>
-          </span>
+          <button className="btn pri" onClick={() => setShowOpen((s) => !s)}>
+            <i className="ti ti-plus" />
+            Open position
+          </button>
         }
       >
         {showOpen && <OpenForm onClose={() => setShowOpen(false)} onDone={() => ps.reload()} />}

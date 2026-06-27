@@ -76,6 +76,25 @@ export interface EquityCurve {
   points: EquityPoint[];
 }
 
+export interface MonthlyBar {
+  month: string; // YYYY-MM
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  r: number;
+  wins: number;
+  losses: number;
+}
+export interface MonthlyPerf {
+  run_id: number;
+  months: MonthlyBar[];
+  win_rate: number | null;
+  up_month_pct: number | null;
+  wins: number;
+  losses: number;
+}
+
 export interface BacktestTrade {
   ticker: string;
   direction: string;

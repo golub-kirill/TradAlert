@@ -29,10 +29,29 @@ CONFIG = ROOT / "config"
 # dotted key -> (file, type, (min, max) | None). The file root (settings/filters)
 # is the first segment; the remainder is the nested path inside that YAML.
 _EDITABLE: dict[str, tuple[str, type, tuple[float, float] | None]] = {
+    # risk / scanner / notifications
     "settings.risk.max_open_risk": ("settings", float, (0.5, 50.0)),
     "settings.scanner.event_risk_within_days": ("settings", int, (0, 60)),
     "settings.telegram.enabled": ("settings", bool, None),
     "settings.telegram.send_stand_down": ("settings", bool, None),
+    # layers
+    "settings.macro.enabled": ("settings", bool, None),
+    "settings.behavioral.enabled": ("settings", bool, None),
+    "filters.signals.allow_shorts": ("filters", bool, None),
+    "filters.signals.sector_gate.enabled": ("filters", bool, None),
+    # scan filters
+    "filters.price.min_price": ("filters", float, (0.0, 100000.0)),
+    "filters.liquidity.min_dollar_volume_20d": ("filters", int, (0, 100_000_000_000)),
+    "filters.volatility.min_atr_pct": ("filters", float, (0.0, 50.0)),
+    "filters.volatility.max_atr_pct": ("filters", float, (0.0, 100.0)),
+    "filters.trend.ma_fast": ("filters", int, (2, 400)),
+    "filters.trend.ma_slow": ("filters", int, (5, 600)),
+    "filters.signals.stop_loss.min_rr": ("filters", float, (0.0, 20.0)),
+    "filters.signals.stop_loss.atr_multiplier": ("filters", float, (0.1, 20.0)),
+    "filters.execution.max_hold_days": ("filters", int, (1, 500)),
+    "filters.execution.breakeven_trigger_r": ("filters", float, (0.0, 10.0)),
+    "filters.regime.vix_low": ("filters", float, (0.0, 100.0)),
+    "filters.regime.vix_high": ("filters", float, (0.0, 100.0)),
 }
 
 

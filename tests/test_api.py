@@ -105,9 +105,10 @@ def test_job_stream_unknown_id(client):
 # ── config write: validation (these never reach the filesystem) ───────────────
 
 def test_config_write_locked_key_400(client):
+    # entry_slippage_pct is a real engine param deliberately NOT in the editable whitelist.
     r = client.post(
         "/api/config",
-        json={"updates": {"filters.execution.breakeven_trigger_r": 1.5}},
+        json={"updates": {"filters.execution.entry_slippage_pct": 0.01}},
     )
     assert r.status_code == 400
 
