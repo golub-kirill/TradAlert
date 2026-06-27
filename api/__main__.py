@@ -9,6 +9,7 @@ Run from the repo root in the project venv:  .venv\\Scripts\\python.exe -m api -
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 import time
 import webbrowser
@@ -23,6 +24,16 @@ def main() -> None:
     ap.add_argument("--open", action="store_true", help="open the dashboard in a browser once it's up")
     ap.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
     args = ap.parse_args()
+
+    # Binding a non-loopback host exposes the mutating API (config writes, journal
+    # edits, backtest/scan subprocess launches) to the network. Refuse unless an
+    # X-API-Token is configured, so a stray --host can't open an unauthenticated
+    # control surface to the LAN.
+    if args.host.strip().lower() not in ("127.0.0.1", "::1", "localhost") and not os.environ.get("TRADALERT_API_TOKEN"):
+        ap.error(
+            f"refusing to bind non-loopback host {args.host!r} without auth — set "
+            "TRADALERT_API_TOKEN in the environment first, or bind 127.0.0.1."
+        )
 
     shown = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
     url = f"http://{shown}:{args.port}"

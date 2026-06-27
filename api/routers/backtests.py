@@ -4,21 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from datetime import date as _date
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.deps import load_yaml, query
+from api.deps import TICKER_RE, load_yaml, query
 from api.jobs import get as job_get, launch, python_exe, status as job_status
 
 router = APIRouter(tags=["backtests"])
-
-# A symbol must start alphanumeric so it can never be parsed as a CLI flag when
-# spliced into the run_backtest argv (e.g. a "--out" "ticker" can't redirect output).
-_TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$")
 
 
 def _sse(event: str, data: str) -> str:
@@ -198,13 +193,15 @@ class BacktestReq(BaseModel):
 def run(req: BacktestReq):
     _check_date(req.start, "start")
     _check_date(req.end, "end")
+    if req.mode not in _MODES:
+        raise HTTPException(400, f"mode must be one of: {', '.join(_MODES)}")
     if req.max_hold_mode is not None and req.max_hold_mode not in ("if_not_profit", "hard"):
         raise HTTPException(400, "max_hold_mode must be if_not_profit or hard")
     if req.tickers:
         for t in req.tickers:
-            if not _TICKER_RE.match(t):
+            if not TICKER_RE.match(t):
                 raise HTTPException(400, f"invalid ticker {t!r}")
-    cmd = [python_exe(), "-m", "backtest.run_backtest", *_MODES.get(req.mode, [])]
+    cmd = [python_exe(), "-m", "backtest.run_backtest", *_MODES[req.mode]]
     if req.start:
         cmd += ["--start", req.start]
     if req.end:

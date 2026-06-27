@@ -7,6 +7,7 @@ UI to blanks instead of 500s — the same posture the scripts take.
 from __future__ import annotations
 
 import logging
+import re
 
 import yaml
 
@@ -14,6 +15,13 @@ from api import ROOT
 
 logger = logging.getLogger("api")
 CONFIG = ROOT / "config"
+
+# A symbol safe to splice into an argv: must START alphanumeric so it can never be
+# read as a CLI flag (e.g. "--out"), then dotted/dashed alphanumerics. Used by the
+# backtest run launcher, which passes tickers to the run_backtest subprocess.
+# Journal-only paths (e.g. the positions endpoint) validate with the canonical
+# core.validators.yf_tickerValidator instead, which also permits '^' index symbols.
+TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$")
 
 
 def query(sql: str, params: tuple | None = None) -> list[dict]:

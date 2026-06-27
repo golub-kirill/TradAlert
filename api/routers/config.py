@@ -138,8 +138,8 @@ def write_config(body: ConfigWrite):
         file, _, _ = _EDITABLE[key]
         by_file.setdefault(file, {})[key] = _coerce(key, raw)
 
-    # Stage every file's new text in memory and validate ALL edits first, so a
-    # failure can't leave a multi-file update half-applied; commit atomically after.
+    # Stage every file's new text in memory and validate ALL edits first, so a bad
+    # edit fails before anything is written; the staged text is committed below.
     staged: list[tuple[Path, str]] = []
     written: list[str] = []
     for file, items in by_file.items():
@@ -167,17 +167,24 @@ def write_config(body: ConfigWrite):
             written.append(key)
         staged.append((path, text))
 
-    for path, text in staged:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        try:
+    # Two-phase commit: write every temp file first, then os.replace them all, so a
+    # write fault leaves the live configs untouched. A fault *between* two replaces
+    # is the only residual gap (true multi-file atomicity would need a real txn).
+    tmps: list[tuple[Path, Path]] = []  # (tmp, final)
+    try:
+        for path, text in staged:
+            tmp = path.with_suffix(path.suffix + ".tmp")
             with open(tmp, "w", encoding="utf-8", newline="") as f:  # preserve newlines verbatim
                 f.write(text)
+            tmps.append((tmp, path))
+        for tmp, path in tmps:
             os.replace(tmp, path)
-        except Exception as exc:
+    except Exception as exc:
+        for tmp, _ in tmps:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
-            raise HTTPException(500, f"cannot write {path.name}: {exc}")
+        raise HTTPException(500, f"cannot write config: {exc}")
 
     return {"ok": True, "written": sorted(written)}

@@ -167,6 +167,7 @@ const TI={overview:["Overview","Strategy performance and activity"],scanner:["Sc
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
 async function api(path,opts){const r=await fetch('/api'+path,opts);if(!r.ok){let d;try{d=await r.json();}catch(_){}throw new Error((d&&d.detail)||(r.status+' '+r.statusText));}return r.json();}
 function fnum(v,d){return v==null?'—':(typeof v==='number'?v.toFixed(d):v);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
 $$('.nav').forEach(n=>n.addEventListener('click',()=>{$$('.nav').forEach(x=>x.classList.remove('on'));n.classList.add('on');const g=n.dataset.go;$$('[data-page]').forEach(p=>p.classList.toggle('hide',p.id!==g));$('#title').textContent=TI[g][0];$('#sub').textContent=TI[g][1];if(g==='charts')loadChart();}));
 $('#refresh-btn').addEventListener('click',loadAll);
@@ -200,11 +201,11 @@ async function loadOverview(){
   $('#ov-kpis').innerHTML=kp.map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v ${k[2]}">${k[1]}</div></div>`).join('');
   try{const eq=await api('/charts/SPY?days=120');drawEq('eq',eq.bars.map(b=>b.close));}catch(e){$('#eq').innerHTML='<p class="note">No price cache for the equity preview.</p>';}
   let pos=[];try{pos=await api('/positions');}catch(e){}
-  $('#ov-pos').innerHTML=pos.length?pos.slice(0,6).map(p=>`<div class="row"><span>${p.ticker} <span class="mut">${p.side}</span></span><span class="${(p.unrealized_r||0)<0?'neg':'pos'}">${p.unrealized_r==null?'—':(p.unrealized_r>0?'+':'')+p.unrealized_r}R</span></div>`).join(''):'<p class="note">No open positions.</p>';
+  $('#ov-pos').innerHTML=pos.length?pos.slice(0,6).map(p=>`<div class="row"><span>${esc(p.ticker)} <span class="mut">${esc(p.side)}</span></span><span class="${(p.unrealized_r||0)<0?'neg':'pos'}">${p.unrealized_r==null?'—':(p.unrealized_r>0?'+':'')+p.unrealized_r}R</span></div>`).join(''):'<p class="note">No open positions.</p>';
   let sc={};try{sc=await api('/scanner/latest');}catch(e){}
   const run=sc.run||{};
-  $('#ov-scan').innerHTML=run.run_id?`<div class="row"><span class="mut">Run</span><span>#${run.run_id}</span></div><div class="row"><span class="mut">Scanned / passed</span><span>${run.tickers_scanned} / ${run.scan_passed}</span></div><div class="row"><span class="mut">Fired</span><span class="pos">${run.signals_fired}</span></div><div class="row"><span class="mut">Regime</span><span>${run.market_regime||'—'}</span></div>`:'<p class="note">No scans journaled yet.</p>';
-  $('#regime').innerHTML='<span class="dot"></span>'+(run.market_regime||'no regime');
+  $('#ov-scan').innerHTML=run.run_id?`<div class="row"><span class="mut">Run</span><span>#${run.run_id}</span></div><div class="row"><span class="mut">Scanned / passed</span><span>${run.tickers_scanned} / ${run.scan_passed}</span></div><div class="row"><span class="mut">Fired</span><span class="pos">${run.signals_fired}</span></div><div class="row"><span class="mut">Regime</span><span>${esc(run.market_regime||'—')}</span></div>`:'<p class="note">No scans journaled yet.</p>';
+  $('#regime').innerHTML='<span class="dot"></span>'+esc(run.market_regime||'no regime');
 }
 
 async function loadScanner(){
@@ -212,21 +213,21 @@ async function loadScanner(){
   const run=sc.run||{};
   $('#sc-kpis').innerHTML=[['Scanned',run.tickers_scanned??'—'],['Passed',run.scan_passed??'—'],['Fired',run.signals_fired??'—'],['Run','#'+(run.run_id??'—')]].map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v">${k[1]}</div></div>`).join('');
   const fired=sc.fired||[];
-  $('#sc-fired').innerHTML=fired.length?fired.map(f=>`<div class="sig"><div class="h"><span class="tk">${f.ticker} · ${(f.signal_type||'').replace('_',' ')||f.signal_kind}</span><span class="badge ${f.tier==='NEEDS_REVIEW'?'b-rev':'b-ok'}">${f.tier==='NEEDS_REVIEW'?'Needs review':'Live'}</span></div><div class="m">close ${fnum(f.close,2)} · stop ${fnum(f.stop_price,2)} · target ${fnum(f.target_price,2)}${f.review_reason?' · '+f.review_reason:''}</div></div>`).join(''):'<p class="note">No fired signals in the latest scan.</p>';
+  $('#sc-fired').innerHTML=fired.length?fired.map(f=>`<div class="sig"><div class="h"><span class="tk">${esc(f.ticker)} · ${esc((f.signal_type||'').replace('_',' ')||f.signal_kind)}</span><span class="badge ${f.tier==='NEEDS_REVIEW'?'b-rev':'b-ok'}">${f.tier==='NEEDS_REVIEW'?'Needs review':'Live'}</span></div><div class="m">close ${fnum(f.close,2)} · stop ${fnum(f.stop_price,2)} · target ${fnum(f.target_price,2)}${f.review_reason?' · '+esc(f.review_reason):''}</div></div>`).join(''):'<p class="note">No fired signals in the latest scan.</p>';
   const sd=sc.stand_down;
-  $('#sc-stand').innerHTML=sd?`<pre>${JSON.stringify(sd,null,2)}</pre>`:'<p class="note">No stand-down summary.</p>';
+  $('#sc-stand').innerHTML=sd?`<pre>${esc(JSON.stringify(sd,null,2))}</pre>`:'<p class="note">No stand-down summary.</p>';
 }
 
 async function loadBacktests(){
   let runs=[];try{runs=await api('/backtests?limit=12');}catch(e){}
-  $('#bt-list').innerHTML=runs.length?`<table><thead><tr><th>#</th><th>Window</th><th>Trades</th><th>Total R</th><th>PF</th><th>Win</th></tr></thead><tbody>${runs.map(r=>`<tr><td>${r.id}</td><td class="mut">${r.start_date||'all'} → ${r.end_date||'all'}</td><td>${r.trades_count}</td><td class="${(+r.total_r||0)<0?'neg':'pos'}">${fnum(+r.total_r,2)}</td><td>${fnum(+r.profit_factor,2)}</td><td>${r.win_rate!=null?(+r.win_rate*100).toFixed(0)+'%':'—'}</td></tr>`).join('')}</tbody></table>`:'<p class="note">No backtest runs journaled yet. Run one above.</p>';
+  $('#bt-list').innerHTML=runs.length?`<table><thead><tr><th>#</th><th>Window</th><th>Trades</th><th>Total R</th><th>PF</th><th>Win</th></tr></thead><tbody>${runs.map(r=>`<tr><td>${r.id}</td><td class="mut">${esc(r.start_date||'all')} → ${esc(r.end_date||'all')}</td><td>${r.trades_count}</td><td class="${(+r.total_r||0)<0?'neg':'pos'}">${fnum(+r.total_r,2)}</td><td>${fnum(+r.profit_factor,2)}</td><td>${r.win_rate!=null?(+r.win_rate*100).toFixed(0)+'%':'—'}</td></tr>`).join('')}</tbody></table>`:'<p class="note">No backtest runs journaled yet. Run one above.</p>';
 }
 
 async function loadPositions(){
   let pos=[];try{pos=await api('/positions');}catch(e){}
   const tot=pos.reduce((s,p)=>s+(p.unrealized_r||0),0);
   $('#po-kpis').innerHTML=[['Held',pos.length],['Unrealized',(tot>0?'+':'')+tot.toFixed(2)+'R'],['Long',pos.filter(p=>p.side==='long').length],['Short',pos.filter(p=>p.side==='short').length]].map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v">${k[1]}</div></div>`).join('');
-  $('#po-body').innerHTML=pos.length?pos.map(p=>`<tr><td>${p.ticker}</td><td class="mut">${p.side}</td><td>${fnum(p.entry_price,2)}</td><td>${fnum(p.stop_price,2)}</td><td>${fnum(p.current,2)}</td><td class="${(p.unrealized_r||0)<0?'neg':'pos'}">${p.unrealized_r==null?'—':(p.unrealized_r>0?'+':'')+p.unrealized_r}</td><td><span style="display:flex;gap:5px"><button class="ico" data-act="stop" data-id="${p.id}" data-tk="${p.ticker}" title="Move stop"><i class="ti ti-arrow-bar-to-up"></i></button><button class="ico" data-act="close" data-id="${p.id}" data-tk="${p.ticker}" data-now="${p.current||''}" title="Close"><i class="ti ti-x"></i></button><button class="ico" data-act="edit" data-id="${p.id}" data-tk="${p.ticker}" title="Edit"><i class="ti ti-pencil"></i></button></span></td></tr>`).join(''):'<tr><td colspan="7" class="note">No open positions.</td></tr>';
+  $('#po-body').innerHTML=pos.length?pos.map(p=>`<tr><td>${esc(p.ticker)}</td><td class="mut">${esc(p.side)}</td><td>${fnum(p.entry_price,2)}</td><td>${fnum(p.stop_price,2)}</td><td>${fnum(p.current,2)}</td><td class="${(p.unrealized_r||0)<0?'neg':'pos'}">${p.unrealized_r==null?'—':(p.unrealized_r>0?'+':'')+p.unrealized_r}</td><td><span style="display:flex;gap:5px"><button class="ico" data-act="stop" data-id="${p.id}" data-tk="${esc(p.ticker)}" title="Move stop"><i class="ti ti-arrow-bar-to-up"></i></button><button class="ico" data-act="close" data-id="${p.id}" data-tk="${esc(p.ticker)}" data-now="${p.current||''}" title="Close"><i class="ti ti-x"></i></button><button class="ico" data-act="edit" data-id="${p.id}" data-tk="${esc(p.ticker)}" title="Edit"><i class="ti ti-pencil"></i></button></span></td></tr>`).join(''):'<tr><td colspan="7" class="note">No open positions.</td></tr>';
 }
 $('#po-body').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-act]');if(!b)return;const{act,id,tk}=b.dataset;
@@ -250,12 +251,12 @@ async function loadSettings(){
    ['Max hold',get(f,'execution','max_hold_days')+' ('+get(f,'execution','max_hold_mode')+')'],
    ['Breakeven trigger',get(f,'execution','breakeven_trigger_r')+'R'],
    ['VIX low / high',get(f,'regime','vix_low')+' / '+get(f,'regime','vix_high')],
-  ].map(r=>`<div class="row"><span class="mut">${r[0]}</span><span>${r[1]}</span></div>`).join('');
+  ].map(r=>`<div class="row"><span class="mut">${r[0]}</span><span>${esc(r[1])}</span></div>`).join('');
   $('#set-layers').innerHTML=[
    ['Macro layer',get(s,'macro','enabled')],['Behavioral layer',get(s,'behavioral','enabled')],
    ['Allow shorts',get(f,'signals','allow_shorts')],['Sector gate',get(f,'signals','sector_gate','enabled')],
    ['Open-risk budget',get(s,'risk','max_open_risk')],['Event-risk window',get(s,'scanner','event_risk_within_days')+'d'],
-  ].map(r=>`<div class="row"><span class="mut">${r[0]}</span><span>${r[1]===true?'on':r[1]===false?'off':r[1]}</span></div>`).join('')+'<p class="note" style="margin-top:10px">Read-only here — config-write endpoint is next.</p>';
+  ].map(r=>`<div class="row"><span class="mut">${r[0]}</span><span>${r[1]===true?'on':r[1]===false?'off':esc(r[1])}</span></div>`).join('')+'<p class="note" style="margin-top:10px">Read-only here — config-write endpoint is next.</p>';
 }
 
 let CHART_TK='SPY';

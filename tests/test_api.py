@@ -293,3 +293,91 @@ def test_token_guard_blocks_unauth_post(monkeypatch):
             headers={"X-API-Token": "tkn"},
         )
         assert passed.status_code == 400
+
+
+# ── input validation: ticker / side / mode guards (reject before any effect) ──
+
+def test_open_position_rejects_bad_ticker(client, monkeypatch):
+    fake = _patch_adapter(monkeypatch)
+    r = client.post(
+        "/api/positions",
+        json={"ticker": "<img src=x>", "entry_price": 10.0, "side": "long"},
+    )
+    assert r.status_code == 400
+    assert fake.calls == []  # rejected before the journal adapter is touched
+
+
+def test_open_position_rejects_bad_side(client, monkeypatch):
+    fake = _patch_adapter(monkeypatch)
+    r = client.post(
+        "/api/positions",
+        json={"ticker": "TEST.1", "entry_price": 10.0, "side": "sideways"},
+    )
+    assert r.status_code == 400
+    assert fake.calls == []
+
+
+def test_open_position_accepts_caret_index(client, monkeypatch):
+    # The journal path uses the canonical validator, which permits '^' index symbols
+    # (^VIX) — the argv-hardened TICKER_RE must not be applied here.
+    fake = _patch_adapter(monkeypatch)
+    r = client.post(
+        "/api/positions",
+        json={"ticker": "^vix", "entry_price": 15.0, "side": "long"},
+    )
+    assert r.status_code == 200
+    assert fake.calls and fake.calls[0][0] == "open"
+    assert fake.calls[0][1] == "^VIX"  # validated + normalized to upper, passed through
+
+
+def test_backtest_run_rejects_unknown_mode(client, monkeypatch):
+    called = {"n": 0}
+
+    def fake_launch(cmd):
+        called["n"] += 1
+        return "job"
+
+    monkeypatch.setattr("api.routers.backtests.launch", fake_launch)
+    r = client.post("/api/backtests/run", json={"mode": "bogus"})
+    assert r.status_code == 400
+    assert called["n"] == 0  # no subprocess enqueued for an invalid mode
+
+
+# ── config write: multi-file two-phase commit (both files, no temp left) ──────
+
+def test_config_write_multi_file(client, tmp_path, monkeypatch):
+    pytest.importorskip("ruamel.yaml")
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "settings.yaml").write_text("risk:\n  max_open_risk: 5.0\n", encoding="utf-8")
+    (cfg_dir / "filters.yaml").write_text("price:\n  min_price: 1.0\n", encoding="utf-8")
+    monkeypatch.setattr("api.routers.config.CONFIG", cfg_dir)
+
+    r = client.post(
+        "/api/config",
+        json={"updates": {"settings.risk.max_open_risk": 7.5,
+                          "filters.price.min_price": 3.0}},
+    )
+    assert r.status_code == 200
+    assert set(r.json()["written"]) == {"settings.risk.max_open_risk", "filters.price.min_price"}
+
+    import yaml
+    assert yaml.safe_load((cfg_dir / "settings.yaml").read_text())["risk"]["max_open_risk"] == 7.5
+    assert yaml.safe_load((cfg_dir / "filters.yaml").read_text())["price"]["min_price"] == 3.0
+    assert not list(cfg_dir.glob("*.tmp"))  # two-phase commit leaves no temp files
+
+
+# ── serve guard: refuse a non-loopback bind without a token ───────────────────
+
+def test_serve_refuses_nonloopback_without_token(monkeypatch):
+    import api.__main__ as entry
+
+    monkeypatch.delenv("TRADALERT_API_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", ["python -m api", "--host", "0.0.0.0"])
+    started = {"uvicorn": False}
+    # If the guard regresses, this no-op stops the test from actually binding a port.
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: started.__setitem__("uvicorn", True))
+
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert started["uvicorn"] is False

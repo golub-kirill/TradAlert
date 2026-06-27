@@ -95,9 +95,19 @@ class EditBody(BaseModel):
 
 @router.post("/positions")
 def open_position(body: OpenBody):
+    # Canonical symbol check (allows ^index / dual-class, normalizes case). This is a
+    # journal DB write, not an argv splice, so the CLI-flag-hardened TICKER_RE is the
+    # wrong tool here — it would reject legitimate symbols like ^VIX.
+    from core.validators.yf_tickerValidator import validate_ticker
+    try:
+        ticker = validate_ticker(body.ticker)
+    except Exception:
+        raise HTTPException(400, f"invalid ticker {body.ticker!r}")
+    if body.side not in ("long", "short"):
+        raise HTTPException(400, "side must be 'long' or 'short'")
     try:
         nid = _adapter().open(
-            body.ticker, body.entry_price, _as_date(body.entry_date),
+            ticker, body.entry_price, _as_date(body.entry_date),
             side=body.side, stop_price=body.stop_price, notes=body.notes,
         )
     except Exception as exc:

@@ -18,6 +18,16 @@ import uuid
 from api import ROOT
 
 _JOBS: dict[str, dict] = {}
+_MAX_JOBS = 50  # bound the in-memory registry; evict oldest finished jobs past this
+
+
+def _evict() -> None:
+    """Drop the oldest finished jobs so a long-lived server can't leak memory."""
+    for jid in list(_JOBS):
+        if len(_JOBS) <= _MAX_JOBS:
+            break
+        if _JOBS[jid]["status"] != "running":
+            del _JOBS[jid]
 
 # Strip ANSI escape sequences (the backtest report prints SGR colours) so the
 # web log shows clean text instead of literal "[32m…" codes.
@@ -30,6 +40,7 @@ def _clean(line: str) -> str:
 
 def launch(cmd: list[str]) -> str:
     """Start ``cmd`` (a python module invocation) under the repo root, tracked by id."""
+    _evict()
     jid = uuid.uuid4().hex[:8]
     _JOBS[jid] = {
         "status": "running",
