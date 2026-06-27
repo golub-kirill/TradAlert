@@ -45,7 +45,10 @@ export function PriceChart({ bars }: { bars: Bar[] }) {
         <span>ATR% {fnum(lg.atrPct, 2)}</span>
       </div>
       <div className="cw" ref={cwRef} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        <div dangerouslySetInnerHTML={{ __html: m.candlesSvg }} />
+        <div
+          style={{ height: "clamp(190px, 38vh, 420px)" }}
+          dangerouslySetInnerHTML={{ __html: m.candlesSvg }}
+        />
         <div className="xh" style={{ left: hoverPx + "%", opacity: hover == null ? 0 : 0.6 }} />
         {c && (
           <div
@@ -61,9 +64,9 @@ export function PriceChart({ bars }: { bars: Bar[] }) {
           </div>
         )}
       </div>
-      <div style={{ marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.volSvg }} />
-      <div style={{ marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.rsiSvg }} />
-      <div style={{ marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.macdSvg }} />
+      <div style={{ height: 54, marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.volSvg }} />
+      <div style={{ height: 60, marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.rsiSvg }} />
+      <div style={{ height: 64, marginTop: 4 }} dangerouslySetInnerHTML={{ __html: m.macdSvg }} />
     </>
   );
 }
@@ -151,7 +154,7 @@ function buildModel(bars: Bar[]): Model | null {
       yb = Y(Math.min(o, cc));
     cnd += `<line x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" y1="${Y(h).toFixed(1)}" y2="${Y(l).toFixed(1)}" style="stroke:${col};stroke-width:.8"/><rect x="${(cx - cw / 2).toFixed(1)}" y="${yt.toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(0.8, yb - yt).toFixed(1)}" style="fill:${col}"/>`;
   }
-  const candlesSvg = `<svg viewBox="0 0 ${VB} 210" width="100%">${grid}${xl}${bbA ? `<path d="${bbA}" style="fill:var(--bg-accent);opacity:.16"/>` : ""}${cnd}${ln(bu, "var(--text-muted)", 0.6)}${ln(bl, "var(--text-muted)", 0.6)}${ln(bm, "var(--text-muted)", 0.7, "2 3")}${ln(mas, "var(--text-warning)", 1.3)}${ln(maf, "var(--text-accent)", 1.3)}${ln(wsma, "var(--c-wsma)", 1.2)}${yl}</svg>`;
+  const candlesSvg = `<svg viewBox="0 0 ${VB} 210" width="100%" height="100%" preserveAspectRatio="none" style="display:block">${grid}${xl}${bbA ? `<path d="${bbA}" style="fill:var(--bg-accent);opacity:.16"/>` : ""}${cnd}${ln(bu, "var(--text-muted)", 0.6)}${ln(bl, "var(--text-muted)", 0.6)}${ln(bm, "var(--text-muted)", 0.7, "2 3")}${ln(mas, "var(--text-warning)", 1.3)}${ln(maf, "var(--text-accent)", 1.3)}${ln(wsma, "var(--c-wsma)", 1.2)}${yl}</svg>`;
 
   // ── volume pane ──
   const vT = 8,
@@ -165,7 +168,7 @@ function buildModel(bars: Bar[]): Model | null {
     const y = VY(vol[i] as number);
     vb += `<rect x="${(X(i) - cw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(0.6, vB - y).toFixed(1)}" style="fill:${col};opacity:.5"/>`;
   }
-  const volSvg = `<svg viewBox="0 0 ${VB} 56" width="100%">${vb}<text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">Volume</text></svg>`;
+  const volSvg = `<svg viewBox="0 0 ${VB} 56" width="100%" height="100%" preserveAspectRatio="none" style="display:block">${vb}<text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">Volume</text></svg>`;
 
   // ── RSI pane ──
   const rT = 10,
@@ -177,7 +180,7 @@ function buildModel(bars: Bar[]): Model | null {
   });
   const rfpts = (a: (number | null)[]) =>
     a.map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${RY(v).toFixed(1)}` : null)).filter(Boolean).join(" ");
-  const rsiSvg = `<svg viewBox="0 0 ${VB} 66" width="100%">${rg}<polyline points="${rfpts(rsi)}" style="fill:none;stroke:var(--text-accent);stroke-width:1.2"/><text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">RSI 14</text></svg>`;
+  const rsiSvg = `<svg viewBox="0 0 ${VB} 66" width="100%" height="100%" preserveAspectRatio="none" style="display:block">${rg}<polyline points="${rfpts(rsi)}" style="fill:none;stroke:var(--text-accent);stroke-width:1.2"/><text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">RSI 14</text></svg>`;
 
   // ── MACD pane ──
   const mA = Math.max(...macd.filter(fin).map(Math.abs), ...sig.filter(fin).map(Math.abs), 0.01),
@@ -195,7 +198,7 @@ function buildModel(bars: Bar[]): Model | null {
   }
   const mfpts = (a: (number | null)[]) =>
     a.map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${MY(v).toFixed(1)}` : null)).filter(Boolean).join(" ");
-  const macdSvg = `<svg viewBox="0 0 ${VB} 68" width="100%"><line x1="${CL}" x2="${CR}" y1="${MY(0).toFixed(1)}" y2="${MY(0).toFixed(1)}" style="stroke:var(--border);stroke-width:.5"/>${mh}<polyline points="${mfpts(macd)}" style="fill:none;stroke:var(--text-accent);stroke-width:1.2"/><polyline points="${mfpts(sig)}" style="fill:none;stroke:var(--text-warning);stroke-width:1.2"/><text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">MACD 12 26 9</text></svg>`;
+  const macdSvg = `<svg viewBox="0 0 ${VB} 68" width="100%" height="100%" preserveAspectRatio="none" style="display:block"><line x1="${CL}" x2="${CR}" y1="${MY(0).toFixed(1)}" y2="${MY(0).toFixed(1)}" style="stroke:var(--border);stroke-width:.5"/>${mh}<polyline points="${mfpts(macd)}" style="fill:none;stroke:var(--text-accent);stroke-width:1.2"/><polyline points="${mfpts(sig)}" style="fill:none;stroke:var(--text-warning);stroke-width:1.2"/><text x="${CL}" y="11" style="fill:var(--text-muted);font-size:10px">MACD 12 26 9</text></svg>`;
 
   const last = bars[n - 1];
   const lg: Legend = {
