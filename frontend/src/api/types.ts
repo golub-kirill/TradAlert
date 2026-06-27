@@ -113,12 +113,16 @@ export interface Bar {
   high: number | null;
   low: number | null;
   close: number | null;
+  volume: number | null;
+  atr: number | null;
   ma_fast: number | null;
   ma_slow: number | null;
+  weekly_sma10: number | null;
   rsi: number | null;
   macd: number | null;
   macd_signal: number | null;
   macd_hist: number | null;
+  bb_mid: number | null;
   bb_upper: number | null;
   bb_lower: number | null;
 }

@@ -11,6 +11,7 @@
   --rgb-danger: 255 123 123;
   --rgb-warning: 243 181 62;
   --rgb-hold: 110 160 255;
+  --c-wsma: #b98cf0;
 
   --text-primary: #e8ecf3;
   --text-secondary: #9aa4b2;
@@ -905,6 +906,21 @@ input[type="range"] {
 .chsearch input:focus {
   outline: none;
   box-shadow: none;
+}
+
+/* chart indicator legend */
+.chlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  margin-bottom: 8px;
+}
+.chlegend span {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* editable settings rows */

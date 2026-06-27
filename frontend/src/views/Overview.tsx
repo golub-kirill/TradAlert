@@ -1,6 +1,6 @@
 import { Card, Note } from "../components/Card";
 import { Kpis, type KpiItem } from "../components/Kpi";
-import { MonthlyCandles } from "../components/MonthlyCandles";
+import { PerformanceChart } from "../components/PerformanceChart";
 import { useApi } from "../hooks/useApi";
 import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api/client";
 import { fnum, pct, rstr, signClass } from "../lib/format";
@@ -45,7 +45,7 @@ export function Overview() {
         ) : !monthly.data || monthly.data.months.length === 0 ? (
           <Note>No trades to chart for the latest run.</Note>
         ) : (
-          <MonthlyCandles months={monthly.data.months} />
+          <PerformanceChart months={monthly.data.months} />
         )}
       </Card>
 

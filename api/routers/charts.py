@@ -8,8 +8,9 @@ from fastapi import APIRouter, HTTPException
 
 router = APIRouter(tags=["charts"])
 
-_COLS = ["open", "high", "low", "close", "ma_fast", "ma_slow", "rsi",
-         "macd", "macd_signal", "macd_hist", "bb_upper", "bb_lower"]
+_COLS = ["open", "high", "low", "close", "volume", "atr", "ma_fast", "ma_slow",
+         "weekly_sma10", "rsi", "macd", "macd_signal", "macd_hist",
+         "bb_mid", "bb_upper", "bb_lower"]
 
 
 @router.get("/charts/{ticker}")
