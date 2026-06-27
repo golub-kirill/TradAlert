@@ -79,23 +79,39 @@ export function Scanner() {
 
       <Card title="Fired signals" icon="ti-bolt">
         {fired.length ? (
-          fired.map((f, i) => (
-            <div className="sig" key={i}>
-              <div className="h">
-                <span className="tk">
-                  {f.ticker} · {(f.signal_type || "").replaceAll("_", " ") || f.signal_kind}
-                </span>
-                <span className={"badge " + (f.tier === "NEEDS_REVIEW" ? "b-rev" : "b-ok")}>
-                  {f.tier === "NEEDS_REVIEW" ? "Needs review" : "Live"}
-                </span>
+          fired.map((f, i) => {
+            const isExit = (f.signal_kind || "").startsWith("exit");
+            return (
+              <div className="sig" key={i}>
+                <div className="h">
+                  <span className="tk">
+                    {f.ticker} ·{" "}
+                    {isExit
+                      ? (f.signal_kind === "exit_short" ? "cover" : "exit") +
+                        (f.signal_type ? ` (${f.signal_type})` : "")
+                      : (f.signal_type || "").replaceAll("_", " ") || f.signal_kind}
+                  </span>
+                  {isExit ? (
+                    <span className="badge b-rev">
+                      {f.signal_kind === "exit_short" ? "Cover" : "Exit"}
+                    </span>
+                  ) : (
+                    <span className={"badge " + (f.tier === "NEEDS_REVIEW" ? "b-rev" : "b-ok")}>
+                      {f.tier === "NEEDS_REVIEW" ? "Needs review" : "Live"}
+                    </span>
+                  )}
+                </div>
+                <div className="m">
+                  {isExit
+                    ? f.reason || "exit signal"
+                    : `close ${fnum(f.close, 2)} · stop ${fnum(f.stop_price, 2)} · target ${fnum(
+                        f.target_price,
+                        2,
+                      )}${f.review_reason ? " · " + f.review_reason : ""}`}
+                </div>
               </div>
-              <div className="m">
-                close {fnum(f.close, 2)} · stop {fnum(f.stop_price, 2)} · target{" "}
-                {fnum(f.target_price, 2)}
-                {f.review_reason ? " · " + f.review_reason : ""}
-              </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <Note>No fired signals in the latest scan.</Note>
         )}

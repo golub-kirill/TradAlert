@@ -29,8 +29,9 @@ def latest():
     rid = run["run_id"]
     fired = query(
         "SELECT ticker, signal_kind, signal_type, `close`, stop_price, target_price, "
-        "tier, review_reason FROM scan_results WHERE run_id=%s AND "
-        "signal_kind IN ('entry_long','entry_short') ORDER BY ticker",
+        "tier, review_reason, reason FROM scan_results WHERE run_id=%s AND "
+        "signal_kind IN ('entry_long','entry_short','exit_long','exit_short') "
+        "ORDER BY signal_kind, ticker",
         (rid,),
     )
     stand_down = None

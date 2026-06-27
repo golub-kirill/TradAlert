@@ -36,13 +36,14 @@ export interface LatestRun {
 
 export interface FiredSignal {
   ticker: string;
-  signal_kind: string;
+  signal_kind: string; // entry_long | entry_short | exit_long | exit_short
   signal_type: string | null;
   close: number | null;
   stop_price: number | null;
   target_price: number | null;
   tier: string | null; // "LIVE" | "NEEDS_REVIEW"
   review_reason: string | null;
+  reason: string | null; // per-ticker scoreboard / exit driver
 }
 
 export interface ScannerLatest {
