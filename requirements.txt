@@ -36,3 +36,7 @@ pytest
 
 # Telegram push alerts + interactive bot (config/settings.yaml telegram.enabled)
 python-telegram-bot
+
+# Web control panel backend (api/; run via `python -m api`). The frontend/ SPA uses npm.
+fastapi
+uvicorn

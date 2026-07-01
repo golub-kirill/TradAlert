@@ -21,10 +21,14 @@ byte-identical — the backtest is the ground truth for every live decision.
   owner-only daemon that is **journal-only and never auto-trades**.
 - 🔬 **Honest validation** — paired same-snapshot A/Bs, walk-forward, and reconciliation
   meters that compare real live fills against backtest expectancy.
+- 🖥️ **Local control panel** — a FastAPI + React dashboard (`python -m api --open`) for the
+  scanner, backtests, charts, positions and live config; read-only by default, mutations
+  gated behind an optional API token, loopback-only unless a token is set.
 
 ## Contents
 
 [Layout](#layout) · [Cold start](#cold-start) · [Entry points](#entry-points) ·
+[Web control panel](#web-control-panel) ·
 [Environment variables](#environment-variables-configsecretsenv) ·
 [Configuration files](#configuration-files) · [Indicators](#indicators) ·
 [Signal pipeline](#signal-pipeline) · [MySQL tables](#mysql-tables) · [Outstanding work](#outstanding-work)
@@ -37,6 +41,11 @@ position_CLI.py        Manual position CRUD
 telegram_bot.py        Interactive Telegram daemon (owner-only commands + buttons)
 backtest/run_backtest  Backtester: baseline, sweep, walk-forward, robustness
 backtest/repair_parquet Cross-platform parquet re-save utility
+
+api/                   FastAPI control-panel backend (read endpoints + job launchers)
+frontend/              Vite/React SPA (built to web/dist, served by api at "/")
+web/                   Single-file fallback panel (index.html) + built SPA (dist/)
+scripts/               Live ops + studies: intraday_monitor, reconcilers, task registrars, A/B harnesses
 
 config/
   filters.yaml         Scan + signal + regime + stop-loss + exit rules
@@ -106,7 +115,10 @@ downgraded from `LIVE` to **NEEDS_REVIEW** — split into a separate `⚠ NEEDS 
 stdout block (with the reason) and persisted to `scan_results.tier`/`review_reason`.
 When a fresh entry lands within `scanner.event_risk_within_days` (default 5) of a
 scheduled FOMC/CPI/NFP, the summary also prints a display-only `⚠ EVENT RISK` advisory
-(never gates or sizes). Both are LIVE-path only, so the backtest stays byte-identical.
+(never gates or sizes). Its calendar resolves a YAML override → the live TradingView
+economic-calendar feed (cached, fail-open, forward-extending) → a hard-coded fallback
+list, so the advisory survives without manual upkeep. Both are LIVE-path only, so the
+backtest stays byte-identical.
 
 Held positions (long or short) are also force-exited live when they reach the
 max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`) — a `time_stop`
@@ -116,6 +128,21 @@ best excursion reaches `execution.breakeven_trigger_r` (default `1.0`, ADR-004) 
 scan raises `positions.stop_price` to breakeven via the shared
 `core.exits.breakeven_stop_level` rule (a Telegram notice is sent; `initial_stop`
 is never touched, so realized-R reconciliation is unaffected).
+
+### `scripts/intraday_monitor.py` — 1h held-long breakdown monitor (live-only)
+
+```bash
+python scripts/intraday_monitor.py [--force] [--dry-run]
+```
+
+A midday heads-up between EOD scans: for each **open long**, it fetches 1h bars and
+Telegram-alerts when the last **completed** 1h bar closes below the position's stop
+(the still-forming hour is excluded, so a partial bar can't false-trigger). Shorts are
+excluded; it is **journal/alert only and never places an order**. One alert per
+breakdown episode, re-armed once price recovers to/above the stop (dedup state in
+`data/intraday_monitor_state.json`). `--force` runs outside market hours; `--dry-run`
+logs instead of sending. Live-only — the backtester never imports it. Run hourly at
+logon via `powershell -ExecutionPolicy Bypass -File scripts/register_intraday_monitor.ps1`.
 
 ### `position_CLI.py` — manual positions
 
@@ -185,6 +212,7 @@ a bare strategy). Pass a flag to force its key on for an A/B even when the YAML 
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
 | `--breakeven-trigger-r R` | **Breakeven stop:** once a held trade's best excursion reaches `R` (in initial-risk units), the stop moves to entry — protects the give-back leak without capping the upside (it does not trail further, so winners still run to target). **Default `1.0`** (set in `filters.yaml`; validated walk-forward-stable with better totals, Sharpe and drawdown — see `ADR-004`). Pass `0` to disable. The R denominator stays the **initial** stop. The live scan applies the same rule to held positions (raises `positions.stop_price`, never `initial_stop`). | `execution.breakeven_trigger_r` (filters.yaml) |
 | `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
+| `--correlation-cap` | **Correlation-aware open-risk budget** (default **OFF**): charge `--max-open-risk` against the correlation-adjusted effective risk `√(wᵀCw)` rather than the raw `size_mult` sum, so correlated concurrent names share a budget slot. Tune with `--correlation-lookback N` (return window in bars, default 60), `--correlation-min-overlap N` (min overlapping days to trust a pair, default 40), `--correlation-floor F` (correlations below `F` — and all negatives — count as 0). Effective ≤ raw for ρ∈[0,1], so it is monotone-safe. A/B'd via `scripts/paired_ab_correlation.py`: at the shipped 5.0R budget it *hurts* the North Star (Sharpe 0.66→0.60), so it ships off — kept as a documented, tested lever. | `portfolio.correlation_*` (`base_port`) |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
 > loads it at startup, and the `backtest_runs`/`backtest_trades` tables
@@ -279,9 +307,10 @@ in `settings.yaml::telegram` (so the push attaches inline buttons) and run:
 python telegram_bot.py        # owner-only; needs TG_BOT_TOKEN + numeric TG_CHAT_ID
 ```
 
-**Commands:** `/positions` · `/pos ID` · `/recalc [ID|all]` ·
+**Commands:** `/positions` (held-position dashboard) · `/pos ID` · `/recalc [ID|all]` ·
 `/open TICKER PRICE [--stop S] [--short]` · `/close ID [PRICE]` · `/stop ID PRICE` ·
-`/edit ID FIELD VALUE` · `/chart TICKER` · `/status` · `/scan` · `/help`.
+`/edit ID FIELD VALUE` · `/alert TICKER above|below PRICE` · `/alerts` (list; `/alert del ID`) ·
+`/chart TICKER` · `/status` · `/scan` · `/help`.
 
 **Inline buttons:**
 
@@ -296,6 +325,12 @@ python telegram_bot.py        # owner-only; needs TG_BOT_TOKEN + numeric TG_CHAT
 Every position mutation goes through `core.execution.adapter` — **journal only; it never
 auto-executes a real trade** (the owner places each fill manually).
 
+**Price alerts.** `/alert TICKER above|below PRICE` arms an owner-set target crossing;
+`/alerts` lists the active ones and `/alert del ID` removes one. A 5-minute in-daemon
+poller checks the latest cached prices and pushes a one-shot notice when a target is
+crossed — journal/alert only, never an order. Backed by the `price_alerts` table
+(`data/price_alerts_schema.sql`, applied once; restart the daemon after applying).
+
 Single-instance: the daemon takes `data/telegram_bot.lock` and exits cleanly if another
 poller holds it (Telegram returns **409 Conflict** if two pollers drain `getUpdates` — stop
 any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
@@ -303,6 +338,39 @@ any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/register_telegram_bot.ps1
 ```
+
+## Web control panel
+
+A local dashboard over the same engine and journals — scanner results, backtest launch +
+history, price/indicator charts, held-position editing, and a live config view. The backend
+is a read-only-by-default FastAPI app (`api/`); the UI is a Vite/React SPA (`frontend/`) with
+a no-build single-file fallback (`web/index.html`).
+
+```bash
+# Backend — serves the built SPA at "/", falls back to the single-file panel:
+python -m api --open                 # http://localhost:8000, opens a browser
+# or: uvicorn api.main:app --port 8000
+
+# Build the SPA (outputs to web/dist, which the API mounts at "/"):
+cd frontend && npm install && npm run build
+# Dev SPA with hot-reload (Vite :5173, CORS-allowed against the API):
+npm run dev
+```
+
+Until the SPA is built, `/` serves the single-file panel; it is always reachable at `/legacy`.
+
+**Endpoints** (under `/api`): *read* — `/health`, `/scanner/latest`, `/scanner/runs`,
+`/positions`, `/config`, `/charts/{ticker}`, `/backtests`,
+`/backtests/{run_id}/{equity,monthly,trades}`, `/backtests/jobs/{id}[/stream]`; *mutating* —
+`POST /scan`, `/backtests/run`, `/positions`, `/positions/{id}/{close,scale-out}`,
+`POST /config`, `PATCH /positions/{id}[/stop]`. Backtest and scan runs launch the real
+scripts as streamable background jobs; position edits and config writes are journal-only,
+exactly like the CLI/Telegram paths.
+
+**Safety.** Mutating routes are open for single-operator localhost use, but require an
+`X-API-Token` header once `TRADALERT_API_TOKEN` is set (compared in constant time).
+`python -m api` **refuses a non-loopback `--host`** unless that token is configured, so a
+stray bind can't expose the control surface to the LAN.
 
 ## Environment variables (`config/secrets.env`)
 
@@ -319,6 +387,7 @@ Loaded by `python-dotenv` at startup.
 | `SEC_USER_AGENT` | reserved                             | Not yet read — the EDGAR Form-4 fetcher (`scripts/form4_fetch.py`) hardcodes its contact UA; documented in `secrets.env.example` but unconsumed.                                                |
 | `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
 | `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
+| `TRADALERT_API_TOKEN` | Web control panel (optional)    | When set, the `api/` backend requires it as an `X-API-Token` header on every mutating route and lets `python -m api` bind a non-loopback `--host`. Unset → mutations open, loopback only. |
 
 ## Configuration files
 
@@ -425,6 +494,7 @@ Credentials from `config/secrets.env`. Each table group ships a DDL file under
 | `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
 | `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
 | `positions`       | `src/core/position_manager.py` | `position_CLI.py`        | `data/positions_schema.sql` |
+| `price_alerts`    | `src/persistence/db.py`        | `telegram_bot.py` (`/alert`) | `data/price_alerts_schema.sql` |
 
 ## Outstanding work
 
