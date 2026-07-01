@@ -21,6 +21,15 @@ import pytest
 # ─── calendar.py ─────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _offline_tv_calendar(monkeypatch):
+    """Keep these contract tests hermetic: stub the live TradingView feed to empty so
+    get_calendar_events() exercises the offline hard-coded fallback (matches this file's
+    'documented shape even when network is unreachable' contract)."""
+    import core.macro.calendar as _cal
+    monkeypatch.setattr(_cal, "_load_tv_calendar", lambda: [], raising=False)
+
+
 def test_calendar_returns_events():
     from core.macro.calendar import get_calendar_events, CalendarEvent
     ev = get_calendar_events()

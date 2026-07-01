@@ -27,6 +27,7 @@ class _Date2026(date):
 
 def test_calendar_warns_when_all_events_are_past(monkeypatch, caplog):
     monkeypatch.setattr(cal, "_load_yaml_calendar", lambda: [])  # force hard-coded 2026 list
+    monkeypatch.setattr(cal, "_load_tv_calendar", lambda: [])    # skip the live TV feed
     monkeypatch.setattr(cal, "date", _Date2027)
     with caplog.at_level("WARNING"):
         events = cal.get_calendar_events()
@@ -36,6 +37,7 @@ def test_calendar_warns_when_all_events_are_past(monkeypatch, caplog):
 
 def test_calendar_quiet_when_events_still_future(monkeypatch, caplog):
     monkeypatch.setattr(cal, "_load_yaml_calendar", lambda: [])
+    monkeypatch.setattr(cal, "_load_tv_calendar", lambda: [])    # skip the live TV feed
     monkeypatch.setattr(cal, "date", _Date2026)
     with caplog.at_level("WARNING"):
         cal.get_calendar_events()

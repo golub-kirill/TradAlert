@@ -3,16 +3,20 @@ Curated calendar events (FOMC / CPI / NFP) for the stop-date gate.
 
 Public API: ``get_calendar_events() -> list[CalendarEvent]``
 
-Source resolution: ``config/macro_calendar.yaml`` if present, else a hard-coded
-next-12-month list of FOMC and CPI/NFP dates. FOMC dates are published a year
-ahead by the Fed (federalreserve.gov/monetarypolicy/fomccalendars.htm); CPI/NFP
-follow the BLS calendar (~08:30 ET).
+Source resolution: ``config/macro_calendar.yaml`` (maintainer override) if present,
+else the live TradingView feed (``tv_calendar`` — cached + fail-open, forward-extending
+so it survives the 2027 sunset of the hard-coded list), else a hard-coded 2026 list.
+FOMC dates are published a year ahead by the Fed
+(federalreserve.gov/monetarypolicy/fomccalendars.htm); CPI/NFP follow the BLS
+calendar (~08:30 ET).
 
-Consumed by ``main.py`` two ways:
-  1. seeds ``FilterEngine._stop_dates`` so a new entry ON one of these dates is
-     blocked (held positions still exit normally — the gate is entry-only); and
-  2. ``event_risk_flag()`` surfaces an ADVISORY flag on a fresh entry when an
-     event falls within the next few days — it never gates or sizes a trade.
+Consumed by ``main.py`` for the ADVISORY event-risk flag only:
+``event_risk_flag()`` surfaces a flag on a fresh entry when an FOMC/CPI/NFP
+falls within the next few days — it never gates or sizes a trade. These curated
+dates do NOT seed ``FilterEngine._stop_dates`` (a macro-event entry block A/B'd
+as near-negligible, so it stays advisory here). The engine's hard entry-day
+blackout is the separate, manually-curated ``events.stop_dates`` list in
+``config/filters.yaml``.
 """
 
 from __future__ import annotations
@@ -91,20 +95,23 @@ _HARDCODED_2026: tuple[CalendarEvent, ...] = (
 def get_calendar_events(
         *, categories: Iterable[str] | None = None,
 ) -> list[CalendarEvent]:
-    """Return the rolling-year list of stop-date macro events.
+    """Return the rolling-year list of macro events (advisory event-risk feed).
 
-    Resolution order:
-      1. ``config/macro_calendar.yaml`` (maintainer override).
-      2. Hard-coded 2026 list above (offline-fallback).
+    Resolution order (each step fail-open — a failure falls through to the next):
+      1. ``config/macro_calendar.yaml`` (maintainer override; wins when present).
+      2. Live TradingView feed (``tv_calendar`` — cached, forward-extending).
+      3. Hard-coded 2026 list above (offline fallback; dark from 2027).
     """
     events: list[CalendarEvent] = []
     try:
         events = _load_yaml_calendar()
     except (OSError, ValueError, KeyError) as exc:
         logger.debug(
-            "[calendar] YAML override unavailable (%s); "
-            "falling back to hard-coded list", exc,
+            "[calendar] YAML override unavailable (%s); trying the TV feed", exc,
         )
+
+    if not events:
+        events = _load_tv_calendar()
 
     if not events:
         events = list(_HARDCODED_2026)
@@ -200,4 +207,36 @@ def _load_yaml_calendar() -> list[CalendarEvent]:
         except (KeyError, ValueError, TypeError) as exc:
             logger.warning("[calendar] skipping malformed event row %r: %s",
                            row, exc)
+    return out
+
+
+def _load_tv_calendar() -> list[CalendarEvent]:
+    """Rolling-year FOMC/CPI/NFP dates from the TradingView feed, or [] on any failure.
+
+    Live-only + fail-open: the backtester never calls this (no engine/backtest module
+    imports this package), and any fetch/parse error returns [] so
+    ``get_calendar_events`` falls through to the hard-coded list. The feed is cached
+    and forward-extending, so it survives the 2027 sunset of ``_HARDCODED_2026``.
+    """
+    try:
+        from core.fetchers.macro.tv_calendar import fetch_tv_calendar
+        today = date.today()
+        # today−7 so a just-passed same-week event still reads; +400d ≈ a full rolling
+        # year of slack so the DARK check never trips while the feed is live.
+        df = fetch_tv_calendar(today - timedelta(days=7), today + timedelta(days=400))
+    except Exception as exc:  # noqa: BLE001 - fail-open; never break a live scan
+        logger.debug("[calendar] TV feed unavailable (%s); trying hard-coded list", exc)
+        return []
+    if df is None or df.empty:
+        return []
+    out: list[CalendarEvent] = []
+    for row in df.itertuples(index=False):
+        try:
+            out.append(CalendarEvent(
+                date=row.date.date(),
+                category=str(row.category),
+                description=str(row.title),
+            ))
+        except (AttributeError, ValueError, TypeError) as exc:
+            logger.debug("[calendar] skipping malformed TV row %r: %s", row, exc)
     return out
