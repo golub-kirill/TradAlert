@@ -59,7 +59,9 @@ from core.paths import DATA_DIR, FILTERS_YAML, SCREENSHOTS_DIR, SETTINGS_YAML  #
 from exceptions import ValidationError  # noqa: E402
 from core.telegram import format as fmt  # noqa: E402
 from core.telegram.config import load_telegram_config  # noqa: E402
-from core.telegram.keyboards import confirm, position_actions, status_actions  # noqa: E402
+from core.telegram.keyboards import (  # noqa: E402
+    confirm, position_actions, positions_table_actions, status_actions,
+)
 
 logger = logging.getLogger("telegram_bot")
 
@@ -436,6 +438,7 @@ _CB_ARITY = {
     "chart": 1, "chartpos": 1, "stop": 1, "stopbe": 1, "stop1r": 1,
     "close": 1, "closemenu": 1, "partial": 2, "recalc": 1, "confirm": 2, "cancel": 0,
     "logmenu": 4, "fill": 5, "skip": 2, "editmenu": 1, "edit": 2, "status": 1,
+    "posrefresh": 1, "poscards": 1,
 }
 
 # ½ / ⅓ scale-out fractions for the partial-close buttons.
@@ -937,6 +940,30 @@ async def _cb_status(update, context, args):
     await query.answer("refreshed")
 
 
+async def _cb_posrefresh(update, context, args):
+    """Re-render the compact /positions table in place (🔄 Refresh)."""
+    query = update.callback_query
+    text = await asyncio.to_thread(_render_positions_table)
+    try:
+        await query.edit_message_text(text, reply_markup=positions_table_actions())
+    except Exception:
+        pass  # "message is not modified" when nothing moved since last render
+    await query.answer("refreshed")
+
+
+async def _cb_poscards(update, context, args):
+    """Switch from the compact table to the per-position action cards (🃏 Cards)."""
+    query = update.callback_query
+    await query.answer("cards")
+    positions = await asyncio.to_thread(pm.load_open_positions)
+    chat_id = update.effective_chat.id
+    if not positions:
+        await context.bot.send_message(chat_id=chat_id, text="💼 no open positions")
+        return
+    for pos in positions.values():
+        await _send_position_card(context, chat_id, pos, with_engine=False)
+
+
 _CB_DISPATCH = {
     "open": _cb_open,
     "logmenu": _cb_logmenu,
@@ -956,6 +983,8 @@ _CB_DISPATCH = {
     "editmenu": _cb_editmenu,
     "edit": _cb_edit,
     "status": _cb_status,
+    "posrefresh": _cb_posrefresh,
+    "poscards": _cb_poscards,
 }
 
 
@@ -993,7 +1022,8 @@ _HELP = (
     "<blockquote>journal-only · every button drives the positions table, never a broker</blockquote>\n"
     "\n"
     "<b>📊 View</b>\n"
-    "<code>/positions</code> — open positions, each with action buttons\n"
+    "<code>/positions</code> — compact table of all open positions "
+    "(<code>cards</code> for per-position action cards)\n"
     "<code>/pos ID</code> — one card (open <i>or</i> closed)\n"
     "<code>/status</code> — open count + realized R\n"
     "<code>/chart TICKER</code> — fresh chart + factor scoreboard\n"
@@ -1005,6 +1035,10 @@ _HELP = (
     "<code>/edit ID FIELD VALUE</code> — fix a fill · fields: "
     "<i>entry · stop · exit · initial · notes</i>\n"
     "<code>/recalc [ID|all]</code> — recompute PnL + engine exit read\n"
+    "\n"
+    "<b>🔔 Alerts</b>\n"
+    "<code>/alert TICKER above|below PRICE</code> — arm a price alert\n"
+    "<code>/alerts</code> — list active · <code>/alert del ID</code> to remove\n"
     "\n"
     "<b>⚙️ Run</b>\n"
     "<code>/scan</code> — run the daily scan now\n"
@@ -1064,14 +1098,57 @@ async def _send_chart(context, chat_id, ticker: str) -> None:
             chat_id=chat_id, photo=fh, caption=f"📈 <b>{ticker}</b> — fresh chart")
 
 
+def _render_positions_table() -> str:
+    """Build the compact /positions table (sync; fail-open per position).
+
+    One line per open position with live PnL / R / distance-to-stop, plus the
+    open-risk budget + realized-R footer. A ticker whose bars/quote can't be
+    fetched still lists (identity line only) — one bad symbol never drops the table.
+    """
+    try:
+        open_pos = pm.load_open_positions()
+    except Exception as exc:
+        logger.debug("[positions] load failed — %s", exc)
+        open_pos = {}
+    rows: list[dict] = []
+    for pos in open_pos.values():
+        row = {"ticker": pos.ticker, "id": pos.id, "side": pos.side}
+        try:
+            df = _load_bars(pos.ticker)
+            if df is not None:
+                m = _basic_metrics(pos, df, _resolve_exit_price(pos.ticker))
+                for k in ("unrealized_r", "unrealized_pct", "to_stop_r", "days_held"):
+                    if k in m:
+                        row[k] = m[k]
+        except Exception as exc:
+            logger.debug("[positions] metrics failed for %s — %s", pos.ticker, exc)
+        rows.append(row)
+    budget = realized = None
+    try:
+        budget = pm.open_risk_advisory(_max_open_risk())
+    except Exception as exc:
+        logger.debug("[positions] budget note skipped — %s", exc)
+    try:
+        realized = _realized_summary()
+    except Exception as exc:
+        logger.debug("[positions] realized note skipped — %s", exc)
+    return fmt.format_positions_table(rows, budget_note=budget, realized_note=realized)
+
+
 @_owner_only
 async def cmd_positions(update, context):
-    positions = await asyncio.to_thread(pm.load_open_positions)
-    if not positions:
-        await update.message.reply_text("💼 no open positions")
+    """Default: a compact one-message table of all open positions. ``/positions cards``
+    sends the per-position action cards (the original behavior)."""
+    if context.args and str(context.args[0]).lower().startswith("card"):
+        positions = await asyncio.to_thread(pm.load_open_positions)
+        if not positions:
+            await update.message.reply_text("💼 no open positions")
+            return
+        for pos in positions.values():
+            await _send_position_card(context, update.effective_chat.id, pos, with_engine=False)
         return
-    for pos in positions.values():
-        await _send_position_card(context, update.effective_chat.id, pos, with_engine=False)
+    text = await asyncio.to_thread(_render_positions_table)
+    await update.message.reply_text(text, reply_markup=positions_table_actions())
 
 
 @_owner_only
@@ -1342,12 +1419,140 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 # ── application wiring (factored out so tests can build without polling) ──────
 
+# ── price alerts (owner-set target crossings; alerting-only, never traded) ────
+
+_ALERT_POLL_INTERVAL_S = 300  # 5 minutes
+
+
+def _alert_crossed(direction: str, target: float, price: float) -> bool:
+    """True once `price` reaches/passes the alert `target` in `direction`."""
+    if direction == "above":
+        return price >= target
+    if direction == "below":
+        return price <= target
+    return False
+
+
+def _us_market_open_now() -> bool:
+    """Rough RTH gate: NYSE weekday 09:30–16:00 ET (holidays ignored — a check on a
+    closed day just finds an unchanged price; fail-open to True if tz lookup fails)."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return True
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 30 <= minutes <= 16 * 60
+
+
+@_owner_only
+async def cmd_alert(update, context):
+    """Arm or delete a price alert.
+
+    ``/alert TICKER above|below PRICE`` arms one; ``/alert del ID`` removes one."""
+    from persistence.db import add_price_alert, deactivate_price_alert
+    args = [str(a) for a in (context.args or [])]
+    if len(args) == 2 and args[0].lower() == "del" and args[1].isdigit():
+        ok = await asyncio.to_thread(deactivate_price_alert, int(args[1]))
+        await update.message.reply_text("🗑 alert removed" if ok else "no such active alert")
+        return
+    if len(args) != 3 or args[1].lower() not in ("above", "below"):
+        await update.message.reply_text(
+            "usage: /alert TICKER above|below PRICE   ·   /alert del ID")
+        return
+    ticker, direction = args[0].upper(), args[1].lower()
+    try:
+        price = float(args[2])
+    except ValueError:
+        await update.message.reply_text("bad price")
+        return
+    aid = await asyncio.to_thread(add_price_alert, ticker, direction, price)
+    if aid is None:
+        await update.message.reply_text("⚠️ couldn't save alert (see log)")
+        return
+    arrow = "▲" if direction == "above" else "▼"
+    await update.message.reply_text(
+        f"🔔 alert #{aid}: {fmt._esc(ticker)} {arrow} {direction} {price:.2f}")
+
+
+@_owner_only
+async def cmd_alerts(update, context):
+    """List active price alerts."""
+    from persistence.db import list_price_alerts
+    alerts = await asyncio.to_thread(list_price_alerts)
+    if not alerts:
+        await update.message.reply_text("🔕 no active price alerts")
+        return
+    lines = ["🔔 <b>Price alerts</b>"]
+    for a in alerts:
+        arrow = "▲" if a.direction == "above" else "▼"
+        lines.append(f"#{a.id} {fmt._esc(a.ticker)} {arrow} {a.direction} {a.price:.2f}")
+    lines.append("<i>/alert del ID to remove</i>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def _notify_alert(bot, alert, price: float) -> None:
+    """Push the owner a fired-alert message (fail-open)."""
+    arrow = "▲" if alert.direction == "above" else "▼"
+    text = (f"🔔 <b>Price alert</b> — {fmt._esc(alert.ticker)} {arrow} "
+            f"{alert.direction} {alert.price:.2f}  ·  now <b>{price:.2f}</b>")
+    try:
+        await bot.send_message(chat_id=OWNER_ID, text=text)
+    except Exception as exc:
+        logger.warning("[alerts] notify failed for #%s — %s", getattr(alert, "id", "?"), exc)
+
+
+async def _alert_poll_once(bot) -> None:
+    """One price-alert sweep: fetch each watched ticker's live price once, then fire +
+    deactivate any alert whose target has been crossed. Fail-open per alert."""
+    from persistence.db import deactivate_price_alert, list_price_alerts
+    try:
+        alerts = await asyncio.to_thread(list_price_alerts)
+    except Exception as exc:
+        logger.debug("[alerts] list failed — %s", exc)
+        return
+    prices: dict[str, float | None] = {}
+    for a in alerts:
+        try:
+            tk = a.ticker.upper()
+            if tk not in prices:
+                prices[tk] = await asyncio.to_thread(_resolve_exit_price, a.ticker)
+            px = prices[tk]
+            if px is None or not _alert_crossed(a.direction, a.price, px):
+                continue
+            await _notify_alert(bot, a, px)
+            await asyncio.to_thread(deactivate_price_alert, a.id, fired=True)
+        except Exception:
+            logger.exception("[alerts] failed handling alert #%s", getattr(a, "id", "?"))
+
+
+async def _alert_poll_loop(app) -> None:
+    """Background loop: every _ALERT_POLL_INTERVAL_S during RTH, sweep price alerts."""
+    logger.info("[alerts] poller started (interval=%ds)", _ALERT_POLL_INTERVAL_S)
+    while True:
+        try:
+            if _us_market_open_now():
+                await _alert_poll_once(app.bot)
+        except Exception:
+            logger.exception("[alerts] poll iteration failed")
+        await asyncio.sleep(_ALERT_POLL_INTERVAL_S)
+
+
+async def _on_startup(app) -> None:
+    """PTB post_init: launch the background price-alert poller on the app's loop."""
+    app.create_task(_alert_poll_loop(app))
+
+
 def build_application(token: str) -> Application:
     """Build a PTB Application with all handlers registered (no network yet)."""
     app = (
         ApplicationBuilder()
         .token(token)
         .defaults(Defaults(parse_mode=ParseMode.HTML))
+        .post_init(_on_startup)
         .build()
     )
     app.add_handler(CommandHandler(["start", "help"], cmd_help))
@@ -1361,6 +1566,8 @@ def build_application(token: str) -> Application:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("alert", cmd_alert))
+    app.add_handler(CommandHandler("alerts", cmd_alerts))
     app.add_handler(CallbackQueryHandler(_route))
     app.add_handler(MessageHandler(filters.ALL, _on_message))
     app.add_error_handler(_on_error)

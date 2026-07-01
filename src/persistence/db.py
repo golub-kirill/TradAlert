@@ -14,6 +14,7 @@ before this module is imported):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mysql.connector import Error as MySQLError
@@ -424,5 +425,99 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         "macd_hist": scan.macd_hist,
         "error": r.error or None,
     }
+
+
+# ── price alerts (Telegram daemon; journal-only, alerting-only) ────────────────
+
+@dataclass(frozen=True)
+class PriceAlert:
+    """One owner-set price-cross alert (table ``price_alerts``)."""
+    id: int
+    ticker: str
+    direction: str          # 'above' | 'below'
+    price: float
+
+
+_INSERT_ALERT_SQL = """
+                    INSERT INTO price_alerts (ticker, direction, price)
+                    VALUES (%(ticker)s, %(direction)s, %(price)s) \
+                    """
+
+_LIST_ALERTS_SQL = """
+                   SELECT id, ticker, direction, price
+                   FROM price_alerts
+                   WHERE active = 1
+                   ORDER BY id \
+                   """
+
+_CANCEL_ALERT_SQL = "UPDATE price_alerts SET active = 0 WHERE id = %(id)s AND active = 1"
+_FIRE_ALERT_SQL = ("UPDATE price_alerts SET active = 0, fired_at = CURRENT_TIMESTAMP "
+                   "WHERE id = %(id)s AND active = 1")
+
+
+def add_price_alert(ticker: str, direction: str, price: float) -> int | None:
+    """Insert an active price alert; return its new id, or None (logged) on error.
+
+    ``direction`` must be 'above' or 'below' (validated by the caller). Fail-open:
+    a DB error returns None rather than raising into the daemon command handler.
+    """
+    if direction not in ("above", "below"):
+        logger.warning("add_price_alert: bad direction %r", direction)
+        return None
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_INSERT_ALERT_SQL,
+                       {"ticker": ticker.upper(), "direction": direction, "price": float(price)})
+        conn.commit()
+        new_id = int(cursor.lastrowid)
+        logger.info("price_alerts ← #%d %s %s %.4f", new_id, ticker.upper(), direction, price)
+        return new_id
+    except (MySQLError, ConfigError, TypeError, ValueError) as exc:
+        logger.warning("Failed to add price alert %s %s %s — %s", ticker, direction, price, exc)
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def list_price_alerts() -> list[PriceAlert]:
+    """All ACTIVE price alerts (fail-open to [] on a DB error)."""
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_LIST_ALERTS_SQL)
+        rows = cursor.fetchall()
+        return [PriceAlert(id=int(r[0]), ticker=str(r[1]), direction=str(r[2]), price=float(r[3]))
+                for r in rows]
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to list price alerts — %s", exc)
+        return []
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def deactivate_price_alert(alert_id: int, *, fired: bool = False) -> bool:
+    """Deactivate an alert (owner /alert del, or on-fire). Returns True if a row changed.
+
+    ``fired`` stamps ``fired_at`` (via the DB clock) so a fired alert is
+    distinguishable from an owner-cancelled one. Fail-open (False, logged) on error.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_FIRE_ALERT_SQL if fired else _CANCEL_ALERT_SQL, {"id": int(alert_id)})
+        conn.commit()
+        return cursor.rowcount >= 1
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("Failed to deactivate price alert #%s — %s", alert_id, exc)
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
 
 

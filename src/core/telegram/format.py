@@ -363,3 +363,67 @@ def format_position_card(pos: Any, *, now: float | None = None,
         lines.append(ev)
 
     return _card(header, lines)
+
+
+# ── compact positions digest (one-message dashboard) ─────────────────────────────
+
+def _position_row(row: Any) -> str:
+    """One aligned line for a position in the compact table.
+
+    `row` is a plain dict (ticker/id/side + optional unrealized_r, unrealized_pct,
+    to_stop_r, days_held). Missing live figures degrade to a bare identity line — a
+    position whose metrics couldn't be computed still lists.
+    """
+    side = str(row.get("side", "?")).upper()[:1] or "?"
+    parts = []
+    r = row.get("unrealized_r")
+    if r is not None:
+        try:
+            emoji = "🟢" if float(r) >= 0 else "🔴"
+        except (TypeError, ValueError):
+            emoji = "⚪"
+    else:
+        emoji = "⚪"
+    parts.append(f"{emoji} {_esc(row.get('ticker', '?'))} #{row.get('id', '?')} {side}")
+    if r is not None:
+        seg = _r(r)
+        pct = row.get("unrealized_pct")
+        if pct is not None:
+            seg += f" ({_pct(pct)})"
+        parts.append(seg)
+    to_stop = row.get("to_stop_r")
+    if to_stop is not None:
+        parts.append(f"→stop {_r(to_stop)}")
+    dh = row.get("days_held")
+    if dh is not None:
+        parts.append(f"{dh}d")
+    return "  ".join(parts)
+
+
+def format_positions_table(rows: Sequence[Any], *, budget_note: str | None = None,
+                           realized_note: str | None = None) -> str:
+    """Compact one-message digest of all open positions (read-only dashboard).
+
+    Each `row` is a plain dict so this imports nothing from the engine. One line per
+    position, then an aggregate footer from the budget / realized notes. If the rows
+    would overflow the caption, they collapse to a '…and N more · /pos ID' tail so
+    the message never exceeds Telegram's cap.
+    """
+    if not rows:
+        return _card("📋 <b>Positions</b>", ["💼 no open positions"])
+    footer = [n for n in (budget_note, realized_note) if n]
+    # Leave headroom for the header, blockquote tags, and the footer.
+    room = CAPTION_LIMIT - 120 - sum(len(f) + 1 for f in footer)
+    body: list[str] = []
+    used = 0
+    for i, row in enumerate(rows):
+        line = _position_row(row)
+        if used + len(line) + 1 > room:
+            body.append(f"…and {len(rows) - i} more · /pos ID")
+            break
+        body.append(line)
+        used += len(line) + 1
+    if footer:
+        body.append("· · ·")
+        body.extend(_esc(f) for f in footer)
+    return _card(f"📋 <b>Positions</b> · {len(rows)} open", body)

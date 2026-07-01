@@ -762,7 +762,7 @@ def test_custom_fill_bad_price_is_not_journaled(monkeypatch):
 def test_build_application_registers_all_handlers():
     app = tb.build_application("123456:ABCdefGhIjKlMnOpQrStUvWxYz0123456789")
     n = sum(len(g) for g in app.handlers.values())
-    assert n == 13                                          # 11 commands + callback + catch-all
+    assert n == 15                                          # 13 commands + callback + catch-all
 
     cmds = set()
     for group in app.handlers.values():
@@ -770,7 +770,7 @@ def test_build_application_registers_all_handlers():
             if getattr(h, "commands", None):
                 cmds |= set(h.commands)
     for c in ("positions", "pos", "recalc", "open", "close", "stop", "edit",
-              "status", "chart", "scan", "help", "start"):
+              "status", "chart", "scan", "help", "start", "alert", "alerts"):
         assert c in cmds
 
 

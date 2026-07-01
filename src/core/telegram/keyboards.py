@@ -118,3 +118,14 @@ def confirm(action: str, arg: str) -> _Kb:
 def status_actions() -> _Kb:
     """Single Refresh button under the /status dashboard (re-renders it in place)."""
     return _Kb([[_Btn("🔄 Refresh", callback_data="status:refresh")]])
+
+
+def positions_table_actions() -> _Kb:
+    """Refresh + switch-to-cards buttons under the compact /positions table.
+
+    The `:x` filler arg keeps arity ≥ 1, matching the `status:refresh` convention so
+    the router treats these zero-payload verbs uniformly."""
+    return _Kb([[
+        _Btn("🔄 Refresh", callback_data="posrefresh:x"),
+        _Btn("🃏 Cards", callback_data="poscards:x"),
+    ]])
