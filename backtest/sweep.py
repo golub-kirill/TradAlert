@@ -816,6 +816,8 @@ _PORT_FIELDS = frozenset({
     "max_hold_days", "max_hold_mode",
     "trail_atr_mult", "trail_activate_r",
     "breakeven_trigger_r", "breakeven_buffer_atr",
+    "correlation_cap", "correlation_lookback_days",
+    "correlation_min_overlap", "correlation_floor",
 })
 
 # config/settings.yaml is read ONCE per process: each job deep-copies this base and

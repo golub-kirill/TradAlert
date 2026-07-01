@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
+import numpy as np
 import pandas as pd
 
 from backtest.backtester import (
@@ -109,6 +110,19 @@ class PortfolioConfig:
     # denominator stays the INITIAL stop.
     breakeven_trigger_r: Optional[float] = None
     breakeven_buffer_atr: Optional[float] = None
+    # Correlation-aware open-risk budget. False → OFF (baseline bit-identical): the
+    # budget compares max_open_risk against the raw sum of open size_mult. True → the
+    # budget compares against the correlation-adjusted effective risk sqrt(wᵀCw),
+    # where C is the clipped pairwise daily-return correlation of the open book +
+    # candidate over correlation_lookback_days (negatives, sub-floor, and pairs with
+    # fewer than correlation_min_overlap overlapping returns count as 0; diagonal 1).
+    # Uncorrelated names get the sqrt diversification discount; a correlated cluster
+    # collapses toward one shared budget slot. Effective risk ≤ Σ size_mult for
+    # ρ∈[0,1], so enabling never counts a book as riskier than the raw budget would.
+    correlation_cap: bool = False
+    correlation_lookback_days: int = 60
+    correlation_min_overlap: int = 40
+    correlation_floor: float = 0.0
 
 
 @dataclass
@@ -292,6 +306,53 @@ class PortfolioBacktester:
         except (TypeError, ValueError):
             return 0.0
 
+    # ── correlation-aware open-risk helper ────────────────────────────────
+
+    def _effective_open_risk(self, open_trades, cand_ticker, cand_mult,
+                             prepped, D) -> float:
+        """Correlation-adjusted open risk *including* the candidate: sqrt(wᵀ C w).
+
+        w is the size_mult of every open position plus the candidate; C is the
+        clipped pairwise correlation of trailing daily returns over
+        ``correlation_lookback_days``, taken strictly before ``D`` (look-ahead
+        free). Negative correlations, correlations below ``correlation_floor``,
+        and pairs with fewer than ``correlation_min_overlap`` overlapping returns
+        are set to 0; the diagonal is 1. For ρ∈[0,1] and w≥0 the result is
+        ≤ Σw, so uncorrelated names earn the sqrt diversification discount while a
+        correlated cluster collapses toward one shared budget slot — and enabling
+        the cap never counts a book as riskier than the raw budget would.
+        """
+        weights = [float(t.size_mult) for t in open_trades.values()]
+        weights.append(float(cand_mult))
+        if len(weights) == 1:
+            return float(cand_mult)
+
+        look = int(self._cfg.correlation_lookback_days)
+        # Integer column labels keep matrix order aligned with `weights` and are
+        # collision-proof if a candidate ever shares a ticker with the open book.
+        cols = {}
+        for i, tk in enumerate(list(open_trades.keys()) + [cand_ticker]):
+            prep = prepped.get(tk)
+            if prep is None:
+                cols[i] = pd.Series(dtype=float)
+                continue
+            closes = prep.df["close"]
+            closes = closes[closes.index < D].tail(look + 1)
+            cols[i] = closes.pct_change().dropna()
+
+        corr = pd.DataFrame(cols).corr(
+            min_periods=int(self._cfg.correlation_min_overlap))
+        C = np.nan_to_num(corr.to_numpy(dtype=float), nan=0.0)
+        np.clip(C, 0.0, 1.0, out=C)
+        floor = float(self._cfg.correlation_floor)
+        if floor > 0.0:
+            C[C < floor] = 0.0
+        np.fill_diagonal(C, 1.0)
+
+        w = np.asarray(weights, dtype=float)
+        eff_sq = float(w @ C @ w)
+        return eff_sq ** 0.5 if eff_sq > 0.0 else 0.0
+
     # ── public API ────────────────────────────────────────────────────────
 
     def run_prepped(
@@ -409,9 +470,19 @@ class PortfolioBacktester:
                             CappedSignal(D_date, ticker, signal)
                         )
                         continue
-                    # Risk-budget cap (size_mult units) — see the long path above.
-                    open_risk = sum(t.size_mult for t in open_trades.values())
-                    if open_risk + final_mult > self._cfg.max_open_risk:
+                    # Risk-budget cap (size_mult units). OFF (default): the raw sum
+                    # of open size_mult — baseline bit-identical. ON: the budget is
+                    # charged against the correlation-adjusted effective risk
+                    # sqrt(wᵀCw), so correlated concurrent names share a budget slot.
+                    if self._cfg.correlation_cap:
+                        effective_risk = self._effective_open_risk(
+                            open_trades, ticker, final_mult, prepped, D)
+                    else:
+                        effective_risk = (
+                            sum(t.size_mult for t in open_trades.values())
+                            + final_mult
+                        )
+                    if effective_risk > self._cfg.max_open_risk:
                         result.capped_signals.append(
                             CappedSignal(D_date, ticker, signal)
                         )

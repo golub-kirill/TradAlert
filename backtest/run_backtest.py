@@ -236,6 +236,24 @@ def main() -> None:
         print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
               f"(size_mult units; default 5.0)")
 
+    # Correlation-aware open-risk budget (--correlation-cap). Off by default →
+    # baseline bit-identical (budget uses the raw sum of open size_mult). When on,
+    # correlated concurrent positions share a budget slot: the cap is charged
+    # against the correlation-adjusted effective risk sqrt(wᵀCw).
+    if args.correlation_cap:
+        base_port["correlation_cap"] = True
+        if args.correlation_lookback is not None:
+            base_port["correlation_lookback_days"] = int(args.correlation_lookback)
+        if args.correlation_min_overlap is not None:
+            base_port["correlation_min_overlap"] = int(args.correlation_min_overlap)
+        if args.correlation_floor is not None:
+            base_port["correlation_floor"] = float(args.correlation_floor)
+        print(f"  ▸ Correlation cap: ENABLED  "
+              f"(lookback={base_port.get('correlation_lookback_days', 60)}d, "
+              f"min_overlap={base_port.get('correlation_min_overlap', 40)}, "
+              f"floor={base_port.get('correlation_floor', 0.0):g}; correlated "
+              f"concurrent names share a budget slot — baseline is OFF)")
+
     engine = SweepEngine(
         universe=uni,
         base_cfg=base_cfg,
@@ -578,6 +596,20 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
                    help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
                         "profit past entry (default 0 = exact breakeven).")
+    p.add_argument("--correlation-cap", action="store_true",
+                   help="Correlation-aware open-risk budget: charge max_open_risk "
+                        "against the correlation-adjusted effective risk sqrt(wᵀCw) "
+                        "instead of the raw sum of open size_mult. Correlated "
+                        "concurrent names share a budget slot; diversified names get "
+                        "a sqrt discount. Off by default (baseline bit-identical).")
+    p.add_argument("--correlation-lookback", type=int, default=None, metavar="N",
+                   help="Daily-return window (bars) for the correlation cap (default 60).")
+    p.add_argument("--correlation-min-overlap", type=int, default=None, metavar="N",
+                   help="Min overlapping return days to trust a pair's correlation; "
+                        "sparser pairs count as uncorrelated (default 40).")
+    p.add_argument("--correlation-floor", type=float, default=None, metavar="F",
+                   help="Correlations below this (and all negatives) count as 0 "
+                        "when building C — denoise (default 0.0).")
     p.add_argument("--max-open-risk", type=float, default=None, metavar="R",
                    help="Aggregate open-risk budget in size_mult units (default "
                         "5.0). Each open position consumes its own size_mult, so a "
