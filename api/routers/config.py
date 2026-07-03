@@ -37,6 +37,7 @@ _EDITABLE: dict[str, tuple[str, type, tuple[float, float] | None]] = {
     # layers
     "settings.macro.enabled": ("settings", bool, None),
     "settings.behavioral.enabled": ("settings", bool, None),
+    "settings.advisor.enabled": ("settings", bool, None),
     "filters.signals.allow_shorts": ("filters", bool, None),
     "filters.signals.sector_gate.enabled": ("filters", bool, None),
     # scan filters

@@ -27,6 +27,7 @@ EARNINGS_HISTORY_DIR: Path = DATA_DIR / "earnings_history"
 EARNINGS_PEAD_DIR: Path = DATA_DIR / "earnings_history_pead"
 BEHAVIORAL_DIR: Path = DATA_DIR / "behavioral"
 MACRO_DIR: Path = DATA_DIR / "macro"
+NEWS_DIR: Path = DATA_DIR / "news"
 SCREENSHOTS_DIR: Path = DATA_DIR / "screenshots"
 
 SETTINGS_YAML: Path = CONFIG_DIR / "settings.yaml"

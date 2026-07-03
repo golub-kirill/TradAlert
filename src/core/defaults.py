@@ -45,6 +45,16 @@ _VALUES: dict[str, Any] = {
     "settings.behavioral.size_mult_ceiling": 1.0,
     "settings.behavioral.breadth_divergence_penalty": 0.0,  # = behavioral code fallback
     "settings.fetcher.max_workers": 8,
+    # AI advisor (live-only; default OFF → scan byte-identical, backtest never calls it)
+    "settings.advisor.enabled": False,
+    "settings.advisor.endpoint": "http://localhost:11434",
+    "settings.advisor.model": "qwen3.5:9b",
+    "settings.advisor.timeout": 20,
+    "settings.advisor.temperature": 0.1,
+    "settings.advisor.max_tokens": 300,
+    "settings.news.cache_ttl_hours": 4,
+    "settings.news.max_headlines_per_ticker": 5,
+    "settings.news.macro_summarization": True,
 }
 
 

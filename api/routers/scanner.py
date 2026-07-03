@@ -27,13 +27,17 @@ def latest():
     if not run:
         return {"run": None, "fired": [], "stand_down": None}
     rid = run["run_id"]
-    fired = query(
-        "SELECT ticker, signal_kind, signal_type, `close`, stop_price, target_price, "
-        "tier, review_reason, reason FROM scan_results WHERE run_id=%s AND "
+    _cols = "ticker, signal_kind, signal_type, `close`, stop_price, target_price, tier, review_reason, {extra}reason"
+    _where = (
+        " FROM scan_results WHERE run_id=%s AND "
         "signal_kind IN ('entry_long','entry_short','exit_long','exit_short') "
-        "ORDER BY signal_kind, ticker",
-        (rid,),
+        "ORDER BY signal_kind, ticker"
     )
+    fired = query("SELECT " + _cols.format(extra="advisor_note, ") + _where, (rid,))
+    # Pre-migration DB (no advisor_note column): query() fail-opens to []. If the
+    # run reported fires, retry column-less so signals still show (sans note).
+    if not fired and (run.get("signals_fired") or 0) > 0:
+        fired = query("SELECT " + _cols.format(extra="") + _where, (rid,))
     names = load_company_names()
     for r in fired:
         r["name"] = names.get(r["ticker"])

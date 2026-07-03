@@ -56,6 +56,7 @@ _INSERT_SCAN_RESULT_SQL = """
                                                     signal_kind,
                                                     tier,
                                                     review_reason,
+                                                    advisor_note,
                                                     score,
                                                     reason,
                                                     close,
@@ -77,6 +78,7 @@ _INSERT_SCAN_RESULT_SQL = """
                                   %(signal_kind)s,
                                   %(tier)s,
                                   %(review_reason)s,
+                                  %(advisor_note)s,
                                   %(score)s,
                                   %(reason)s,
                                   %(close)s,
@@ -93,6 +95,17 @@ _INSERT_SCAN_RESULT_SQL = """
                                   %(macd_hist)s,
                                   %(error)s) \
                           """
+
+# Fallback for a DB that predates the advisor_note column (the ALTER is owner-
+# applied — the app can't reach prod). Identical to the above minus advisor_note,
+# so a fresh column-less deploy still journals every row instead of losing the
+# whole batch. Extra keys in the row dicts are harmless for named-param SQL.
+_INSERT_SCAN_RESULT_SQL_LEGACY = _INSERT_SCAN_RESULT_SQL.replace(
+    "advisor_note,\n", "", 1
+).replace("%(advisor_note)s,\n", "", 1)
+
+# MySQL "Unknown column" — signals a pre-migration DB missing advisor_note.
+_ERR_BAD_FIELD = 1054
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -226,7 +239,20 @@ def save_scan_results(
     try:
         conn = _connect()
         cursor = conn.cursor()
-        cursor.executemany(_INSERT_SCAN_RESULT_SQL, rows)
+        try:
+            cursor.executemany(_INSERT_SCAN_RESULT_SQL, rows)
+        except MySQLError as exc:
+            # Pre-migration DB (no advisor_note column): retry column-less so the
+            # scan still journals every row instead of losing the whole batch. The
+            # advisor_note ALTER is owner-applied; until it lands, degrade quietly.
+            if getattr(exc, "errno", None) != _ERR_BAD_FIELD:
+                raise
+            logger.warning(
+                "scan_results missing advisor_note column — journaling without it "
+                "(apply the ALTER from data/scan_schema.sql to persist advisor notes)"
+            )
+            conn.rollback()
+            cursor.executemany(_INSERT_SCAN_RESULT_SQL_LEGACY, rows)
         conn.commit()
         inserted = cursor.rowcount
         logger.info(
@@ -407,6 +433,8 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
         # reconcile_live.py can exclude it; LIVE (the default) for non-fired/errored rows.
         "tier": sig.tier if sig else "LIVE",
         "review_reason": (sig.review_reason or None) if sig else None,
+        # live-only AI advisor note; truncated to the column width, NULL when empty.
+        "advisor_note": (getattr(sig, "advisor_note", "")[:512] or None) if sig else None,
         # scan_results.score column retained for historical rows; nothing
         # writes a score anymore, so new rows journal NULL.
         "score": None,

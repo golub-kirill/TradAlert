@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS scan_results (
     -- NEEDS_REVIEW = fired on stale/gapped data; reconcile_live.py excludes these.
     tier         ENUM('LIVE','NEEDS_REVIEW') NOT NULL DEFAULT 'LIVE',
     review_reason VARCHAR(255) NULL,
+    -- live-only AI advisor note ("✅ Agree · 82% — …"); NULL when the advisor is
+    -- off/unreachable. Existing deploys: ALTER TABLE scan_results
+    --   ADD COLUMN advisor_note VARCHAR(512) NULL AFTER review_reason;
+    -- (owner-applied; the writer degrades gracefully until it lands.)
+    advisor_note VARCHAR(512) NULL,
     -- owner skipped this FIRED entry via the Telegram 🚫 Skip button (set later by
     -- db.mark_declined). opportunity_tracker counts a declined fire as passed-on
     -- (gate='declined'). Not written by the INSERT — defaults 0, updated on tap.

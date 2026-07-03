@@ -493,6 +493,19 @@ def _run_pipeline(
         except Exception as exc:
             logger.debug("[calendar] event_risk_flag failed (skipping): %s", exc)
 
+    # AI advisor (live-only, opt-in). Built once per scan — reads config, resolves
+    # news API keys, and summarizes macro headlines into one shared market context.
+    # Disabled (the default) short-circuits before any network call. Fail-open.
+    advisor_ctx = None
+    try:
+        from core.advisor import build_advisor_context
+        advisor_ctx = build_advisor_context(settings)
+        if getattr(advisor_ctx, "enabled", False):
+            logger.info("[advisor] enabled — model=%s, macro_context=%s",
+                        advisor_ctx.model, "yes" if advisor_ctx.market_context else "no")
+    except Exception as exc:
+        logger.debug("[advisor] context build failed (skipping): %s", exc)
+
     for ticker in tickers:
         # ^VIX is context-only — not tradeable, not scanned or signalled.
         if ticker in _CONTEXT_ONLY:
@@ -505,6 +518,7 @@ def _run_pipeline(
             settings=settings, macro_state=macro_state,
             behavioral_state=behavioral_state, rp_ranks=rp_ranks,
             now=now, event_risk=event_risk, morning=morning,
+            advisor_ctx=advisor_ctx,
         ))
 
     return results
@@ -610,6 +624,7 @@ def _process_ticker(
         now: datetime | None = None,
         event_risk: str = "",
         morning: bool = False,
+        advisor_ctx: object | None = None,
 ) -> TickerResult:
     """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
 
@@ -817,6 +832,27 @@ def _process_ticker(
             # Morning pre-close scan: blind to today's forming bar/open → a fired
             # entry can't ship LIVE. Appends to any freshness reason; exits untouched.
             _apply_morning_review(signal, morning)
+            # AI advisor (live-only, advisory): an LLM second opinion on this fresh
+            # entry from news + technicals. Runs after the tier is final so it sees
+            # LIVE vs NEEDS_REVIEW. Never gates/sizes; "" when disabled/unreachable.
+            if advisor_ctx is not None and getattr(advisor_ctx, "enabled", False):
+                try:
+                    from core.advisor import advise_signal
+                    _vix = None
+                    if vix_df is not None and len(vix_df):
+                        try:
+                            _vix = float(vix_df["close"].iloc[-1])
+                        except (KeyError, IndexError, ValueError, TypeError):
+                            _vix = None
+                    signal.advisor_note = advise_signal(
+                        ticker, signal, advisor_ctx,
+                        vix_level=_vix,
+                        macro_score=getattr(macro_state, "risk_on_score", None),
+                        behavioral_score=getattr(behavioral_state, "behavioral_score", None),
+                        open_positions=len(positions or {}),
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] advisor skipped — %s", ticker, exc)
 
         # Collect historical signals for chart overlay
         hist_signals = []

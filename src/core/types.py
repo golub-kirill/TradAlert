@@ -153,6 +153,11 @@ class SignalResult:
     # gates, sizes, or moves a stop (the entry-day block is the stop_dates gate). "" = nothing
     # in the window. The engine/backtester never set it → the backtest stays byte-identical.
     event_risk: str = ""      # e.g. "FOMC in 2d (2026-03-18)"
+    # ── live-only AI advisor note (set by main.py) ──────────────────────────────
+    # LLM-generated advisory commentary on a fresh entry, e.g. "✅ Agree · 82% — …".
+    # "" when the advisor is disabled, unreachable, or errored. The engine/backtester
+    # never set it → the backtest stays byte-identical (same pattern as event_risk).
+    advisor_note: str = ""
 
 
 # Typo-protected direction constants. The Literal aliases catch mypy but not

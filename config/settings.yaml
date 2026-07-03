@@ -168,3 +168,27 @@ telegram:
     - short_entry
     - exit_short
   mute: []                    # ticker blocklist, e.g. ["TSLA"]
+
+
+# ── AI ADVISOR ────────────────────────────────────────────────────────────────
+# Live-only, non-blocking LLM second opinion on each FRESH entry. It never gates,
+# sizes, or moves a stop; the engine/backtester never call it, so the backtest is
+# byte-identical. Every path is fail-open — Ollama down or news missing → no note.
+# Opt-in: default OFF. Needs a local Ollama (ollama serve) with the model pulled.
+advisor:
+  enabled: false                     # master toggle; opt-in [false]
+  endpoint: "http://localhost:11434"  # local Ollama HTTP endpoint
+  model: "qwen3.5:9b"                # pulled via `ollama pull qwen3.5:9b`
+  timeout: 20                        # seconds per LLM call [20]
+  temperature: 0.1                   # lower = more deterministic [0.1]
+  max_tokens: 300                    # response cap; think mode is disabled [300]
+
+
+# ── NEWS LAYER ────────────────────────────────────────────────────────────────
+# Feeds the advisor. Ticker news: Finnhub (FINNHUB_API_KEY) → Yahoo RSS (keyless)
+# → Brave (BRAVE_API_KEY, fallback). Macro context: Yahoo top-stories → one Ollama
+# summary per scan. Cached to data/news/{TICKER}.json.
+news:
+  cache_ttl_hours: 4                 # ticker headlines considered fresh for [4]h
+  max_headlines_per_ticker: 5        # max headlines injected into a prompt [5]
+  macro_summarization: true          # false → skip the scan-wide market context

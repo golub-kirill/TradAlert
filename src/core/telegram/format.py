@@ -193,6 +193,9 @@ def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = 
     event_risk = getattr(s, "event_risk", "")
     if event_risk:
         detail.append(f"🗓 event risk: {_esc(event_risk)}")
+    advisor_note = getattr(s, "advisor_note", "")
+    if advisor_note:
+        detail.append(f"🤖 {_esc(advisor_note)}")
     if panel:
         decisive, advisory = panel
         if decisive:

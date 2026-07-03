@@ -1,5 +1,5 @@
-import type { FiredSignal } from "../api/types";
-import { fnum } from "../lib/format";
+import type {FiredSignal} from "../api/types";
+import {fnum} from "../lib/format";
 
 // open/buy = green, hold (entry on a name you already hold) = blue, exit/sell = red.
 type Side = "buy" | "hold" | "sell";
@@ -78,6 +78,13 @@ export function SignalCard({
       </div>
 
       {reason ? <div className="scard-reason">{reason}</div> : null}
+
+        {f.advisor_note ? (
+            <div className="scard-advisor">
+                <i className="ti ti-robot"/>
+                <span>{f.advisor_note}</span>
+            </div>
+        ) : null}
 
       <div className="scard-foot">
         <span className="scard-tier">

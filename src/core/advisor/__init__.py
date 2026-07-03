@@ -1,0 +1,22 @@
+"""AI advisor: a live-only, non-blocking LLM second opinion on fired signals.
+
+Advisory only — it never gates, sizes, or moves a stop, and the engine/backtester
+never call it, so the backtest stays byte-identical. Every path is fail-open:
+Ollama down, news APIs missing, or a malformed response all yield an empty note.
+"""
+
+from __future__ import annotations
+
+from core.advisor.client import ask_llm
+from core.advisor.schemas import AdvisorInput, AdvisorVerdict, VerdictLabel
+from core.advisor.service import AdvisorContext, advise_signal, build_advisor_context
+
+__all__ = [
+    "AdvisorInput",
+    "AdvisorVerdict",
+    "VerdictLabel",
+    "ask_llm",
+    "AdvisorContext",
+    "build_advisor_context",
+    "advise_signal",
+]

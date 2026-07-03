@@ -44,6 +44,7 @@ export interface FiredSignal {
   target_price: number | null;
   tier: string | null; // "LIVE" | "NEEDS_REVIEW"
   review_reason: string | null;
+    advisor_note: string | null; // 🤖 live-only LLM advisory verdict
   reason: string | null; // per-ticker scoreboard / exit driver
 }
 
