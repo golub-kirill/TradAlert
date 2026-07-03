@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "studies"))
 
 from pead_gate import (  # noqa: E402
     build_ticker_panel, classify_reaction, evaluate_gate, rank_ic,

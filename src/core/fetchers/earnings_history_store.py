@@ -102,7 +102,7 @@ def get_earnings_events(
     """
     Load the per-ticker PEAD earnings cache and return ``EarningsEvent``s.
 
-    Reads ``{cache_dir}/{TICKER}.parquet`` (populated by ``scripts/pead_fetch.py``),
+    Reads ``{cache_dir}/{TICKER}.parquet`` (populated by ``scripts/fetch/pead_fetch.py``),
     mapping each row's ``ann_date`` + ``local_hour`` to an ``EarningsEvent`` with
     its reaction session ('BMO'/'AMC'). Events are returned sorted ascending by date.
 

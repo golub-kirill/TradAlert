@@ -35,10 +35,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Resolve repo paths from this script's own location (scripts\ sits under the root).
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root      = Split-Path -Parent $ScriptDir
-$Bat       = Join-Path $ScriptDir "run_daily.bat"
+# Resolve repo paths from this script's own location (scripts\setup\ sits two
+# levels under the root; the scheduler-pinned wrapper stays at scripts\ root).
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptsDir = Split-Path -Parent $ScriptDir
+$Root       = Split-Path -Parent $ScriptsDir
+$Bat        = Join-Path $ScriptsDir "run_daily.bat"
 
 if (-not (Test-Path $Bat)) {
     throw "Wrapper not found: $Bat"

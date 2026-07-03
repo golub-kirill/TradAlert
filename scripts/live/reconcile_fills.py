@@ -18,8 +18,8 @@ Closed positions (exit_date set) are scored. Open positions are listed as
 carried risk but not scored. A closed position with no recorded stop can't be
 scored (no risk unit) and is counted separately.
 
-    python scripts/reconcile_fills.py
-    python scripts/reconcile_fills.py --drift 0.10 --bt-run-id 8
+    python scripts/live/reconcile_fills.py
+    python scripts/live/reconcile_fills.py --drift 0.10 --bt-run-id 8
 
 Requires DB_* in config/secrets.env (same as the live scanner). Read-only on the DB.
 """
@@ -31,7 +31,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

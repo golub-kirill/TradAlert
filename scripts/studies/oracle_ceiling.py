@@ -25,7 +25,7 @@ even this ceiling is small, no scorer can add meaningful R here.
 writes the R1 research ledgers: candidates.parquet (every unconstrained-twin
 trade — the counterfactual outcome ledger features are trained on) and
 binddays.parquet (run A's per-day fills + matched capped candidates — the
-replay set for feature-ranked fill simulation, scripts/r1_rank_ic.py).
+replay set for feature-ranked fill simulation, scripts/studies/r1_rank_ic.py).
 
 Exploratory harness: no journal, no HTML, no CSV.
 """
@@ -38,7 +38,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 

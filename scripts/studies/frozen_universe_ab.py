@@ -15,10 +15,10 @@ The **selection discount** = A − B (Δ total-R / Sharpe / max-DD). It also lis
 look-ahead inclusions (in A, born after D) and the pruned losers re-added to B.
 
 Reads `survivorship_audit` from config/watchlist.yaml. The pruned losers must be in
-the price cache first — backfill with `scripts/fetch_prices.py`.
+the price cache first — backfill with `scripts/fetch/fetch_prices.py`.
 
-    python scripts/frozen_universe_ab.py
-    python scripts/frozen_universe_ab.py --as-of 2010-01-01
+    python scripts/studies/frozen_universe_ab.py
+    python scripts/studies/frozen_universe_ab.py --as-of 2010-01-01
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -182,7 +182,7 @@ def main() -> None:
     missing_pruned = [t for t in pruned if t not in uni.prepped]
     if missing_pruned:
         print(f"  ⚠ pruned losers WITHOUT cached data (excluded — run "
-              f"scripts/fetch_prices.py {' '.join(missing_pruned)}): {missing_pruned}")
+              f"scripts/fetch/fetch_prices.py {' '.join(missing_pruned)}): {missing_pruned}")
 
     specs = []
     for D in as_of_dates:

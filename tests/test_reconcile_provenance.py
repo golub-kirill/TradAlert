@@ -98,7 +98,7 @@ def test_reference_run_explicit_id_wins():
 # ── reconcile_live._replay max-hold parity ────────────────────────────────────
 
 def test_replay_max_hold_mode_parity():
-    from scripts.reconcile_live import _replay
+    from scripts.live.reconcile_live import _replay
     from backtest.backtester import (apply_stop_fill, apply_target_fill,
                                       apply_stop_fill_short, apply_target_fill_short)
 

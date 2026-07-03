@@ -39,7 +39,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402

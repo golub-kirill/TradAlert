@@ -16,7 +16,7 @@ Owner-only: every handler is gated on ``TG_CHAT_ID``; a single-instance lockfile
 (``data/telegram_bot.lock``) prevents a second poller (Telegram 409 Conflict).
 
 Run:  python telegram_bot.py        (needs telegram.daemon_enabled: true)
-Deploy: scripts/register_telegram_bot.ps1 (at-logon Task Scheduler job).
+Deploy: scripts/setup/register_telegram_bot.ps1 (at-logon Task Scheduler job).
 """
 
 from __future__ import annotations
@@ -1306,7 +1306,7 @@ async def cmd_chart(update, context):
 def _realized_summary() -> str | None:
     """One-line realized-R summary across closed positions (lazy reconcile, fail-open)."""
     try:
-        from scripts.reconcile_fills import reconcile
+        from scripts.live.reconcile_fills import reconcile
         closed = [p for p in pm.list_all() if not p.is_open]
         if not closed:
             return None

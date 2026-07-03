@@ -6,7 +6,7 @@ The honest measurement of advisor value (docs/AI_ADVISOR_PLAN.md): every
 ``advisor_note`` in ``scan_results`` was journaled at decision time with news
 fetched at decision time, so verdict-vs-outcome here is a clean, time-aligned
 prediction — unlike any backtest replay, which is structurally look-ahead
-(scripts/test_advisor.py is a plumbing smoke test only).
+(scripts/live/test_advisor.py is a plumbing smoke test only).
 
 Scoring reuses ``reconcile_live``'s replay verbatim (T+1 open entry, configured
 slippage/commission, stored stop/target geometry, shared ``core.exits``
@@ -26,8 +26,8 @@ is DIRECTIONAL ONLY; n < 30 → INSUFFICIENT, no conclusions. Known limitation:
 whether headlines were present for a given prompt is not journaled, so the
 news-vs-technical-only split is not measurable from the current schema.
 
-    python scripts/evaluate_advisor.py
-    python scripts/evaluate_advisor.py --since 2026-07-01 --include-review
+    python scripts/live/evaluate_advisor.py
+    python scripts/live/evaluate_advisor.py --since 2026-07-01 --include-review
 
 Requires DB_* in config/secrets.env and the price cache. Read-only on the DB.
 """
@@ -40,8 +40,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
-for _p in (str(_ROOT), str(_ROOT / "src"), str(_ROOT / "scripts")):
+_ROOT = Path(__file__).resolve().parents[2]
+for _p in (str(_ROOT), str(_ROOT / "src"), str(_ROOT / "scripts" / "live")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

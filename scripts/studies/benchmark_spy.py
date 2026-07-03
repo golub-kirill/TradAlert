@@ -12,8 +12,8 @@ Sharpe/Sortino use the same convention as the backtester (`stats_utils`,
 monthly series, rf=0, annualised by √12). Read-only on `data/prices/SPY.parquet`;
 no DB, no sweep workers — safe to run anytime.
 
-    python scripts/benchmark_spy.py
-    python scripts/benchmark_spy.py --ticker SPY --strategy-sharpe 0.66
+    python scripts/studies/benchmark_spy.py
+    python scripts/studies/benchmark_spy.py --ticker SPY --strategy-sharpe 0.66
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

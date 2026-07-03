@@ -1,4 +1,4 @@
-"""Pure helpers of scripts/evaluate_advisor.py (no DB / no network / no LLM).
+"""Pure helpers of scripts/live/evaluate_advisor.py (no DB / no network / no LLM).
 
 Covers the note parser (the journal-string contract with service.format_note),
 bucket aggregation, counterfactual filters, confidence bands, and the seeded
@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "live"))
 
 from evaluate_advisor import (  # noqa: E402
     bootstrap_diff_ci,

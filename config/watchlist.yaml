@@ -317,7 +317,7 @@ tier_b:
 # are gated. When two-tier universe expansion is wired up, restore the keys.
 
 # ── Survivorship / selection audit ─────────────────────────────────
-# Inputs for scripts/frozen_universe_ab.py. Quantifies how much of the backtest
+# Inputs for scripts/studies/frozen_universe_ab.py. Quantifies how much of the backtest
 # edge is hindsight. v3 re-added SU.TO and SHOP.TO to tier_a (they were pruned
 # after losing — that pruning WAS the bias), so they leave pruned_losers below.
 survivorship_audit:

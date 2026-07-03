@@ -129,10 +129,10 @@ scan raises `positions.stop_price` to breakeven via the shared
 `core.exits.breakeven_stop_level` rule (a Telegram notice is sent; `initial_stop`
 is never touched, so realized-R reconciliation is unaffected).
 
-### `scripts/intraday_monitor.py` — 1h held-long breakdown monitor (live-only)
+### `scripts/live/intraday_monitor.py` — 1h held-long breakdown monitor (live-only)
 
 ```bash
-python scripts/intraday_monitor.py [--force] [--dry-run]
+python scripts/live/intraday_monitor.py [--force] [--dry-run]
 ```
 
 A midday heads-up between EOD scans: for each **open long**, it fetches 1h bars and
@@ -142,7 +142,7 @@ excluded; it is **journal/alert only and never places an order**. One alert per
 breakdown episode, re-armed once price recovers to/above the stop (dedup state in
 `data/intraday_monitor_state.json`). `--force` runs outside market hours; `--dry-run`
 logs instead of sending. Live-only — the backtester never imports it. Run hourly at
-logon via `powershell -ExecutionPolicy Bypass -File scripts/register_intraday_monitor.ps1`.
+logon via `powershell -ExecutionPolicy Bypass -File scripts/setup/register_intraday_monitor.ps1`.
 
 ### `position_CLI.py` — manual positions
 
@@ -211,8 +211,8 @@ a bare strategy). Pass a flag to force its key on for an A/B even when the YAML 
 | `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
 | `--breakeven-trigger-r R` | **Breakeven stop:** once a held trade's best excursion reaches `R` (in initial-risk units), the stop moves to entry — protects the give-back leak without capping the upside (it does not trail further, so winners still run to target). **Default `1.0`** (set in `filters.yaml`; validated walk-forward-stable with better totals, Sharpe and drawdown — see `ADR-004`). Pass `0` to disable. The R denominator stays the **initial** stop. The live scan applies the same rule to held positions (raises `positions.stop_price`, never `initial_stop`). | `execution.breakeven_trigger_r` (filters.yaml) |
-| `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
-| `--correlation-cap` | **Correlation-aware open-risk budget** (default **OFF**): charge `--max-open-risk` against the correlation-adjusted effective risk `√(wᵀCw)` rather than the raw `size_mult` sum, so correlated concurrent names share a budget slot. Tune with `--correlation-lookback N` (return window in bars, default 60), `--correlation-min-overlap N` (min overlapping days to trust a pair, default 40), `--correlation-floor F` (correlations below `F` — and all negatives — count as 0). Effective ≤ raw for ρ∈[0,1], so it is monotone-safe. A/B'd via `scripts/paired_ab_correlation.py`: at the shipped 5.0R budget it *hurts* the North Star (Sharpe 0.66→0.60), so it ships off — kept as a documented, tested lever. | `portfolio.correlation_*` (`base_port`) |
+| `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/studies/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
+| `--correlation-cap` | **Correlation-aware open-risk budget** (default **OFF**): charge `--max-open-risk` against the correlation-adjusted effective risk `√(wᵀCw)` rather than the raw `size_mult` sum, so correlated concurrent names share a budget slot. Tune with `--correlation-lookback N` (return window in bars, default 60), `--correlation-min-overlap N` (min overlapping days to trust a pair, default 40), `--correlation-floor F` (correlations below `F` — and all negatives — count as 0). Effective ≤ raw for ρ∈[0,1], so it is monotone-safe. A/B'd via `scripts/studies/paired_ab_correlation.py`: at the shipped 5.0R budget it *hurts* the North Star (Sharpe 0.66→0.60), so it ships off — kept as a documented, tested lever. | `portfolio.correlation_*` (`base_port`) |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
 > loads it at startup, and the `backtest_runs`/`backtest_trades` tables
@@ -263,8 +263,8 @@ scoring-OFF `backtest_runs`, matching the live default, or `--bt-run-id N`); bot
 drift beyond `--drift` R/trade (default 0.15):
 
 ```bash
-python scripts/reconcile_live.py     # signal fidelity: replay fired signals through cached prices
-python scripts/reconcile_fills.py    # real meter: realized R on actual fills in the positions table
+python scripts/live/reconcile_live.py     # signal fidelity: replay fired signals through cached prices
+python scripts/live/reconcile_fills.py    # real meter: realized R on actual fills in the positions table
 ```
 
 `reconcile_live.py` replays every fired **LIVE-tier** entry signal forward under the
@@ -336,7 +336,7 @@ poller holds it (Telegram returns **409 Conflict** if two pollers drain `getUpda
 any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts/register_telegram_bot.ps1
+powershell -ExecutionPolicy Bypass -File scripts/setup/register_telegram_bot.ps1
 ```
 
 ## Web control panel
@@ -384,7 +384,7 @@ Loaded by `python-dotenv` at startup.
 | `DB_PASSWORD`    | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `DB_NAME`        | MySQL journaling, `position_CLI.py`  |                                                                                                        |
 | `FRED_API_KEY`   | `settings.yaml::macro.enabled: true` | Free key: <https://fred.stlouisfed.org/docs/api/api_key.html>.                                         |
-| `SEC_USER_AGENT` | reserved                             | Not yet read — the EDGAR Form-4 fetcher (`scripts/form4_fetch.py`) hardcodes its contact UA; documented in `secrets.env.example` but unconsumed.                                                |
+| `SEC_USER_AGENT` | reserved                             | Not yet read — the EDGAR Form-4 fetcher (`scripts/studies/form4_fetch.py`) hardcodes its contact UA; documented in `secrets.env.example` but unconsumed.                                                |
 | `TG_CHAT_ID`     | `settings.yaml::telegram.enabled`    | **Numeric** chat id; used as the owner allowlist.                                                      |
 | `TG_BOT_TOKEN`   | `settings.yaml::telegram.enabled`    | Bot token from @BotFather.                                                                             |
 | `TRADALERT_API_TOKEN` | Web control panel (optional)    | When set, the `api/` backend requires it as an `X-API-Token` header on every mutating route and lets `python -m api` bind a non-loopback `--host`. Unset → mutations open, loopback only. |

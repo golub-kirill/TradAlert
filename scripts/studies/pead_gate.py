@@ -3,8 +3,8 @@
 Does post-earnings drift (PEAD) have standalone predictive power on this universe?
 
 Cheap, PRE-REGISTERED predictive gate (criteria in `docs/backtest_out/pead_gate_prereg.md`),
-run BEFORE any engine integration — the R1 / Form-4 pattern (`scripts/form4_gate.py`). Reads the
-per-ticker earnings caches from `scripts/pead_fetch.py` + the pinned price snapshot, builds a
+run BEFORE any engine integration — the R1 / Form-4 pattern (`scripts/studies/form4_gate.py`). Reads the
+per-ticker earnings caches from `scripts/fetch/pead_fetch.py` + the pinned price snapshot, builds a
 point-in-time EVENT panel (one row per earnings announcement) of the announcement abnormal return
 (`car_event`) and forward market-adjusted returns, and reports the two pre-registered bars + verdict.
 
@@ -19,7 +19,7 @@ measurement.
 Pure helpers (rank-IC, reaction alignment, event returns, terciles) are import-safe
 (tests/test_pead_gate.py); main() does I/O.
 
-    .venv/Scripts/python.exe scripts/pead_gate.py --snapshot data/snapshot_2026-06-10
+    .venv/Scripts/python.exe scripts/studies/pead_gate.py --snapshot data/snapshot_2026-06-10
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 
 import numpy as np   # noqa: E402
 import pandas as pd  # noqa: E402
@@ -288,7 +288,7 @@ def main() -> None:
 
     caches = sorted(CACHE_DIR.glob("*.parquet"))
     if not caches:
-        raise SystemExit(f"no PEAD earnings caches in {CACHE_DIR} — run scripts/pead_fetch.py first")
+        raise SystemExit(f"no PEAD earnings caches in {CACHE_DIR} — run scripts/fetch/pead_fetch.py first")
 
     panels, n_single, n_dropped = [], 0, 0
     for c in caches:

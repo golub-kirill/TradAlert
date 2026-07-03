@@ -63,7 +63,7 @@ def load_yaml(name: str) -> dict:
 
 
 def load_company_names() -> dict:
-    """ticker -> full company name (warmed by scripts/fetch_company_names.py). Fail-open."""
+    """ticker -> full company name (warmed by scripts/fetch/fetch_company_names.py). Fail-open."""
     import json
     try:
         with open(ROOT / "data" / "company_names.json", encoding="utf-8") as f:

@@ -1,7 +1,7 @@
 """Unit tests for the PEAD leaf module (src/core/pead).
 
 Pure-logic / pure-math — no network, no I/O. Mirror the validated gate in
-scripts/pead_gate.py: classify_session/reaction_index/car_event/qualifies must
+scripts/studies/pead_gate.py: classify_session/reaction_index/car_event/qualifies must
 match classify_reaction/reaction_pos and the car_event computation there, so the
 engine matches the gate exactly. The load-bearing test is the qualifies suite:
 it proves TODAY can only fire off prior reactions (no look-ahead).

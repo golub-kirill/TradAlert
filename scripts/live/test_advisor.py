@@ -14,9 +14,9 @@ honest measurement is the prospective live journal (scan_results.advisor_note
 scored against realized R after >=30-50 live verdicts).
 
 Usage:
-    python scripts/test_advisor.py
-    python scripts/test_advisor.py --seed 42 --count 5     # reproducible sample
-    python scripts/test_advisor.py --model qwen3:8b --no-macro
+    python scripts/live/test_advisor.py
+    python scripts/live/test_advisor.py --seed 42 --count 5     # reproducible sample
+    python scripts/live/test_advisor.py --model qwen3:8b --no-macro
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

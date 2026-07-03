@@ -13,9 +13,9 @@
   Large-cap open-market buys are sparse, so a CLOSE is a live prior — that is still a decision-relevant result.
 
   Usage (from repo root):
-    powershell -ExecutionPolicy Bypass -File scripts/run_form4_pull.ps1
-    powershell -ExecutionPolicy Bypass -File scripts/run_form4_pull.ps1 -Workers 6 -Rps 9
-    powershell -ExecutionPolicy Bypass -File scripts/run_form4_pull.ps1 -Tickers AAPL -SkipGate   # smoke test
+    powershell -ExecutionPolicy Bypass -File scripts/studies/run_form4_pull.ps1
+    powershell -ExecutionPolicy Bypass -File scripts/studies/run_form4_pull.ps1 -Workers 6 -Rps 9
+    powershell -ExecutionPolicy Bypass -File scripts/studies/run_form4_pull.ps1 -Tickers AAPL -SkipGate   # smoke test
 #>
 param(
   [int]$Workers = 6,
@@ -28,8 +28,8 @@ param(
 # Native python writes its own errors to stdout; keep going on stderr noise (PS 5.1 wraps it).
 $ErrorActionPreference = 'Continue'
 
-# Repo root = parent of scripts/. Make all relative paths resolve from there.
-$root = Split-Path -Parent $PSScriptRoot
+# Repo root = two levels above scripts/studies/. Relative paths resolve from there.
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 
 # UTF-8 everywhere so EDGAR/console output doesn't crash on cp1252 and logs stay clean.
@@ -76,7 +76,7 @@ Log " pull log: $pullLog"
 Log '==================================================================='
 
 # ---- the pull (foreground in THIS terminal; per-ticker progress streams + is tee'd) ----
-$pullArgs = @('scripts/form4_fetch.py', '--workers', $Workers, '--rps', $Rps)
+$pullArgs = @('scripts/studies/form4_fetch.py', '--workers', $Workers, '--rps', $Rps)
 if ($Tickers)          { $pullArgs += @('--tickers', $Tickers) }
 if ($MaxTickers -gt 0) { $pullArgs += @('--max-tickers', $MaxTickers) }
 
@@ -99,7 +99,7 @@ if ($pullExit -ne 0) {
 
 if ($SkipGate) {
   Log 'SkipGate set -- pull complete. Run the gate manually:'
-  Log "  $py scripts/form4_gate.py --snapshot data/snapshot_2026-06-10"
+  Log "  $py scripts/studies/form4_gate.py --snapshot data/snapshot_2026-06-10"
   exit 0
 }
 
@@ -107,7 +107,7 @@ if ($SkipGate) {
 Log '-------------------------------------------------------------------'
 Log " Running the pre-registered F4-1 gate  ->  $gateLog"
 Log '-------------------------------------------------------------------'
-& $py 'scripts/form4_gate.py' '--snapshot' 'data/snapshot_2026-06-10' 2>&1 | ForEach-Object {
+& $py 'scripts/studies/form4_gate.py' '--snapshot' 'data/snapshot_2026-06-10' 2>&1 | ForEach-Object {
   Write-Host $_
   Add-Content -Path $gateLog -Value ([string]$_) -Encoding utf8
 }

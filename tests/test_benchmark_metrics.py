@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "studies"))
 
 from backtest.benchmark_metrics import (  # noqa: E402
     align_strategy_benchmark, alpha_beta, benchmark_by_months, excess_sharpe,

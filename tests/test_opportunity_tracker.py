@@ -1,4 +1,4 @@
-"""Pure-math helpers for scripts/opportunity_tracker.py (no DB / no network).
+"""Pure-math helpers for scripts/live/opportunity_tracker.py (no DB / no network).
 
 Covers the market-adjusted forward-return geometry, the two-sided classifier,
 and the per-gate aggregation that feed the opportunity-cost readout. The DB and
@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "live"))
 
 import opportunity_tracker as ot  # noqa: E402
 

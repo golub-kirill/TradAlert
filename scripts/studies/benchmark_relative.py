@@ -17,7 +17,7 @@ doc-literal **raw** ``sharpe(strat_R − SPY_%)`` is printed as a degeneracy con
 
 Exploratory harness: no journal, no HTML, no CSV. Read-only on the snapshot.
 
-    .venv/Scripts/python.exe scripts/benchmark_relative.py --snapshot data/snapshot_2026-06-10
+    .venv/Scripts/python.exe scripts/studies/benchmark_relative.py --snapshot data/snapshot_2026-06-10
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT / "scripts"))  # paired_ab._run lives at the scripts root
 
 import numpy as np   # noqa: E402
 import pandas as pd  # noqa: E402
@@ -53,7 +54,7 @@ RISK_BASE = 0.010                   # pre-registered base assumption: 1R = 1% eq
 
 def _spy_monthly_returns(spy_df: pd.DataFrame) -> pd.Series:
     """Monthly % returns of buy-and-hold SPY (month-end close → pct_change), same
-    convention as ``scripts/benchmark_spy.py``. Indexed by month-end Timestamp."""
+    convention as ``scripts/studies/benchmark_spy.py``. Indexed by month-end Timestamp."""
     close = spy_df["close"].dropna()
     monthly_close = close.resample("ME").last().dropna()
     return monthly_close.pct_change().dropna()
@@ -187,7 +188,7 @@ def main() -> None:
               f"{_f(r['own_spy']):>11} {_f(r['d_sharpe']):>9} "
               f"{('YES' if r['d_sharpe'] > 0 else 'no'):>11}")
     print("     note: SPY Sharpe here is over the STRATEGY-ACTIVE months only (not full-SPY")
-    print("     history), so it is not directly comparable to scripts/benchmark_spy.py figures;")
+    print("     history), so it is not directly comparable to scripts/studies/benchmark_spy.py figures;")
     print("     the within-tool ΔSharpe (identical months both legs) is the intended read.")
 
     # B — active-return metrics under the pre-registered 1R = 1% equity assumption

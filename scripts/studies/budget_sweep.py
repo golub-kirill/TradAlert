@@ -8,8 +8,8 @@ total effective-R, Sharpe, win rate, PF, and trade count per budget. Reuses the
 production sweep machinery, so numbers match `run_backtest.py --sweep`. Exploratory
 — does NOT journal.
 
-    python scripts/budget_sweep.py
-    python scripts/budget_sweep.py --budgets 3 4 5 6 7 8 --workers 8
+    python scripts/studies/budget_sweep.py
+    python scripts/studies/budget_sweep.py --budgets 3 4 5 6 7 8 --workers 8
 
 Read-only on the DB. Needs the price cache (data/prices).
 """
@@ -20,7 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

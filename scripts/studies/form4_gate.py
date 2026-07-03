@@ -3,8 +3,8 @@
 Does insider buying (Form-4) have standalone predictive power?
 
 Cheap, PRE-REGISTERED predictive gate (criteria in `docs/backtest_out/form4_gate_prereg.md`),
-run BEFORE any engine integration — the R1 pattern (`scripts/r1_rank_ic.py`). Reads the per-ticker
-Form-4 caches from `scripts/form4_fetch.py` + the pinned price snapshot, builds a point-in-time
+run BEFORE any engine integration — the R1 pattern (`scripts/studies/r1_rank_ic.py`). Reads the per-ticker
+Form-4 caches from `scripts/studies/form4_fetch.py` + the pinned price snapshot, builds a point-in-time
 monthly panel of trailing-90d insider features and forward-21d returns over the US single-stocks,
 and reports the two pre-registered bars + the gate verdict.
 
@@ -13,7 +13,7 @@ is realized strictly after T. Directions were declared in the prereg before meas
 
 Pure helpers (panel build, rank-IC, features) are import-safe (tests/test_form4_gate.py); main() does I/O.
 
-    .venv/Scripts/python.exe scripts/form4_gate.py --snapshot data/snapshot_2026-06-10
+    .venv/Scripts/python.exe scripts/studies/form4_gate.py --snapshot data/snapshot_2026-06-10
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 
 import numpy as np   # noqa: E402
 import pandas as pd  # noqa: E402
@@ -186,7 +186,7 @@ def main() -> None:
     caches = sorted(CACHE_DIR.glob("*.parquet"))
     caches = [c for c in caches if not c.stem.startswith("_")]
     if not caches:
-        raise SystemExit(f"no Form-4 caches in {CACHE_DIR} — run scripts/form4_fetch.py first")
+        raise SystemExit(f"no Form-4 caches in {CACHE_DIR} — run scripts/studies/form4_fetch.py first")
 
     panels = []
     n_with_data = 0

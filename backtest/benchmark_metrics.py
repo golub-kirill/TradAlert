@@ -3,7 +3,7 @@ backtest/benchmark_metrics.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Benchmark-relative ("active-return") metrics — the excess analogue of the absolute
 Sharpe/Sortino in ``stats_utils.py``: excess-Sharpe, Information Ratio, alpha/beta,
-and % periods beating. Pure functions; ``scripts/benchmark_relative.py`` does the I/O.
+and % periods beating. Pure functions; ``scripts/studies/benchmark_relative.py`` does the I/O.
 
 UNIT CONTRACT (load-bearing — read before using)
 ─────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def align_strategy_benchmark(strat_monthly, bench_monthly):
 def month_end_returns(close) -> pd.Series:
     """Monthly %-returns of a price series: month-end close → ``pct_change``.
 
-    Same convention as ``scripts/benchmark_spy.py`` / ``benchmark_relative.py`` (so SPY
+    Same convention as ``scripts/studies/benchmark_spy.py`` / ``benchmark_relative.py`` (so SPY
     monthly returns tie out across the validation tools). ``close`` must carry a
     DatetimeIndex. Indexed by month-end Timestamp.
     """
