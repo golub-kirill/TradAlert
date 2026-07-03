@@ -1,4 +1,4 @@
-"""Pure-math helpers of scripts/r1_rank_ic.py (synthetic data, no I/O).
+"""Pure-math helpers of scripts/studies/r1_rank_ic.py (synthetic data, no I/O).
 
 Locks the causality contract (only outcomes EXITED before a candidate's entry
 may feed its features), the ATR/RS as-of convention (last bar strictly before
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "studies"))
 
 from r1_rank_ic import (  # noqa: E402
     atr14_before,

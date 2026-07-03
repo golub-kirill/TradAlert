@@ -6,7 +6,7 @@ the ~10-min paired snapshot run. Bars are frozen in docs/backtest_out/shorts_val
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "studies"))
 
 from shorts_validate import evaluate_shorts_bars  # noqa: E402
 

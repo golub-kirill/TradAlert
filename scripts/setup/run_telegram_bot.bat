@@ -14,7 +14,8 @@ REM the daemon takes data\telegram_bot.lock and exits 0 if another holds it.
 REM ===========================================================================
 
 setlocal
-set "ROOT=%~dp0.."
+REM scripts\setup\ sits two levels under the repo root.
+set "ROOT=%~dp0..\.."
 pushd "%ROOT%"
 
 if not exist "logs" mkdir "logs"

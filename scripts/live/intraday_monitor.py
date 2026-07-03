@@ -1,7 +1,7 @@
 """
 Intraday 1h held-position monitor — flags a held LONG breaking down midday.
 
-Runs hourly during market hours (Windows Task; scripts/register_intraday_monitor.ps1).
+Runs hourly during market hours (Windows Task; scripts/setup/register_intraday_monitor.ps1).
 For each OPEN long, fetches 1h bars and alerts (Telegram) when the last COMPLETED 1h
 bar closes below the position's stop — a midday heads-up before the EOD scan.
 Journal-only: alerting only, never places an order. Shorts are excluded.
@@ -19,7 +19,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 

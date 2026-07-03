@@ -411,7 +411,7 @@ def _result_to_row(run_id: int, r: TickerResult) -> dict:
 
     # Signal geometry — captured only when a real entry/exit fired, so a live
     # signal can later be scored to a forward R and matched to backtest
-    # expectancy (see scripts/reconcile_live.py). None for non-signals.
+    # expectancy (see scripts/live/reconcile_live.py). None for non-signals.
     fired = bool(sig and sig.passed)
     stop_price = float(sig.stop_price) if fired and getattr(sig, "stop_price", None) else None
     target_price = float(sig.target_price) if fired and getattr(sig, "target_price", None) else None

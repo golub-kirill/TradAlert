@@ -5,9 +5,9 @@ Fetch daily OHLCV for specific tickers into the parquet cache (`data/prices/`).
 Reuses the project's own fetch + cache path (`yf_fetchOne.fetch` →
 `cache.get_or_fetch`), so symbology, validation, and the on-disk format match
 exactly what the backtester loads. Use it to backfill the pruned losers needed by
-the survivorship audit (scripts/frozen_universe_ab.py).
+the survivorship audit (scripts/studies/frozen_universe_ab.py).
 
-    python scripts/fetch_prices.py MTUM SIZE SPHB EWG EWU USO LIT
+    python scripts/fetch/fetch_prices.py MTUM SIZE SPHB EWG EWU USO LIT
 
 `.TO` (TSX) suffixes are fine. Existing fresh files are re-fetched (force=True).
 """
@@ -18,7 +18,7 @@ import sys
 from functools import partial
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -33,7 +33,7 @@ def main() -> None:
 
     tickers = [t for t in sys.argv[1:] if not t.startswith("-")]
     if not tickers:
-        print("usage: python scripts/fetch_prices.py TICKER [TICKER ...]")
+        print("usage: python scripts/fetch/fetch_prices.py TICKER [TICKER ...]")
         return
 
     from persistence.cache import get_or_fetch, DEFAULT_CACHE_DIR

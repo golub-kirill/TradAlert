@@ -19,7 +19,7 @@ SHIP (allow_shorts:true) only if gate-in + Bars 1–4 all PASS. effective_r carr
 size_mult + borrow (equity_curve.build_curve), so both the economic and the SPY-relative
 legs are borrow-honest. Exploratory: no journal, no HTML, no CSV (use --save-ledgers to dump).
 
-    .venv/Scripts/python.exe scripts/shorts_validate.py --snapshot data/snapshot_2026-06-10
+    .venv/Scripts/python.exe scripts/studies/shorts_validate.py --snapshot data/snapshot_2026-06-10
 """
 
 from __future__ import annotations
@@ -30,9 +30,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT / "scripts"))  # paired_ab._run lives at the scripts root
 
 import pandas as pd  # noqa: E402
 import yaml          # noqa: E402

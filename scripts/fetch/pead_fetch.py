@@ -14,7 +14,7 @@ Per-ticker output `data/earnings_history_pead/{TICKER}.parquet` (one row per eve
     eps_estimate, reported_eps, surprise_pct
 ETFs / no-earnings names write a 0-row parquet (so the resume-skip works).
 
-    .venv/Scripts/python.exe scripts/pead_fetch.py [--force] [--limit 120]
+    .venv/Scripts/python.exe scripts/fetch/pead_fetch.py [--force] [--limit 120]
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

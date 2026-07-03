@@ -27,8 +27,8 @@ forward windows overlap heavily. Headline stats dedupe to one observation per
 (ticker, gate, year-month) — the earliest scan_date that month. The raw passed-on
 count and the deduped/matured count are both reported so the truncation is visible.
 
-    python scripts/opportunity_tracker.py
-    python scripts/opportunity_tracker.py --days-back 90 --win 0.05 --lose 0.05
+    python scripts/live/opportunity_tracker.py
+    python scripts/live/opportunity_tracker.py --days-back 90 --win 0.05 --lose 0.05
 
 Requires DB_* in config/secrets.env (same as the live scanner) and the price cache.
 Read-only: never touches the engine/backtester/signal code and never writes the DB.
@@ -43,7 +43,7 @@ from pathlib import Path
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

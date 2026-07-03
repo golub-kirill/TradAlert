@@ -16,8 +16,8 @@ A signal is *resolved* once it hits stop/target or reaches the cap; otherwise it
 *pending* (too recent — not enough forward bars yet). Reconciliation only judges
 resolved signals; pending ones accrue as the live feed matures.
 
-    python scripts/reconcile_live.py
-    python scripts/reconcile_live.py --max-hold-days 25 --drift 0.15
+    python scripts/live/reconcile_live.py
+    python scripts/live/reconcile_live.py --max-hold-days 25 --drift 0.15
 
 Requires DB_* in config/secrets.env (same as the live scanner) and the price cache.
 Read-only on the DB.
@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

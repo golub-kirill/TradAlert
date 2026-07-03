@@ -16,7 +16,7 @@ UNITS (§P2-M / §P3-M, see docs/backtest_out/phase23_spy_relative_prereg.md): a
 This script touches NEITHER the engine NOR run_backtest, so the run_id=15 regression gate
 stays byte-identical (it only reads WFResult.oos_point.trades).
 
-    .venv/Scripts/python.exe scripts/wf_benchmark_relative.py --snapshot data/snapshot_2026-06-10
+    .venv/Scripts/python.exe scripts/studies/wf_benchmark_relative.py --snapshot data/snapshot_2026-06-10
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 

@@ -1,4 +1,4 @@
-"""Unit tests for scripts/benchmark_spy.py pure-math helpers (synthetic data)."""
+"""Unit tests for scripts/studies/benchmark_spy.py pure-math helpers (synthetic data)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "studies"))
 
 import benchmark_spy as bs  # noqa: E402
 

@@ -1,5 +1,5 @@
 """
-Study-matrix harness readout math (scripts/study_matrix.py).
+Study-matrix harness readout math (scripts/studies/study_matrix.py).
 
 The matrices drive default-change decisions, so the derived statistics —
 calendar-underwater %, split-half R/yr, WR(T) ceiling, legs parsing, venue
@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "studies"))
 
 from study_matrix import (  # noqa: E402
     half_r_per_year, parse_legs_spec, subset_tickers, underwater_pct, wrt_table,

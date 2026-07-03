@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "live"))
 import intraday_monitor as im  # noqa: E402
 
 

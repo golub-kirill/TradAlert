@@ -36,9 +36,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root      = Split-Path -Parent $ScriptDir
-$Bat       = Join-Path $ScriptDir "run_intraday_monitor.bat"
+# scripts\setup\ sits two levels under the root; the scheduler-pinned wrapper
+# stays at scripts\ root.
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptsDir = Split-Path -Parent $ScriptDir
+$Root       = Split-Path -Parent $ScriptsDir
+$Bat        = Join-Path $ScriptsDir "run_intraday_monitor.bat"
 
 if (-not (Test-Path $Bat)) {
     throw "Wrapper not found: $Bat"

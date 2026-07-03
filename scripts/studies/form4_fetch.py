@@ -10,8 +10,8 @@ exists is skipped, so an orphaned run just re-runs and continues
 ([[heavy-runs-orphan-from-agent]]). Point-in-time stamp = `filingDate` (not the txn
 date). SEC fair-access: a descriptive User-Agent and a ≤ ~9 req/s global rate cap.
 
-    .venv/Scripts/python.exe scripts/form4_fetch.py                 # all 86 US single-stocks
-    .venv/Scripts/python.exe scripts/form4_fetch.py --tickers AAPL,XOM --workers 1   # sample
+    .venv/Scripts/python.exe scripts/studies/form4_fetch.py                 # all 86 US single-stocks
+    .venv/Scripts/python.exe scripts/studies/form4_fetch.py --tickers AAPL,XOM --workers 1   # sample
 
 The XML parser (`parse_ownership`) is a pure, import-safe helper (tests/test_form4_fetch.py).
 """
@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 
 import pandas as pd  # noqa: E402
 import yaml          # noqa: E402

@@ -12,7 +12,7 @@ deltas are meaningful (headline LEVELS carry ~±10R data-revision jitter).
 Read the CAVEAT below before interpreting a ~0 result.
 
 Usage:
-    python scripts/paired_ab_correlation.py [--snapshot data/snapshot_2026-06-10]
+    python scripts/studies/paired_ab_correlation.py [--snapshot data/snapshot_2026-06-10]
         [--lookback 60] [--min-overlap 40] [--floor 0.0] [--max-open-risk 5.0]
 
 CAVEAT — why to also try a tighter --max-open-risk:
@@ -36,7 +36,7 @@ import time
 from datetime import date
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 

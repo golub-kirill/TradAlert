@@ -1,4 +1,4 @@
-"""Pure R-math and aggregation for scripts/reconcile_fills.py (no DB).
+"""Pure R-math and aggregation for scripts/live/reconcile_fills.py (no DB).
 
 The reconciler's DB/print I/O lives in main(); these cover the realized-R
 geometry and the bucketing that feed the drift comparison.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "live"))
 
 import reconcile_fills as rf  # noqa: E402
 from core.position_manager import Position  # noqa: E402

@@ -27,9 +27,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Resolve repo paths from this script's own location (scripts\ sits under the root).
+# Resolve repo paths from this script's own location (scripts\setup\ sits two
+# levels under the root).
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root      = Split-Path -Parent $ScriptDir
+$Root      = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $Pythonw   = Join-Path $Root ".venv\Scripts\pythonw.exe"
 
 if (-not (Test-Path $Pythonw)) {

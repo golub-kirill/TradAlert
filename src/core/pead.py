@@ -2,7 +2,7 @@
 Post-earnings-drift (PEAD) signal math.
 
 A leaf module holding the point-in-time PEAD entry logic, mirroring the
-already-validated gate in ``scripts/pead_gate.py`` (``classify_reaction``,
+already-validated gate in ``scripts/studies/pead_gate.py`` (``classify_reaction``,
 ``reaction_pos``, and the ``car_event`` computation inside
 ``build_ticker_panel``) so the engine matches the gate exactly. It must not
 import the engine, ``main``, or anything from ``core.filter_engine`` — only

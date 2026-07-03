@@ -16,9 +16,9 @@ The base config reproduces the current headline (213-name tier_a, scoring OFF,
 per-month R series comes from `build_curve` (effective-R), so the numbers tie out
 to the published Sharpe 0.66 / E[R] +0.075.
 
-    python scripts/multiple_testing.py                       # full grid (~40 min)
-    python scripts/multiple_testing.py --quick --workers 14  # reduced-grid smoke
-    python scripts/multiple_testing.py --workers 14 --bootstrap 10000 --seed 7
+    python scripts/studies/multiple_testing.py                       # full grid (~40 min)
+    python scripts/studies/multiple_testing.py --quick --workers 14  # reduced-grid smoke
+    python scripts/studies/multiple_testing.py --workers 14 --bootstrap 10000 --seed 7
 
 Exploratory — does NOT journal. Read-only on the DB. Needs the price cache
 (data/prices).
@@ -30,7 +30,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
