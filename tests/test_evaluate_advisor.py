@@ -319,6 +319,45 @@ def test_print_report_none_rows_do_not_inflate_the_honesty_gate(capsys):
     assert "55 resolved fired entries (12 with a verdict)" in out
 
 
+def test_score_details_collects_pending_and_errors(monkeypatch):
+    # --verbose accrual detail: pending/error records carry ticker + why.
+    _patch_prices(monkeypatch, _df([(100, 101, 99, 100.5)]))
+    details = {}
+    _score([_sig(), _sig(ticker="TEST.2", stop_price=None)],
+           _cfg0(), 25, "if_not_profit", details=details)
+    assert details["pending"][0]["ticker"] == "TEST.1"
+    assert "no stop/target/cap" in details["pending"][0]["why"]
+    assert details["errors"][0]["ticker"] == "TEST.2"
+    assert "geometry" in details["errors"][0]["why"]
+
+
+def test_print_report_verbose_ledger(capsys):
+    from evaluate_advisor import _print_report
+
+    rows = [dict(_row("agree", 2.0), ticker="TEST.1", date=_dt.date(2026, 6, 1),
+                 reason="target", kind="entry_long", declined=True),
+            dict(_row("disagree", -1.0), ticker="TEST.2", date=_dt.date(2026, 6, 2),
+                 reason="stop", kind="entry_long")]
+    details = {"pending": [{"ticker": "TEST.3", "date": _dt.date(2026, 6, 30),
+                            "why": "open 3 bar(s), no stop/target/cap yet"}]}
+    _print_report(rows, pending=1, errors=0, max_hold=25, mode="if_not_profit",
+                  verbose=True, details=details)
+    out = capsys.readouterr().out
+    assert "Ledger (resolved, chronological):" in out
+    assert "TEST.1" in out and "+2.00" in out and "target" in out
+    assert "✗" in out                       # declined marker
+    assert "Pending (1):" in out and "TEST.3" in out
+
+
+def test_print_report_non_verbose_has_no_ledger(capsys):
+    from evaluate_advisor import _print_report
+
+    rows = [dict(_row("agree", 2.0), ticker="TEST.1", date=_dt.date(2026, 6, 1),
+                 reason="target", kind="entry_long")]
+    _print_report(rows, pending=0, errors=0, max_hold=25, mode="if_not_profit")
+    assert "Ledger" not in capsys.readouterr().out
+
+
 def test_print_report_tentative_wording_between_floor_and_target(capsys):
     # 30-49 verdicts: CI prints, but the conclusion must be soft, not definitive.
     from evaluate_advisor import _print_report

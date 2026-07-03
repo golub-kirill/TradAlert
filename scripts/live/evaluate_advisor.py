@@ -27,6 +27,7 @@ whether headlines were present for a given prompt is not journaled, so the
 news-vs-technical-only split is not measurable from the current schema.
 
     python scripts/live/evaluate_advisor.py
+    python scripts/live/evaluate_advisor.py --verbose            # + per-signal ledger
     python scripts/live/evaluate_advisor.py --since 2026-07-01 --include-review
 
 Requires DB_* in config/secrets.env and the price cache. Read-only on the DB.
@@ -178,11 +179,13 @@ def _fetch_entries(conn, since: str | None, include_review: bool) -> list[dict]:
         cur.close()
 
 
-def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
+def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str,
+           details: dict | None = None):
     """Replay each fired entry to realized R via reconcile_live's machinery.
 
     Returns (resolved_rows, pending, errors). Each resolved row carries
-    {verdict, conf, r, declined, ticker, date, reason}.
+    {verdict, conf, r, declined, ticker, date, reason, kind}. When ``details``
+    is a dict, per-signal pending/error records accumulate into it (--verbose).
     """
     import pandas as pd
 
@@ -192,6 +195,12 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
                                      apply_target_fill_short)
     from reconcile_live import _replay  # single source of replay-scoring truth
 
+    def _note(kind: str, s: dict, why: str) -> None:
+        if details is not None:
+            details.setdefault(kind, []).append(
+                {"ticker": s["ticker"],
+                 "date": pd.Timestamp(s["created_at"]).date(), "why": why})
+
     resolved: list[dict] = []
     pending = errors = 0
     for s in sigs:
@@ -199,11 +208,13 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
             df = cache_load(s["ticker"])
         except Exception:
             errors += 1
+            _note("errors", s, "no price cache")
             continue
         D = pd.Timestamp(s["created_at"]).normalize()
         entry_idx = int(df.index.searchsorted(D, side="right"))  # T+1 open
         if entry_idx >= len(df):
             pending += 1
+            _note("pending", s, "no T+1 bar yet")
             continue
         entry = float(df.iloc[entry_idx]["open"])
         is_short = s["signal_kind"] == "entry_short"
@@ -211,6 +222,7 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
         # Advisor-era rows always journal geometry; guard anyway (fail-open).
         if s["stop_price"] is None or s["target_price"] is None:
             errors += 1
+            _note("errors", s, "missing stop/target geometry")
             continue
         stop, target = float(s["stop_price"]), float(s["target_price"])
 
@@ -224,6 +236,7 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
         risk = (stop - entry) if is_short else (entry - stop)
         if risk <= 0:
             errors += 1
+            _note("errors", s, "non-positive risk (stop through entry)")
             continue
 
         exit_price, reason = _replay(df, entry_idx, entry, stop, target, is_short,
@@ -232,6 +245,8 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
                                      apply_stop_fill_short, apply_target_fill_short)
         if exit_price is None:
             pending += 1
+            bars_open = len(df) - entry_idx
+            _note("pending", s, f"open {bars_open} bar(s), no stop/target/cap yet")
             continue
         r = ((entry - exit_price) / risk) if is_short else ((exit_price - entry) / risk)
         r -= cfg["commission_r"]
@@ -241,6 +256,7 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str):
             "verdict": verdict, "conf": conf, "r": r,
             "declined": bool(s.get("declined")),
             "ticker": s["ticker"], "date": D.date(), "reason": reason,
+            "kind": s["signal_kind"],
         })
     return resolved, pending, errors
 
@@ -251,7 +267,8 @@ _EMOJI = {"agree": "✅", "flag": "⚠️", "disagree": "❌", "(none)": "  ", "
 
 
 def _print_report(resolved: list[dict], pending: int, errors: int,
-                  max_hold: int, mode: str) -> None:
+                  max_hold: int, mode: str, *, verbose: bool = False,
+                  details: dict | None = None) -> None:
     n = len(resolved)
     # The pre-registered gates count resolved VERDICTS, never the '(none)'
     # base-rate rows — otherwise an advisor outage (NULL notes) inflates n and
@@ -328,8 +345,32 @@ def _print_report(resolved: list[dict], pending: int, errors: int,
                                for b, bn, wr, er in bands)
             print(f"\n  Confidence calibration ({verdict}):  {cells}")
 
+    if verbose:
+        _print_ledger(resolved, details)
+
     print("\n  Limitation: headline presence per prompt is not journaled — the "
           "news-vs-technicals split is not measurable from this schema.\n")
+
+
+def _print_ledger(resolved: list[dict], details: dict | None) -> None:
+    """--verbose: per-signal ledger + pending/error detail (accrual monitoring)."""
+    if resolved:
+        print("\n  Ledger (resolved, chronological):")
+        print(f"    {'date':<11} {'ticker':<9} {'kind':<12} {'verdict':<13} "
+              f"{'conf':>5} {'R':>7}  {'exit':<10} skip")
+    for row in sorted(resolved, key=lambda x: (x["date"], x["ticker"])):
+        v = row["verdict"] or "(none)"
+        conf = f"{row['conf']:.0%}" if row["conf"] is not None else "—"
+        print(f"    {row['date']!s:<11} {row['ticker']:<9} "
+              f"{row.get('kind', '—'):<12} {_EMOJI.get(v, ' '):>2} {v:<10} "
+              f"{conf:>5} {row['r']:>+7.2f}  {row['reason']:<10} "
+              f"{'✗' if row['declined'] else ''}")
+    for kind, label in (("pending", "Pending"), ("errors", "Errors")):
+        items = (details or {}).get(kind) or []
+        if items:
+            print(f"\n  {label} ({len(items)}):")
+            for it in sorted(items, key=lambda x: (x["date"], x["ticker"])):
+                print(f"    {it['date']!s:<11} {it['ticker']:<9} {it['why']}")
 
 
 def main() -> None:
@@ -345,6 +386,8 @@ def main() -> None:
                     help="include NEEDS_REVIEW fires (stale/gapped data; excluded by default)")
     ap.add_argument("--max-hold-days", type=int, default=None,
                     help="time-stop cap override (default: execution.max_hold_days)")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="per-signal ledger + pending/error detail (accrual monitoring)")
     args = ap.parse_args()
 
     from persistence.db_conn import connect
@@ -391,14 +434,18 @@ def main() -> None:
     window_start = min(e["created_at"] for e in advised)
     sample = [e for e in entries if e["created_at"] >= window_start]
 
-    resolved, pending, errors = _score(sample, cfg, max_hold, mode)
+    details: dict = {}
+    resolved, pending, errors = _score(sample, cfg, max_hold, mode, details=details)
     if not resolved:
         print(f"  {len(advised)} advised entries journaled ({len(sample)} fired in "
               f"window), none resolved yet (pending {pending}, errors {errors}) — "
               f"signals need ~{max_hold} trading days to mature. Keep scanning.")
+        if args.verbose:
+            _print_ledger([], details)
         return
 
-    _print_report(resolved, pending, errors, max_hold, mode)
+    _print_report(resolved, pending, errors, max_hold, mode,
+                  verbose=args.verbose, details=details)
 
 
 if __name__ == "__main__":
