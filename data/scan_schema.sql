@@ -1,7 +1,3 @@
--- TradAlert live-scan persistence schema (scan_runs + scan_results).
---
--- Populated by main.py via persistence.db.save_scan_run / save_scan_results.
-
 CREATE TABLE IF NOT EXISTS scan_runs (
     id                INT UNSIGNED  NOT NULL AUTO_INCREMENT,
     forced            TINYINT(1)    NOT NULL DEFAULT 0,
@@ -21,26 +17,18 @@ CREATE TABLE IF NOT EXISTS scan_results (
     run_id       INT UNSIGNED NOT NULL,
     ticker       VARCHAR(16)  NOT NULL,
     passed       TINYINT(1)   NOT NULL DEFAULT 0,
-    -- full set of directions the scorer/engine can emit (long + short entries/exits)
+
     signal_kind  ENUM('none','entry_long','exit_long','entry_short','exit_short')
                               NOT NULL DEFAULT 'none',
-    -- live data-freshness tier (LIVE path only; the backtester never writes scan_results).
-    -- NEEDS_REVIEW = fired on stale/gapped data; reconcile_live.py excludes these.
+
     tier         ENUM('LIVE','NEEDS_REVIEW') NOT NULL DEFAULT 'LIVE',
     review_reason VARCHAR(255) NULL,
-    -- live-only AI advisor note ("✅ Agree · 82% — …"); NULL when the advisor is
-    -- off/unreachable. Existing deploys: ALTER TABLE scan_results
-    --   ADD COLUMN advisor_note VARCHAR(512) NULL AFTER review_reason;
-    -- (owner-applied; the writer degrades gracefully until it lands.)
+
     advisor_note VARCHAR(512) NULL,
-    -- owner skipped this FIRED entry via the Telegram 🚫 Skip button (set later by
-    -- db.mark_declined). opportunity_tracker counts a declined fire as passed-on
-    -- (gate='declined'). Not written by the INSERT — defaults 0, updated on tap.
     declined     TINYINT(1)   NOT NULL DEFAULT 0,
     score        DECIMAL(5,2) NULL,
     reason       VARCHAR(255) NULL,
     `close`      DOUBLE       NULL,
-    -- fired-signal geometry (stop/target/etc.); NULL for non-signals
     stop_price   DOUBLE       NULL,
     target_price DOUBLE       NULL,
     signal_type  VARCHAR(24)  NULL,

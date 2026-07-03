@@ -176,10 +176,10 @@ telegram:
 # byte-identical. Every path is fail-open — Ollama down or news missing → no note.
 # Opt-in: default OFF. Needs a local Ollama (ollama serve) with the model pulled.
 advisor:
-  enabled: false                     # master toggle; opt-in [false]
+  enabled: true                     # master toggle; opt-in [false]
   endpoint: "http://localhost:11434"  # local Ollama HTTP endpoint
   model: "qwen3.5:9b"                # pulled via `ollama pull qwen3.5:9b`
-  timeout: 20                        # seconds per LLM call [20]
+  timeout: 200                        # seconds per LLM call [20]
   temperature: 0.1                   # lower = more deterministic [0.1]
   max_tokens: 300                    # response cap; think mode is disabled [300]
 
