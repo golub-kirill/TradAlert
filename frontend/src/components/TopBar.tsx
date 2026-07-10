@@ -23,8 +23,12 @@ export function TopBar({ title, sub }: { title: string; sub: string }) {
       </div>
       <div className="act">
         <RegimePill />
-        <button className="btn pri" onClick={refresh}>
-          <i className="ti ti-refresh"></i>Refresh
+        <button
+          className="btn pri"
+          onClick={refresh}
+          title="Re-pull the latest journaled data (positions, scans, backtests). Does not run a new scan — use the Scanner to re-scan."
+        >
+          <i className="ti ti-refresh"></i>Reload
         </button>
       </div>
     </div>

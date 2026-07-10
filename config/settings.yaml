@@ -168,6 +168,11 @@ telegram:
     - short_entry
     - exit_short
   mute: []                    # ticker blocklist, e.g. ["TSLA"]
+  # How a broad regime-flip exit (fires on every held long at once) is surfaced:
+  #   advisory — collapse into ONE "regime caution" message (default; not a forced flatten)
+  #   exit     — legacy: one hard EXIT card per held long
+  #   off      — suppress (position-specific momentum/mean-rev exits still fire)
+  regime_flip_exit_mode: advisory
 
 
 # ── AI ADVISOR ────────────────────────────────────────────────────────────────

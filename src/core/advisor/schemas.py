@@ -40,6 +40,9 @@ class AdvisorInput:
     market_regime: str
     ticker_trend: str
     reason: str
+    # Full company name (e.g. "ARC Resources Ltd." for ARX.TO). Lets the model map
+    # symbol → issuer so it doesn't misread name-based news as an identity mismatch.
+    company_name: str = ""
     tier: str = "LIVE"
     event_risk: str = ""
     vix_level: float | None = None

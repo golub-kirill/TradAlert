@@ -143,6 +143,10 @@ signals: # block: trigger configuration
     regime_flip: true                 # exit held LONG when broad-market trend != BULL
     momentum_fade: true               # exit held LONG on momentum-fade trigger
     mean_rev: true                    # exit held LONG on overbought mean-reversion trigger
+    # Regime-flip exit shaping (A/B levers; defaults reproduce the exit-on-any-
+    # non-BULL-bar behavior byte-for-byte):
+    regime_flip_bear_only: false      # true: exit only on BEAR (CHOP no longer flattens)
+    regime_flip_confirm_bars: 1       # N>1: require the flip to persist N bars before exiting
     # Held-SHORT exit toggles (default true; cheap insurance)
     regime_flip_short: true           # cover held SHORT when broad-market trend != BEAR
     short_cover_pop: true             # cover held SHORT on momentum-pop trigger

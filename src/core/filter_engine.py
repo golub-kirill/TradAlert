@@ -347,10 +347,20 @@ class FilterEngine:
         if regime is None:
             regime = self._market_regime(market_dfs, vix_df)
 
+        # Held-long regime-flip confirmation (opt-in; default confirm_bars=1 → True,
+        # no extra work, backtest byte-identical). Computed here where the market
+        # frames are in scope, then handed to the exit path.
+        regime_confirmed = True
+        if held_long:
+            ex = self.cfg.signals.exits
+            if ex.regime_flip and ex.regime_flip_confirm_bars > 1:
+                regime_confirmed = self._regime_flip_confirmed(
+                    market_dfs, vix_df, ex.regime_flip_confirm_bars, ex.regime_flip_bear_only)
+
         result = (
             self._signal_exit_short(ticker, df, regime)
             if held_short
-            else self._signal_exit(ticker, df, regime)
+            else self._signal_exit(ticker, df, regime, regime_confirmed=regime_confirmed)
             if held_long
             else self._signal_entry(
                 ticker, df, regime, earnings_date, market_dfs,
@@ -828,18 +838,23 @@ class FilterEngine:
             ticker: str,
             df: pd.DataFrame,
             regime: MarketRegime,
+            *,
+            regime_confirmed: bool = True,
     ) -> SignalResult:
         """
         Exit-signal detection for held longs.
 
         Skips stop_date blackout and earnings buffer; runs under HIGH volatility.
         Fires on the first matching condition:
-            1. regime flip      — regime no longer BULL
+            1. regime flip      — regime no longer BULL (or BEAR-only / N-bar
+                                  confirmed, per signals.exits.regime_flip_*)
             2. momentum fade    — macd_hist crosses below zero + RSI confirms
             3. mean-rev exit    — RSI overbought + macd_hist turning down
 
         Each condition is individually toggleable via
         ``signals.exits.<name>`` in filters.yaml (all default True).
+        ``regime_confirmed`` is the N-bar-persistence check computed by ``signal``
+        (always True at the default confirm_bars=1).
         """
         # row-count guard still applies — trend label needs MA200
         self._min_rows_guard(df, ticker)
@@ -850,8 +865,11 @@ class FilterEngine:
 
         exit_cfg = self.cfg.signals.exits
 
-        # 1. regime flip — any non-BULL regime triggers exit on a held long
-        if exit_cfg.regime_flip and regime.trend != "BULL":
+        # 1. regime flip — a non-BULL regime (or BEAR only, when configured)
+        #    triggers exit on a held long, gated by the N-bar confirmation.
+        flipped = (regime.trend == "BEAR") if exit_cfg.regime_flip_bear_only \
+            else (regime.trend != "BULL")
+        if exit_cfg.regime_flip and flipped and regime_confirmed:
             return self._exit_result(
                 "regime",
                 f"regime flipped to {regime.trend} — exit held long",
@@ -877,6 +895,43 @@ class FilterEngine:
         return self._fail_result(
             "no exit condition met (hold)", regime, ticker_trend,
         )
+
+    def _regime_flip_confirmed(
+            self,
+            market_dfs: dict[str, pd.DataFrame] | None,
+            vix_df: pd.DataFrame | None,
+            n_bars: int,
+            bear_only: bool,
+    ) -> bool:
+        """True iff the regime flip has persisted for ``n_bars`` consecutive bars.
+
+        Offset 0 (the current bar) is known flip-worthy by the caller; this re-runs
+        the trend classifier on the market frames truncated by 1..n_bars-1 bars and
+        requires every one to also be flip-worthy. Too little history to confirm →
+        False (hold, don't exit yet). Only invoked when confirm_bars > 1, so the
+        default path never pays this cost and stays byte-identical.
+        """
+        if n_bars <= 1 or not market_dfs:
+            return True
+
+        def _flipworthy(trend: str) -> bool:
+            return trend == "BEAR" if bear_only else trend != "BULL"
+
+        for k in range(1, n_bars):
+            sliced = {
+                sym: dfk.iloc[: len(dfk) - k]
+                for sym, dfk in market_dfs.items()
+                if dfk is not None and len(dfk) > k
+            }
+            if not sliced:
+                return False  # not enough history to confirm the streak → hold
+            vix_sliced = (
+                vix_df.iloc[: len(vix_df) - k]
+                if vix_df is not None and len(vix_df) > k else None
+            )
+            if not _flipworthy(classify_market_regime(self.cfg, sliced, vix_sliced).trend):
+                return False
+        return True
 
     # ── public — regime classifier (for scoring + main pipeline) ─────────────
 

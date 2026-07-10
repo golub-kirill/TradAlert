@@ -257,6 +257,27 @@ def format_exit(tr: Any, *, entry_price: float | None = None, held_days: int | N
     return _card(header, lines) if lines else _cap(header)
 
 
+def format_regime_caution(tickers: Sequence[str], *, regime_label: str | None = None) -> str:
+    """One consolidated caution for a broad regime-flip exit across held longs.
+
+    Replaces the flood of individual EXIT cards the flip would otherwise emit: it
+    lists the affected positions and states plainly that nothing is auto-closed —
+    the trader reviews and decides. Empty ``tickers`` → "" (caller skips the send).
+    """
+    names = [str(t).upper() for t in tickers if t]
+    if not names:
+        return ""
+    n = len(names)
+    where = f" ({_esc(regime_label)})" if regime_label else ""
+    lines = [
+        f"Regime turned non-BULL{where} — {n} held long{'' if n == 1 else 's'} "
+        "flagged for review.",
+        "🔎 " + ", ".join(_esc(t) for t in names),
+        "ℹ️ Not auto-closed — trim or hold at your discretion.",
+    ]
+    return _card("⚠️ <b>REGIME CAUTION</b>", lines)
+
+
 # ── daily header & stand-down ────────────────────────────────────────────────────
 
 def format_daily_header(run_date: Any, *, n_entries: int = 0, n_exits: int = 0,

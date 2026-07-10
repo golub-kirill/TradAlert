@@ -71,6 +71,27 @@ def test_format_note_truncated_to_column_width():
     assert len(service.format_note(long)) <= 500
 
 
+def test_format_note_clips_reasoning_at_word_boundary():
+    # A long multi-word reasoning must not be cut mid-word — it ends with an ellipsis
+    # and its last visible token is a whole word from the input.
+    words = " ".join(f"word{i}" for i in range(200))
+    note = service.format_note(AdvisorVerdict("disagree", 0.65, words))
+    assert note.endswith("…")
+    last_word = note[:-1].rstrip().rsplit(" ", 1)[-1]
+    assert last_word in words.split()  # whole word, never a fragment
+
+
+def test_format_note_clips_risks_at_word_boundary():
+    note = service.format_note(
+        AdvisorVerdict("disagree", 0.65, "short reason", risks="danger " * 60))
+    risk_part = note.split("⚠", 1)[1]
+    assert risk_part.rstrip().endswith("…")
+
+
+def test_clip_short_text_unchanged():
+    assert service._clip("all good here", 100) == "all good here"
+
+
 # ── advise_signal ────────────────────────────────────────────────────────────
 
 def test_advise_disabled_returns_empty():
@@ -85,6 +106,40 @@ def test_advise_enabled_returns_note(monkeypatch):
     ctx = service.AdvisorContext(enabled=True)
     note = service.advise_signal("AAPL", _Signal(), ctx, vix_level=14.0)
     assert note.startswith("✅ Agree · 70% — ok")
+
+
+def test_advise_passes_company_name_to_llm(monkeypatch):
+    # Regression: a bare ticker made the model misread name-based news as an
+    # identity mismatch (ARX.TO news names "ARC Resources"). The resolved company
+    # name must reach the LLM input.
+    seen = {}
+    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [{"headline": "h"}])
+
+    def _capture(inp, **k):
+        seen["company_name"] = inp.company_name
+        return AdvisorVerdict("agree", 0.7, "ok")
+
+    monkeypatch.setattr(service, "ask_llm", _capture)
+    ctx = service.AdvisorContext(enabled=True,
+                                 company_names={"ARX.TO": "ARC Resources Ltd."})
+    service.advise_signal("ARX.TO", _Signal(), ctx)
+    assert seen["company_name"] == "ARC Resources Ltd."
+
+
+def test_advise_missing_company_name_is_blank(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [])
+    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [{"headline": "h"}])
+
+    def _capture(inp, **k):
+        seen["company_name"] = inp.company_name
+        return AdvisorVerdict("agree", 0.7, "ok")
+
+    monkeypatch.setattr(service, "ask_llm", _capture)
+    monkeypatch.setattr(service, "save_news", lambda *a, **k: None)
+    ctx = service.AdvisorContext(enabled=True, company_names={})
+    service.advise_signal("ZZZZ", _Signal(), ctx)
+    assert seen["company_name"] == ""
 
 
 def test_advise_none_verdict_returns_empty(monkeypatch):

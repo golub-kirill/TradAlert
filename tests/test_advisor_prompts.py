@@ -65,6 +65,23 @@ def test_prompt_skips_headlines_when_absent():
     assert "## TICKER NEWS\n—" in p
 
 
+def test_prompt_includes_company_name_when_present():
+    p = build_prompt("ARX.TO", _input(ticker="ARX.TO", company_name="ARC Resources Ltd."))
+    assert "ARC Resources Ltd." in p
+    assert "ARX.TO" in p
+
+
+def test_prompt_omits_company_when_absent():
+    p = build_prompt("AAPL", _input(company_name=""))
+    assert "(company:" not in p
+
+
+def test_prompt_has_identity_mismatch_guard():
+    # The model must not flag a name-vs-symbol difference as an asset mismatch.
+    p = build_prompt("ARX.TO", _input(ticker="ARX.TO", company_name="ARC Resources Ltd."))
+    assert "identity" in p.lower() and "mismatch" in p.lower()
+
+
 def test_prompt_includes_market_context():
     p = build_prompt("AAPL", _input(market_context="Rates steady, tech leads."))
     assert "Rates steady, tech leads." in p

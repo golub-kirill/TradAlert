@@ -23,7 +23,7 @@ function Shell() {
               <i className="ti ti-plug-connected-x"></i>
               <span>
                 API not reachable. Start it with <code>python -m api</code> from the repo root, then
-                Refresh.
+                Reload.
               </span>
             </div>
           )}

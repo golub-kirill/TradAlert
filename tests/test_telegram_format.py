@@ -38,6 +38,21 @@ def _exit(direction="exit_long", ticker="JNJ", close=239.10):
     return TickerResult(ticker, ScanResult(passed=True, close=close), s)
 
 
+def test_regime_caution_lists_positions_and_disclaims_autoclose():
+    out = fmt.format_regime_caution(["arx.to", "EFA"], regime_label="CHOP_LOW")
+    plain = _plain(out)
+    assert "REGIME CAUTION" in plain
+    assert "ARX.TO" in plain and "EFA" in plain  # upper-cased
+    assert "2 held longs" in plain
+    assert "CHOP_LOW" in plain
+    assert "Not auto-closed" in plain
+
+
+def test_regime_caution_singular_and_empty():
+    assert "1 held long " in _plain(fmt.format_regime_caution(["SPY"]))
+    assert fmt.format_regime_caution([]) == ""  # caller skips the send
+
+
 # ── entry ────────────────────────────────────────────────────────────────────────
 
 def test_entry_card_structure_and_content():
