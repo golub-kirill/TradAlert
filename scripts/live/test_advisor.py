@@ -17,12 +17,17 @@ Usage:
     python scripts/live/test_advisor.py
     python scripts/live/test_advisor.py --seed 42 --count 5     # reproducible sample
     python scripts/live/test_advisor.py --model qwen3:8b --no-macro
+    python scripts/live/test_advisor.py -v                      # show news, prompt, raw verdict
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+import time
+import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -44,14 +49,6 @@ def _min_rr(entry: float, stop: float, target: float) -> float:
     risk = abs(entry - stop)
     reward = abs(target - entry)
     return reward / risk if risk > 0 else 0.0
-
-
-def _verdict_label(note: str) -> str:
-    # "Disagree" first: case-insensitive matching would hit its "agree" tail.
-    for label in ("Disagree", "Agree", "Flag"):
-        if label in note:
-            return label.upper()
-    return "—"
 
 
 def _actual_label(r: float | None) -> str:
@@ -111,7 +108,89 @@ def _fetch_trades(seed: int | None, count: int) -> list[dict]:
                 pass
 
 
-def _print_trade(trade: dict, signal, note: str) -> None:
+# ── advisor chain (stepwise, so we can show every stage) ─────────────
+
+@dataclass
+class _Review:
+    """One trade run through the advisor, with the intermediates exposed."""
+
+    note: str = ""
+    verdict: object = None          # AdvisorVerdict | None
+    headlines: list = field(default_factory=list)
+    company_name: str = ""
+    prompt: str = ""
+    elapsed: float = 0.0
+    error: str = ""                 # short reason
+    traceback: str = ""             # full trace (verbose only)
+
+
+def _review_trade(trade: dict, signal, ctx) -> _Review:
+    """Mirror of ``advise_signal`` that returns the intermediates instead of
+    swallowing them. Surfaces errors rather than collapsing to an empty note."""
+    from core.advisor import AdvisorInput
+    from core.advisor.client import ask_llm
+    from core.advisor.prompts import build_prompt
+    from core.advisor.service import _resolve_headlines, format_note
+
+    rv = _Review()
+    ticker = trade["ticker"]
+    try:
+        rv.company_name = (ctx.company_names.get(ticker)
+                           or ctx.company_names.get(ticker.upper()) or "")
+        rv.headlines = _resolve_headlines(ticker, ctx)
+        input_data = AdvisorInput(
+            ticker=ticker,
+            company_name=rv.company_name,
+            direction=signal.direction,
+            signal_type=signal.signal_type,
+            stop_price=float(signal.stop_price),
+            target_price=float(signal.target_price),
+            min_rr=float(signal.min_rr),
+            market_regime=signal.market_regime,
+            ticker_trend=signal.ticker_trend,
+            reason=signal.reason,
+            market_context=ctx.market_context,
+            headlines=rv.headlines,
+        )
+        rv.prompt = build_prompt(ticker, input_data)
+        t0 = time.time()
+        rv.verdict = ask_llm(
+            input_data,
+            endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
+            temperature=ctx.temperature, max_tokens=ctx.max_tokens,
+            session=ctx.session,
+        )
+        rv.elapsed = time.time() - t0
+        rv.note = format_note(rv.verdict) if rv.verdict else ""
+    except Exception as exc:  # surfaced, not swallowed — this is a diagnostic tool
+        rv.error = f"{type(exc).__name__}: {exc}"
+        rv.traceback = traceback.format_exc()
+    return rv
+
+
+def _ollama_status(ctx) -> tuple[bool, list[str], str]:
+    """(reachable, model_names, error). A quick GET /api/tags so a down/empty
+    Ollama is reported up front instead of as silent empty verdicts."""
+    try:
+        r = ctx.session.get(f"{ctx.endpoint.rstrip('/')}/api/tags", timeout=5)
+        r.raise_for_status()
+        models = [str(m.get("name", "")) for m in (r.json().get("models") or [])]
+        return True, models, ""
+    except Exception as exc:
+        return False, [], f"{type(exc).__name__}: {exc}"
+
+
+# ── printing ─────────────────────────────────────────────────────────
+
+def _headline_line(h: dict) -> str:
+    title = h.get("headline") or h.get("title") or h.get("summary") or str(h)
+    src = h.get("source") or h.get("publisher") or ""
+    when = h.get("datetime") or h.get("date") or h.get("published") or ""
+    tail = " · ".join(x for x in (str(src), str(when)) if x)
+    return f"{title}" + (f"   [{tail}]" if tail else "")
+
+
+def _print_trade(trade: dict, signal, rv: _Review, *, verbose: bool) -> None:
     entry = float(trade["entry_price"])
     # Raw per-unit R is the outcome the advisor's read maps to; effective_r
     # folds in size_mult/borrow (sizing layer), shown alongside when it differs.
@@ -132,11 +211,44 @@ def _print_trade(trade: dict, signal, note: str) -> None:
           f"Trend  {trade['ticker_trend']:<10}")
     print(f"  Exit    {trade['exit_reason'] or '—':<20}  "
           f"Result  {result_str}")
-    if note:
-        print(f"  Advisor  {note}")
+
+    if rv.note:
+        print(f"  Advisor  {rv.note}")
+    elif rv.error:
+        print(f"  Advisor  (failed — {rv.error}; run with -v for the traceback)")
     else:
-        print("  Advisor  (no response — is Ollama running?)")
-    print(f"  Verdict  {_verdict_label(note):<12}  Actual  {_actual_label(r_raw)}")
+        print("  Advisor  (no verdict — Ollama unreachable or empty response; -v for detail)")
+
+    v = rv.verdict.verdict.upper() if rv.verdict else "—"
+    print(f"  Verdict  {v:<12}  Actual  {_actual_label(r_raw)}")
+
+    if not verbose:
+        return
+
+    # ── verbose detail ──────────────────────────────────────────────
+    print("  · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·")
+    comp = f"{rv.company_name}" if rv.company_name else "(no company_names.json match)"
+    print(f"  Company    {comp}")
+    if rv.headlines:
+        print(f"  Headlines  {len(rv.headlines)} fetched")
+        for h in rv.headlines:
+            print(f"    • {_headline_line(h)}")
+    else:
+        print("  Headlines  (none — advisor sees 'no ticker news')")
+    if rv.verdict is not None:
+        print(f"  LLM        {rv.elapsed:.1f}s   confidence {rv.verdict.confidence:.0%}")
+        print(f"  Reasoning  {rv.verdict.reasoning or '(empty)'}")
+        print(f"  Risks      {rv.verdict.risks or '(none)'}")
+    elif rv.error:
+        print(f"  LLM        ERROR — {rv.error}")
+        for tline in rv.traceback.rstrip().splitlines():
+            print(f"    {tline}")
+    else:
+        print(f"  LLM        {rv.elapsed:.1f}s — no verdict returned "
+              "(unreachable / timeout / empty / malformed JSON; see [W] log lines)")
+    print("  Prompt ▽")
+    for pline in rv.prompt.splitlines():
+        print(f"    {pline}")
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -157,12 +269,22 @@ def main() -> None:
                     help="override advisor.model for this run (e.g. qwen3:8b)")
     ap.add_argument("--no-macro", action="store_true",
                     help="skip the macro-context summarization (faster)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="show company name, news headlines, the full prompt, and "
+                         "the raw verdict fields (plus INFO/WARNING advisor logs)")
     args = ap.parse_args()
+
+    # Surface the advisor's own fail-open log lines (news fallbacks, Ollama
+    # unreachable/timeout) with a clean prefix so they read as notices, not crashes.
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="  [%(levelname).1s] %(name)s: %(message)s",
+    )
 
     import yaml
 
+    from core.advisor import build_advisor_context
     from core.types import SignalResult
-    from core.advisor import build_advisor_context, advise_signal
 
     with open(_ROOT / "config" / "settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f) or {}
@@ -182,9 +304,26 @@ def main() -> None:
         return
 
     ctx = build_advisor_context(settings)
+
     print()
-    print(f"  Model    {ctx.model}   macro context: "
-          f"{'yes' if ctx.market_context else 'no'}")
+    print(f"  Model      {ctx.model}   @ {ctx.endpoint}")
+    print(f"  Macro ctx  {'yes' if ctx.market_context else 'no'}"
+          f"   News keys: finnhub={'y' if ctx.finnhub_key else 'n'} "
+          f"brave={'y' if ctx.brave_key else 'n'}"
+          f"   company_names={len(ctx.company_names)}")
+
+    up, models, err = _ollama_status(ctx)
+    if not up:
+        print(f"  Ollama     UNREACHABLE at {ctx.endpoint} — every verdict will be "
+              f"empty ({err}). Start it: `ollama serve`.")
+    elif ctx.model not in models and not any(m.split(":")[0] == ctx.model.split(":")[0]
+                                             for m in models):
+        print(f"  Ollama     up, but '{ctx.model}' is NOT pulled "
+              f"(have: {', '.join(models) or 'none'}). `ollama pull {ctx.model}`.")
+    else:
+        print(f"  Ollama     reachable ({len(models)} model{'' if len(models) == 1 else 's'})")
+    if args.verbose and ctx.market_context:
+        print(f"  Macro ▽    {ctx.market_context}")
 
     for trade in trades:
         entry = float(trade["entry_price"])
@@ -202,8 +341,8 @@ def main() -> None:
             ticker_trend=trade["ticker_trend"] or "",
             reason=f"{trade['signal_type'] or 'setup'} signal",
         )
-        note = advise_signal(trade["ticker"], signal, ctx)
-        _print_trade(trade, signal, note)
+        rv = _review_trade(trade, signal, ctx)
+        _print_trade(trade, signal, rv, verbose=args.verbose)
 
     print("  " + "─" * 56)
     print("  ⚠ news/macro are PRESENT-DAY vs a historical entry — plumbing "
