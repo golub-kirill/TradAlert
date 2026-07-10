@@ -153,6 +153,13 @@ def _split_regime_exits(selected, mode: str):
     return kept, pulled
 
 
+def _caution_message(caution, regime_label):
+    """Render the consolidated caution, split by direction (longs vs short covers)."""
+    longs = [tr.ticker for tr, k in caution if k == "exit_long"]
+    shorts = [tr.ticker for tr, k in caution if k == "exit_short"]
+    return fmt.format_regime_caution(longs, shorts, regime_label=regime_label)
+
+
 # ── async send ───────────────────────────────────────────────────────────────────
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
@@ -165,8 +172,7 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
         if not selected:
             if caution:
                 # Nothing else fired — send the regime caution on its own.
-                await nf.send_message(fmt.format_regime_caution(
-                    [tr.ticker for tr, _ in caution], regime_label=regime_label))
+                await nf.send_message(_caution_message(caution, regime_label))
             else:
                 await nf.send_message(fmt.format_stand_down(
                     rday, n_scanned=n_scanned, regime_label=regime_label,
@@ -190,8 +196,7 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
 
         if caution:
             # One consolidated caution after the real cards, not N EXIT directives.
-            await nf.send_message(fmt.format_regime_caution(
-                [tr.ticker for tr, _ in caution], regime_label=regime_label))
+            await nf.send_message(_caution_message(caution, regime_label))
 
 
 # Telegram caps a photo CAPTION at 1024 chars (a plain message allows 4096).

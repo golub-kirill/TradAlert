@@ -50,6 +50,16 @@ def test_split_regime_exits_advisory_pulls_only_regime_exits():
     assert [tr.ticker for tr, _ in pulled] == ["ARX.TO", "EFA"]
 
 
+def test_caution_message_splits_longs_and_shorts():
+    caution = [
+        (_exit_tr("EFA", "regime", "exit_long"), "exit_long"),
+        (_exit_tr("TSLA", "regime", "exit_short"), "exit_short"),
+    ]
+    msg = push._caution_message(caution, "CHOP_LOW")
+    assert "held long" in msg and "EFA" in msg
+    assert "held short" in msg and "TSLA" in msg
+
+
 def test_split_regime_exits_exit_mode_keeps_all():
     selected = [(_exit_tr("ARX.TO", "regime"), "exit_long")]
     kept, pulled = push._split_regime_exits(selected, "exit")
