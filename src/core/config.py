@@ -196,6 +196,13 @@ class ExitsCfg:
     regime_flip_short: bool
     short_cover_pop: bool
     short_cover_oversold: bool
+    # Held-long regime-flip exit shaping (A/B levers; defaults reproduce the
+    # original "exit on any non-BULL bar" behavior byte-for-byte):
+    #   regime_flip_bear_only  — True: exit only on BEAR (CHOP no longer exits).
+    #   regime_flip_confirm_bars — N>1: require the flip to persist N consecutive
+    #                              bars before exiting (1 = fire immediately).
+    regime_flip_bear_only: bool = False
+    regime_flip_confirm_bars: int = 1
 
 
 @dataclass(frozen=True)
@@ -355,7 +362,9 @@ def parse(cfg: dict) -> EngineConfig:
                 mean_rev=_bool(cfg, "signals.exits.mean_rev", True),
                 regime_flip_short=_bool(cfg, "signals.exits.regime_flip_short", True),
                 short_cover_pop=_bool(cfg, "signals.exits.short_cover_pop", True),
-                short_cover_oversold=_bool(cfg, "signals.exits.short_cover_oversold", True)),
+                short_cover_oversold=_bool(cfg, "signals.exits.short_cover_oversold", True),
+                regime_flip_bear_only=_bool(cfg, "signals.exits.regime_flip_bear_only", False),
+                regime_flip_confirm_bars=_int(cfg, "signals.exits.regime_flip_confirm_bars", 1)),
             hard_to_borrow_list=_node(cfg, "signals.hard_to_borrow_list", []) or [],
             require_trigger_bar_up=_bool(cfg, "signals.require_trigger_bar_up", False),
             allow_shorts=_bool(cfg, "signals.allow_shorts", False),

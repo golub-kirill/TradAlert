@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 __all__ = ["AdvisorContext", "build_advisor_context", "advise_signal", "format_note"]
 
 _VERDICT_EMOJI = {"agree": "✅", "disagree": "❌", "flag": "⚠️"}
-_MAX_NOTE = 500
+_MAX_NOTE = 500  # hard ceiling on the rendered note (safety net)
+_MAX_REASONING = 320  # per-field budgets, clipped at a word boundary
+_MAX_RISK = 150
 
 
 @dataclass
@@ -43,8 +45,23 @@ class AdvisorContext:
     market_context: str = ""
     finnhub_key: str | None = None
     brave_key: str | None = None
+    # ticker -> full company name (warmed by scripts/fetch/fetch_company_names.py).
+    company_names: dict = field(default_factory=dict)
     # One keep-alive session for news HTTP across the whole scan.
     session: requests.Session = field(default_factory=requests.Session, repr=False)
+
+
+def _load_company_names() -> dict:
+    """ticker -> full company name (data/company_names.json). Fail-open → {}."""
+    import json
+
+    from core.paths import DATA_DIR
+    try:
+        with open(DATA_DIR / "company_names.json", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # missing/corrupt file is non-fatal — advisor still runs
+        return {}
 
 
 def build_advisor_context(settings: dict | None) -> AdvisorContext:
@@ -65,6 +82,7 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         max_headlines=int(news_cfg.get("max_headlines_per_ticker", 5)),
         finnhub_key=os.environ.get("FINNHUB_API_KEY") or None,
         brave_key=os.environ.get("BRAVE_API_KEY") or None,
+        company_names=_load_company_names(),
     )
     if news_cfg.get("macro_summarization", True):
         try:
@@ -98,12 +116,30 @@ def _resolve_headlines(ticker: str, ctx: AdvisorContext) -> list[dict]:
     return heads
 
 
+def _clip(text: str, limit: int) -> str:
+    """Trim to ``limit`` chars at a word boundary, appending an ellipsis.
+
+    A plain slice cut display text mid-word ("…non-US assets d"); this trims back
+    to the last space and drops trailing punctuation before the ellipsis.
+    """
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:—-")
+    return (head or text[:limit].rstrip()) + "…"
+
+
 def format_note(verdict: AdvisorVerdict) -> str:
-    """Render a verdict into the display string stored on the signal."""
+    """Render a verdict into the display string stored on the signal.
+
+    Reasoning and risks are each clipped to a per-field budget at a word boundary
+    so the card never shows a mid-word cut; ``_MAX_NOTE`` is a final safety net.
+    """
     emoji = _VERDICT_EMOJI.get(verdict.verdict, "🤖")
-    note = f"{emoji} {verdict.verdict.capitalize()} · {verdict.confidence:.0%} — {verdict.reasoning}"
+    reasoning = _clip(verdict.reasoning, _MAX_REASONING)
+    note = f"{emoji} {verdict.verdict.capitalize()} · {verdict.confidence:.0%} — {reasoning}"
     if verdict.risks:
-        note += f"  ⚠ {verdict.risks}"
+        note += f"  ⚠ {_clip(verdict.risks, _MAX_RISK)}"
     return note[:_MAX_NOTE]
 
 
@@ -122,8 +158,10 @@ def advise_signal(
         return ""
     try:
         headlines = _resolve_headlines(ticker, ctx)
+        company_name = ctx.company_names.get(ticker) or ctx.company_names.get(ticker.upper()) or ""
         input_data = AdvisorInput(
             ticker=ticker,
+            company_name=company_name,
             direction=signal.direction,
             signal_type=signal.signal_type,
             stop_price=float(signal.stop_price),

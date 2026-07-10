@@ -292,10 +292,21 @@ telegram:
   enabled: true          # default false → scan is byte-identical
   alert_types: [long_entry, exit_long, short_entry, exit_short]
   mute: []               # ticker blocklist
+  regime_flip_exit_mode: advisory   # advisory | exit | off
 ```
 
 The push is **fail-open** — a missing token or Telegram outage degrades to a log
 line and never affects the scan. Requires `python-telegram-bot`.
+
+**Regime-flip exits are consolidated, not a flatten-all.** A broad regime flip
+fires an `exit_long` on *every* held long at once, which as individual cards reads
+like a directive to close the whole book on the first CHOP bar. `regime_flip_exit_mode`
+(default `advisory`) collapses those into **one `⚠️ REGIME CAUTION` message** that lists
+the affected positions and states plainly that nothing is auto-closed — the trader trims
+or holds at their discretion. Position-specific exits (momentum-fade, mean-reversion) are
+untouched and still fire their own EXIT cards. Set `exit` for the legacy per-position
+cards, or `off` to suppress. This is a live-push-only knob (the engine/backtester never
+see it, so the backtest stays byte-identical).
 
 ### Telegram daemon (interactive)
 
@@ -412,7 +423,8 @@ Loaded by `python-dotenv` at startup.
 | `signals.mean_reversion.short`                                                   | Held-long *overbought exit* (legacy; canonical at `signals.exits.mean_rev`).   |
 | `signals.gap_risk.{enabled,max_prev_bar_range_atr}`                              | Block entries after wide-range prev bar.                                                  |
 | `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
-| `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Boolean toggles (also accept dict for `signals.exits.*` parameter blocks).                |
+| `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Held-long exit toggles (also accept dict for `signals.exits.*` parameter blocks).         |
+| `signals.exits.{regime_flip_bear_only,regime_flip_confirm_bars}`                 | Regime-flip exit shaping (A/B levers). `regime_flip_bear_only` (default `false`) exits only on BEAR (CHOP no longer flattens); `regime_flip_confirm_bars` (default `1`) requires the flip to persist N bars first. Defaults reproduce the exit-on-any-non-BULL-bar behavior byte-for-byte. **A/B + walk-forward (`scripts/studies/regime_exit_{ab,wf}.py`, snapshot 2026-06-10):** full-period `bear_only` looks strong (+31.97R, +0.093 Sharpe, −7.89R maxDD) but the walk-forward **refutes it as a default** — it wins totalR in only 10/26 yearly windows, the aggregate rides ~5 years (2004/12/13/14/17), and it nets negative over the last 5. Kept as a documented, tested lever (ships `false`); `confirm_bars` is marginal-to-negative. The live "flatten-on-chop" UX concern is handled separately by `telegram.regime_flip_exit_mode`. |
 | `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + R:R sanity.                                                               |
 | `signals.stop_loss.min_rr_short`                                                 | Optional: R:R gate for shorts only; absent → falls back to `min_rr`.                      |
 | `signals.hard_to_borrow_list`                                                    | Optional: symbols that cannot be shorted (longs unaffected). Default `[]`.                |

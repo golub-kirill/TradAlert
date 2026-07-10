@@ -38,6 +38,41 @@ def _exit(direction="exit_long", ticker="JNJ", close=239.10):
     return TickerResult(ticker, ScanResult(passed=True, close=close), s)
 
 
+def test_regime_caution_lists_positions_and_disclaims_autoclose():
+    out = fmt.format_regime_caution(["arx.to", "EFA"], regime_label="CHOP_LOW")
+    plain = _plain(out)
+    assert "REGIME CAUTION" in plain
+    assert "ARX.TO" in plain and "EFA" in plain  # upper-cased
+    assert "2 held longs" in plain
+    assert "CHOP_LOW" in plain
+    assert "Not auto-closed" in plain
+
+
+def test_regime_caution_singular_and_empty():
+    assert "1 held long " in _plain(fmt.format_regime_caution(["SPY"]))
+    assert fmt.format_regime_caution([]) == ""  # caller skips the send
+    assert fmt.format_regime_caution([], []) == ""
+
+
+def test_regime_caution_shorts_use_non_bear_wording():
+    # A held-short regime cover fires when the regime turns non-BEAR — it must not
+    # be labeled a "held long" under "non-BULL".
+    out = fmt.format_regime_caution([], ["hut.to"], regime_label="BULL_LOW")
+    plain = _plain(out)
+    assert "HUT.TO" in plain
+    assert "1 held short" in plain and "non-BEAR" in plain
+    assert "held long" not in plain and "non-BULL" not in plain
+
+
+def test_regime_caution_mixed_longs_and_shorts():
+    # CHOP flips longs (non-BULL) and covers shorts (non-BEAR) at once.
+    out = fmt.format_regime_caution(["EFA"], ["TSLA"], regime_label="CHOP_LOW")
+    plain = _plain(out)
+    assert "1 held long" in plain and "non-BULL" in plain
+    assert "1 held short" in plain and "non-BEAR" in plain
+    assert "EFA" in plain and "TSLA" in plain
+
+
 # ── entry ────────────────────────────────────────────────────────────────────────
 
 def test_entry_card_structure_and_content():

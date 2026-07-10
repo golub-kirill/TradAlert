@@ -58,19 +58,26 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
         return
 
     selected = _select(results, cfg)
-    if not selected and not cfg.send_stand_down:
+    # A broad regime-flip exit fires on every held long at once; unless mode="exit",
+    # pull those out so they collapse into a single caution instead of a wall of
+    # EXIT cards (position-specific exits stay in `selected` and fire normally).
+    selected, regime_exits = _split_regime_exits(selected, cfg.regime_flip_exit_mode)
+    caution = regime_exits if cfg.regime_flip_exit_mode == "advisory" else []
+    if not selected and not caution and not cfg.send_stand_down:
         return
 
     risk_on = _safe_float(getattr(macro_state, "risk_on_score", None))
     n_open = _n_open()
-    regime_label = (selected[0][0].signal.market_regime if selected else _any_regime(results)) or None
+    _first = selected or caution
+    regime_label = (_first[0][0].signal.market_regime if _first else _any_regime(results)) or None
     rday = run_date or date.today()
 
     rejections = (stand_down or {}).get("rejection_gates") or None
 
     try:
         asyncio.run(_send_all(token, chat_id, cfg, selected, len(results),
-                              risk_on, n_open, regime_label, rday, rejections, run_id))
+                              risk_on, n_open, regime_label, rday, rejections, run_id,
+                              caution))
     except Exception as exc:  # broad on purpose — alerting must never break the scan
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
@@ -127,17 +134,49 @@ def _select(results, cfg: TelegramConfig):
     return out
 
 
+def _split_regime_exits(selected, mode: str):
+    """Partition regime-flip exits out of ``selected`` per ``mode``.
+
+    Returns ``(kept, pulled)``. A regime-flip exit is an exit whose
+    ``signal_type == "regime"`` (the blanket "regime flipped — exit held long/short"
+    signal). In "exit" mode nothing is pulled (legacy per-position EXIT cards).
+    """
+    if mode == "exit":
+        return selected, []
+    kept, pulled = [], []
+    for tr, kind in selected:
+        s = getattr(tr, "signal", None)
+        if kind in ("exit_long", "exit_short") and getattr(s, "signal_type", "") == "regime":
+            pulled.append((tr, kind))
+        else:
+            kept.append((tr, kind))
+    return kept, pulled
+
+
+def _caution_message(caution, regime_label):
+    """Render the consolidated caution, split by direction (longs vs short covers)."""
+    longs = [tr.ticker for tr, k in caution if k == "exit_long"]
+    shorts = [tr.ticker for tr, k in caution if k == "exit_short"]
+    return fmt.format_regime_caution(longs, shorts, regime_label=regime_label)
+
+
 # ── async send ───────────────────────────────────────────────────────────────────
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
-                    rejections=None, run_id=None):
+                    rejections=None, run_id=None, caution=None):
     from core.telegram.bot import TelegramNotifier
+
+    caution = caution or []
 
     async with TelegramNotifier(token, chat_id, parse_mode=cfg.parse_mode) as nf:
         if not selected:
-            await nf.send_message(fmt.format_stand_down(
-                rday, n_scanned=n_scanned, regime_label=regime_label,
-                risk_on=risk_on, n_open=n_open, rejections=rejections))
+            if caution:
+                # Nothing else fired — send the regime caution on its own.
+                await nf.send_message(_caution_message(caution, regime_label))
+            else:
+                await nf.send_message(fmt.format_stand_down(
+                    rday, n_scanned=n_scanned, regime_label=regime_label,
+                    risk_on=risk_on, n_open=n_open, rejections=rejections))
             return
 
         n_long = sum(1 for _, k in selected if k == "long_entry")
@@ -154,6 +193,10 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
                 await nf.send_photo(chart, caption=text, reply_markup=markup)
             else:
                 await nf.send_message(text, reply_markup=markup)
+
+        if caution:
+            # One consolidated caution after the real cards, not N EXIT directives.
+            await nf.send_message(_caution_message(caution, regime_label))
 
 
 # Telegram caps a photo CAPTION at 1024 chars (a plain message allows 4096).

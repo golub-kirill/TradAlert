@@ -56,10 +56,13 @@ def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
     Returns a single user-message string; the caller supplies the system role
     and the JSON `format` schema separately.
     """
+    ticker_line = f"Ticker: {ticker}"
+    if input_data.company_name:
+        ticker_line += f"  (company: {input_data.company_name})"
     return (
         f"{_SYSTEM}\n\n"
         "## SIGNAL CONTEXT\n"
-        f"Ticker: {ticker}\n"
+        f"{ticker_line}\n"
         f"Direction: {input_data.direction}\n"
         f"Signal Type: {input_data.signal_type}\n"
         f"Risk/Reward: {_fmt_num(input_data.min_rr)}:1\n"
@@ -77,9 +80,15 @@ def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
         "## TICKER NEWS\n"
         f"{_fmt_headlines(input_data.headlines)}\n\n"
         "## INSTRUCTION\n"
+        "Headlines naming the company above, its subsidiaries, or a named "
+        "partner ARE about this ticker — never report an identity/asset "
+        "mismatch just because a headline uses the company name instead of the "
+        "symbol. If the news looks generic or unrelated, treat it as no news "
+        "rather than as a mismatch.\n"
         "Return a JSON object: verdict (agree|disagree|flag), confidence "
-        "(0-1), reasoning (1-2 sentences on the technical + news picture), and "
-        "risks (the single biggest risk to this entry, or empty if none). "
+        "(0-1), reasoning (at most two short sentences on the technical + news "
+        "picture), and risks (the single biggest risk to this entry in one "
+        "short clause, or empty if none). "
         "'flag' means the entry is defensible but carries a risk the trader "
         "should see before committing."
     )
