@@ -187,6 +187,10 @@ advisor:
   timeout: 200                        # seconds per LLM call [20]
   temperature: 0.1                   # lower = more deterministic [0.1]
   max_tokens: 300                    # response cap; think mode is disabled [300]
+  debate:                             # multi-agent bull/bear/judge critic
+    enabled: false                    # off -> single-shot verdict [false]
+    risk_trichotomy: true             # judge weighs risk-seeking/neutral/conservative
+    total_timeout: 180                # wall-clock budget for the whole debate [s]
 
 
 # ── NEWS LAYER ────────────────────────────────────────────────────────────────

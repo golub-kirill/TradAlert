@@ -158,6 +158,53 @@ def test_advise_swallows_exceptions(monkeypatch):
     assert service.advise_signal("AAPL", _Signal(), ctx) == ""
 
 
+# ── build_advisor_input ──────────────────────────────────────────────────────
+
+class _Scan:
+    close = 100.0
+    atr = 2.0
+    atr_pct = 2.0
+    dv20 = 5_000_000.0
+    market_cap = 50e9
+    rsi = 61.0
+
+
+def test_build_input_posture_from_scan(monkeypatch):
+    monkeypatch.setattr(service, "_resolve_headlines", lambda *a, **k: [])
+    ctx = service.AdvisorContext(enabled=True)
+    inp = service.build_advisor_input(
+        "AAPL", _Signal(), ctx, scan=_Scan(), pct_from_ma=7.5, rp_rank=88.0)
+    assert inp.rsi == 61.0 and inp.atr_pct == 2.0
+    assert inp.dv20 == 5_000_000.0 and inp.market_cap == 50e9
+    assert inp.cap_tier == "large"
+    assert inp.pct_from_ma == 7.5 and inp.rp_rank == 88.0
+    assert inp.atr_to_stop == 2.5  # |100 - 95| / 2
+
+
+def test_build_input_no_scan_posture_none(monkeypatch):
+    monkeypatch.setattr(service, "_resolve_headlines", lambda *a, **k: [])
+    ctx = service.AdvisorContext(enabled=True)
+    inp = service.build_advisor_input("AAPL", _Signal(), ctx)
+    assert inp.rsi is None and inp.atr_pct is None and inp.dv20 is None
+    assert inp.market_cap is None and inp.cap_tier == ""
+    assert inp.atr_to_stop is None and inp.pct_from_ma is None and inp.rp_rank is None
+    assert inp.min_rr == 2.5 and inp.stop_price == 95.0  # geometry intact
+
+
+def test_cap_tier_buckets():
+    assert service._cap_tier(None) == ""
+    assert service._cap_tier(50e9) == "large"
+    assert service._cap_tier(5e9) == "mid"
+    assert service._cap_tier(1e9) == "small"
+    assert service._cap_tier(1e8) == "micro"
+
+
+def test_sfloat_safe():
+    assert service._sfloat(None) is None
+    assert service._sfloat("x") is None
+    assert service._sfloat("3.5") == 3.5 and service._sfloat(4) == 4.0
+
+
 # ── headline resolution chain ────────────────────────────────────────────────
 
 def test_resolve_headlines_prefers_cache(monkeypatch):

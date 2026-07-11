@@ -23,7 +23,7 @@ from core.advisor.schemas import AdvisorInput, AdvisorVerdict
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ask_llm", "ollama_chat", "DEFAULT_ENDPOINT", "DEFAULT_MODEL"]
+__all__ = ["ask_llm", "ask_json", "ollama_chat", "DEFAULT_ENDPOINT", "DEFAULT_MODEL"]
 
 DEFAULT_ENDPOINT = "http://localhost:11434"
 # qwen3.5:9b won the 3-scenario judgment probe (2026-07-02) over qwen3:8b/14b:
@@ -93,6 +93,36 @@ def ollama_chat(
         logger.warning("advisor returned empty content — skipped")
         return None
     return str(content)
+
+
+def ask_json(
+        prompt: str,
+        schema: dict,
+        *,
+        endpoint: str = DEFAULT_ENDPOINT,
+        model: str = DEFAULT_MODEL,
+        timeout: int = 20,
+        temperature: float = 0.1,
+        max_tokens: int = 300,
+        session: requests.Session | None = None,
+) -> dict | None:
+    """One grammar-constrained role call → parsed JSON dict, or None (fail-open).
+
+    The generic building block for the debate roles (bull/bear/judge): send a
+    prompt + JSON schema, get back the decoded object. Any transport/decode
+    failure returns None so the debate can degrade rather than raise."""
+    raw = ollama_chat(
+        prompt, endpoint=endpoint, model=model, timeout=timeout,
+        temperature=temperature, max_tokens=max_tokens, fmt=schema, session=session,
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("advisor role JSON parse failed — skipped: %s", str(raw)[:160])
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _parse(raw: str) -> AdvisorVerdict | None:

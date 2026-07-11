@@ -87,6 +87,48 @@ def test_prompt_includes_market_context():
     assert "Rates steady, tech leads." in p
 
 
+def test_prompt_includes_posture_block():
+    p = build_prompt("AAPL", _input(rsi=68.0, pct_from_ma=9.4, atr_to_stop=2.3,
+                                    atr_pct=2.1, dv20=8_000_000.0, cap_tier="large",
+                                    rp_rank=91.0))
+    assert "## TECHNICAL POSTURE" in p
+    assert "RSI 68" in p and "+9.4% vs MA" in p and "2.3 ATR to stop" in p
+    assert "large-cap" in p and "location 91/100" in p
+
+
+def test_prompt_posture_none_safe():
+    p = build_prompt("AAPL", _input())  # no posture fields populated
+    assert "## TECHNICAL POSTURE\n—" in p
+
+
+def test_prompt_includes_base_rate_edge():
+    p = build_prompt("AAPL", _input(base_rate={"n": 120, "win_rate": 0.57, "avg_r": 0.38}))
+    assert "## HISTORICAL EDGE" in p
+    assert "57% win" in p and "+0.38R" in p and "n=120" in p
+
+
+def test_prompt_edge_none_safe():
+    p = build_prompt("AAPL", _input())  # empty base_rate
+    assert "resolved trades)\n—" in p
+
+
+def test_prompt_includes_calibration_when_present():
+    p = build_prompt("AAPL", _input(reflection="cal line here"))
+    assert "## RECENT CALIBRATION\ncal line here" in p
+
+
+def test_prompt_omits_calibration_when_absent():
+    p = build_prompt("AAPL", _input())  # no reflection
+    assert "## RECENT CALIBRATION" not in p
+
+
+def test_judge_prompt_includes_calibration_and_cases():
+    from core.advisor.prompts import build_judge_prompt
+    p = build_judge_prompt("AAPL", _input(reflection="cal"), None, None)
+    assert "## RECENT CALIBRATION\ncal" in p
+    assert "## BULL CASE" in p and "## BEAR CASE" in p
+
+
 def test_macro_summary_prompt_lists_headlines():
     p = build_macro_summary_prompt([{"headline": "CPI cools"}, {"headline": "Oil slips"}])
     assert "CPI cools" in p and "Oil slips" in p

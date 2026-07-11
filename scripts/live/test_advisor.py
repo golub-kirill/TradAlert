@@ -122,44 +122,41 @@ class _Review:
     elapsed: float = 0.0
     error: str = ""                 # short reason
     traceback: str = ""             # full trace (verbose only)
+    bull: object = None             # BullCase | None (debate mode)
+    bear: object = None             # BearCase | None (debate mode)
+    fell_back: bool = False         # debate judge failed -> single-shot verdict
 
 
 def _review_trade(trade: dict, signal, ctx) -> _Review:
     """Mirror of ``advise_signal`` that returns the intermediates instead of
-    swallowing them. Surfaces errors rather than collapsing to an empty note."""
-    from core.advisor import AdvisorInput
+    swallowing them. Surfaces errors rather than collapsing to an empty note.
+
+    Shares ``build_advisor_input`` with the live path so new fields stay in sync.
+    Posture fields are None here — backtest_trades carries no last-bar snapshot."""
     from core.advisor.client import ask_llm
     from core.advisor.prompts import build_prompt
-    from core.advisor.service import _resolve_headlines, format_note
+    from core.advisor.service import build_advisor_input, format_note
 
     rv = _Review()
     ticker = trade["ticker"]
     try:
-        rv.company_name = (ctx.company_names.get(ticker)
-                           or ctx.company_names.get(ticker.upper()) or "")
-        rv.headlines = _resolve_headlines(ticker, ctx)
-        input_data = AdvisorInput(
-            ticker=ticker,
-            company_name=rv.company_name,
-            direction=signal.direction,
-            signal_type=signal.signal_type,
-            stop_price=float(signal.stop_price),
-            target_price=float(signal.target_price),
-            min_rr=float(signal.min_rr),
-            market_regime=signal.market_regime,
-            ticker_trend=signal.ticker_trend,
-            reason=signal.reason,
-            market_context=ctx.market_context,
-            headlines=rv.headlines,
-        )
+        input_data = build_advisor_input(ticker, signal, ctx)
+        rv.company_name = input_data.company_name
+        rv.headlines = input_data.headlines
         rv.prompt = build_prompt(ticker, input_data)
         t0 = time.time()
-        rv.verdict = ask_llm(
-            input_data,
-            endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
-            temperature=ctx.temperature, max_tokens=ctx.max_tokens,
-            session=ctx.session,
-        )
+        if getattr(ctx, "debate_enabled", False):
+            from core.advisor.debate import run_debate
+            dr = run_debate(input_data, ctx)
+            rv.verdict, rv.bull, rv.bear, rv.fell_back = (
+                dr.verdict, dr.bull, dr.bear, dr.fell_back)
+        else:
+            rv.verdict = ask_llm(
+                input_data,
+                endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
+                temperature=ctx.temperature, max_tokens=ctx.max_tokens,
+                session=ctx.session,
+            )
         rv.elapsed = time.time() - t0
         rv.note = format_note(rv.verdict) if rv.verdict else ""
     except Exception as exc:  # surfaced, not swallowed — this is a diagnostic tool
@@ -235,6 +232,24 @@ def _print_trade(trade: dict, signal, rv: _Review, *, verbose: bool) -> None:
             print(f"    • {_headline_line(h)}")
     else:
         print("  Headlines  (none — advisor sees 'no ticker news')")
+    if rv.bull is not None or rv.bear is not None:
+        print("  Debate ▽")
+        if rv.bull is not None:
+            print(f"    🐂 Bull   {rv.bull.thesis or '(none)'}")
+            for p in rv.bull.points:
+                print(f"       · {p}")
+        else:
+            print("    🐂 Bull   (no case returned)")
+        if rv.bear is not None:
+            print(f"    🐻 Bear   {rv.bear.thesis or '(none)'}")
+            for p in rv.bear.points:
+                print(f"       · {p}")
+            if rv.bear.rebuttal:
+                print(f"       ↩ {rv.bear.rebuttal}")
+        else:
+            print("    🐻 Bear   (no case returned)")
+        if rv.fell_back:
+            print("    ⚖ Judge  (failed — fell back to single-shot verdict)")
     if rv.verdict is not None:
         print(f"  LLM        {rv.elapsed:.1f}s   confidence {rv.verdict.confidence:.0%}")
         print(f"  Reasoning  {rv.verdict.reasoning or '(empty)'}")
@@ -269,6 +284,9 @@ def main() -> None:
                     help="override advisor.model for this run (e.g. qwen3:8b)")
     ap.add_argument("--no-macro", action="store_true",
                     help="skip the macro-context summarization (faster)")
+    ap.add_argument("--debate", action="store_true",
+                    help="run the multi-agent bull/bear/judge critic instead of "
+                         "the single-shot verdict (slower; -v shows the transcript)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="show company name, news headlines, the full prompt, and "
                          "the raw verdict fields (plus INFO/WARNING advisor logs)")
@@ -296,6 +314,8 @@ def main() -> None:
         settings["advisor"]["model"] = args.model
     if args.no_macro:
         settings.setdefault("news", {})["macro_summarization"] = False
+    if args.debate:
+        settings.setdefault("advisor", {}).setdefault("debate", {})["enabled"] = True
 
     trades = _fetch_trades(args.seed, max(1, args.count))
     if not trades:
@@ -350,5 +370,33 @@ def main() -> None:
     print()
 
 
+def _owns_console() -> bool:
+    """True when this process is the sole owner of its console — i.e. it was
+    double-clicked from Explorer and the window vanishes the instant it exits.
+    False when launched from an existing cmd/PowerShell/pytest (>1 attached)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        buf = (ctypes.c_uint * 2)()
+        return ctypes.windll.kernel32.GetConsoleProcessList(buf, 2) <= 1
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
-    main()
+    _own = _owns_console()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        print("\n  Crashed. If this is a ModuleNotFoundError, run it from the "
+              "project venv:\n    .venv\\Scripts\\python.exe "
+              "scripts\\live\\test_advisor.py -v")
+    finally:
+        # A double-clicked window would close before any of the above is read.
+        if _own:
+            try:
+                input("\n  — done. Press Enter to close —")
+            except (EOFError, KeyboardInterrupt):
+                pass
