@@ -19,7 +19,7 @@ VerdictLabel = Literal["agree", "disagree", "flag"]
 
 _VALID_VERDICTS: frozenset[str] = frozenset(("agree", "disagree", "flag"))
 
-__all__ = ["AdvisorInput", "AdvisorVerdict", "VerdictLabel"]
+__all__ = ["AdvisorInput", "AdvisorVerdict", "VerdictLabel", "BullCase", "BearCase"]
 
 
 @dataclass
@@ -96,3 +96,29 @@ class AdvisorVerdict:
             "reasoning": self.reasoning,
             "risks": self.risks,
         }
+
+
+@dataclass
+class BullCase:
+    """The bull analyst's case FOR taking the entry (one debate turn)."""
+
+    thesis: str = ""
+    points: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.thesis = str(self.thesis or "").strip()
+        self.points = [str(p).strip() for p in (self.points or []) if str(p).strip()]
+
+
+@dataclass
+class BearCase:
+    """The bear analyst's case AGAINST the entry — the critic (one debate turn)."""
+
+    thesis: str = ""
+    points: list[str] = field(default_factory=list)
+    rebuttal: str = ""
+
+    def __post_init__(self) -> None:
+        self.thesis = str(self.thesis or "").strip()
+        self.points = [str(p).strip() for p in (self.points or []) if str(p).strip()]
+        self.rebuttal = str(self.rebuttal or "").strip()

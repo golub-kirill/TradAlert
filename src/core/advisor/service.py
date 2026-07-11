@@ -43,6 +43,10 @@ class AdvisorContext:
     timeout: int = 20
     temperature: float = 0.1
     max_tokens: int = 300
+    # Multi-agent bull/bear/judge critic (off by default; single-shot otherwise).
+    debate_enabled: bool = False
+    debate_risk_trichotomy: bool = True
+    debate_total_timeout: float = 0.0  # 0 = no wall-clock cap
     cache_ttl_hours: float = 4.0
     max_headlines: int = 5
     market_context: str = ""
@@ -76,6 +80,7 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         return AdvisorContext(enabled=False)
 
     news_cfg = (settings or {}).get("news") or {}
+    deb = adv.get("debate") or {}
     ctx = AdvisorContext(
         enabled=True,
         endpoint=str(adv.get("endpoint", DEFAULT_ENDPOINT)),
@@ -83,6 +88,9 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         timeout=int(adv.get("timeout", 20)),
         temperature=float(adv.get("temperature", 0.1)),
         max_tokens=int(adv.get("max_tokens", 300)),
+        debate_enabled=bool(deb.get("enabled", False)),
+        debate_risk_trichotomy=bool(deb.get("risk_trichotomy", True)),
+        debate_total_timeout=float(deb.get("total_timeout", 0) or 0),
         cache_ttl_hours=float(news_cfg.get("cache_ttl_hours", 4.0)),
         max_headlines=int(news_cfg.get("max_headlines_per_ticker", 5)),
         finnhub_key=os.environ.get("FINNHUB_API_KEY") or None,
@@ -260,15 +268,19 @@ def advise_signal(
             vix_level=vix_level, macro_score=macro_score,
             behavioral_score=behavioral_score, open_positions=open_positions,
         )
-        verdict = ask_llm(
-            input_data,
-            endpoint=ctx.endpoint,
-            model=ctx.model,
-            timeout=ctx.timeout,
-            temperature=ctx.temperature,
-            max_tokens=ctx.max_tokens,
-            session=ctx.session,
-        )
+        if ctx.debate_enabled:
+            from core.advisor.debate import run_debate
+            verdict = run_debate(input_data, ctx).verdict
+        else:
+            verdict = ask_llm(
+                input_data,
+                endpoint=ctx.endpoint,
+                model=ctx.model,
+                timeout=ctx.timeout,
+                temperature=ctx.temperature,
+                max_tokens=ctx.max_tokens,
+                session=ctx.session,
+            )
         return format_note(verdict) if verdict else ""
     except Exception as exc:  # fail-open — advisor never breaks a scan
         logger.warning("advisor skipped for %s — %s", ticker, exc)

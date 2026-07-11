@@ -122,6 +122,9 @@ class _Review:
     elapsed: float = 0.0
     error: str = ""                 # short reason
     traceback: str = ""             # full trace (verbose only)
+    bull: object = None             # BullCase | None (debate mode)
+    bear: object = None             # BearCase | None (debate mode)
+    fell_back: bool = False         # debate judge failed -> single-shot verdict
 
 
 def _review_trade(trade: dict, signal, ctx) -> _Review:
@@ -142,12 +145,18 @@ def _review_trade(trade: dict, signal, ctx) -> _Review:
         rv.headlines = input_data.headlines
         rv.prompt = build_prompt(ticker, input_data)
         t0 = time.time()
-        rv.verdict = ask_llm(
-            input_data,
-            endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
-            temperature=ctx.temperature, max_tokens=ctx.max_tokens,
-            session=ctx.session,
-        )
+        if getattr(ctx, "debate_enabled", False):
+            from core.advisor.debate import run_debate
+            dr = run_debate(input_data, ctx)
+            rv.verdict, rv.bull, rv.bear, rv.fell_back = (
+                dr.verdict, dr.bull, dr.bear, dr.fell_back)
+        else:
+            rv.verdict = ask_llm(
+                input_data,
+                endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
+                temperature=ctx.temperature, max_tokens=ctx.max_tokens,
+                session=ctx.session,
+            )
         rv.elapsed = time.time() - t0
         rv.note = format_note(rv.verdict) if rv.verdict else ""
     except Exception as exc:  # surfaced, not swallowed — this is a diagnostic tool
@@ -223,6 +232,24 @@ def _print_trade(trade: dict, signal, rv: _Review, *, verbose: bool) -> None:
             print(f"    • {_headline_line(h)}")
     else:
         print("  Headlines  (none — advisor sees 'no ticker news')")
+    if rv.bull is not None or rv.bear is not None:
+        print("  Debate ▽")
+        if rv.bull is not None:
+            print(f"    🐂 Bull   {rv.bull.thesis or '(none)'}")
+            for p in rv.bull.points:
+                print(f"       · {p}")
+        else:
+            print("    🐂 Bull   (no case returned)")
+        if rv.bear is not None:
+            print(f"    🐻 Bear   {rv.bear.thesis or '(none)'}")
+            for p in rv.bear.points:
+                print(f"       · {p}")
+            if rv.bear.rebuttal:
+                print(f"       ↩ {rv.bear.rebuttal}")
+        else:
+            print("    🐻 Bear   (no case returned)")
+        if rv.fell_back:
+            print("    ⚖ Judge  (failed — fell back to single-shot verdict)")
     if rv.verdict is not None:
         print(f"  LLM        {rv.elapsed:.1f}s   confidence {rv.verdict.confidence:.0%}")
         print(f"  Reasoning  {rv.verdict.reasoning or '(empty)'}")
@@ -257,6 +284,9 @@ def main() -> None:
                     help="override advisor.model for this run (e.g. qwen3:8b)")
     ap.add_argument("--no-macro", action="store_true",
                     help="skip the macro-context summarization (faster)")
+    ap.add_argument("--debate", action="store_true",
+                    help="run the multi-agent bull/bear/judge critic instead of "
+                         "the single-shot verdict (slower; -v shows the transcript)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="show company name, news headlines, the full prompt, and "
                          "the raw verdict fields (plus INFO/WARNING advisor logs)")
@@ -284,6 +314,8 @@ def main() -> None:
         settings["advisor"]["model"] = args.model
     if args.no_macro:
         settings.setdefault("news", {})["macro_summarization"] = False
+    if args.debate:
+        settings.setdefault("advisor", {}).setdefault("debate", {})["enabled"] = True
 
     trades = _fetch_trades(args.seed, max(1, args.count))
     if not trades:
