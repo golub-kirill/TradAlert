@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 import requests
 
+from core.advisor.base_rates import load_base_rates
+from core.advisor.base_rates import lookup as _lookup_base_rate
 from core.advisor.client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ask_llm
 from core.advisor.macro_context import build_market_context
 from core.advisor.news_cache import load_fresh_news, save_news
@@ -48,6 +50,8 @@ class AdvisorContext:
     brave_key: str | None = None
     # ticker -> full company name (warmed by scripts/fetch/fetch_company_names.py).
     company_names: dict = field(default_factory=dict)
+    # setup base-rate table (scripts/studies/build_advisor_base_rates.py); {} = off.
+    base_rates: dict = field(default_factory=dict)
     # One keep-alive session for news HTTP across the whole scan.
     session: requests.Session = field(default_factory=requests.Session, repr=False)
 
@@ -84,6 +88,7 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         finnhub_key=os.environ.get("FINNHUB_API_KEY") or None,
         brave_key=os.environ.get("BRAVE_API_KEY") or None,
         company_names=_load_company_names(),
+        base_rates=load_base_rates(),
     )
     if news_cfg.get("macro_summarization", True):
         try:
@@ -198,6 +203,8 @@ def build_advisor_input(
     atr_to_stop = (abs(close - stop) / atr
                    if close is not None and atr and stop is not None else None)
     market_cap = _sfloat(getattr(scan, "market_cap", None))
+    base_rate = _lookup_base_rate(
+        ctx.base_rates, signal.signal_type, signal.market_regime, signal.ticker_trend)
 
     return AdvisorInput(
         ticker=ticker,
@@ -226,6 +233,7 @@ def build_advisor_input(
         market_cap=market_cap,
         cap_tier=_cap_tier(market_cap),
         rp_rank=_sfloat(rp_rank),
+        base_rate=base_rate,
     )
 
 

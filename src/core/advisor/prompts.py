@@ -50,6 +50,36 @@ def _fmt_headlines(headlines: list[dict], limit: int = 5) -> str:
     return "\n".join(lines) if lines else "—"
 
 
+def _fmt_posture(d: AdvisorInput) -> str:
+    """One-line technical posture — overextension + liquidity + location. Only the
+    fields that are populated appear; ``—`` when the whole snapshot is missing."""
+    bits: list[str] = []
+    if d.rsi is not None:
+        bits.append(f"RSI {d.rsi:.0f}")
+    if d.pct_from_ma is not None:
+        bits.append(f"{d.pct_from_ma:+.1f}% vs MA")
+    if d.atr_to_stop is not None:
+        bits.append(f"{d.atr_to_stop:.1f} ATR to stop")
+    if d.atr_pct is not None:
+        bits.append(f"ATR {d.atr_pct:.1f}%")
+    liq = []
+    if d.dv20 is not None:
+        liq.append(f"${d.dv20 / 1e6:.1f}M/day")
+    if d.cap_tier:
+        liq.append(f"{d.cap_tier}-cap")
+    if liq:
+        bits.append("liquidity " + " ".join(liq))
+    if d.rp_rank is not None:
+        bits.append(f"location {d.rp_rank:.0f}/100")
+    return "  |  ".join(bits) if bits else "—"
+
+
+def _fmt_edge(d: AdvisorInput) -> str:
+    from core.advisor.base_rates import format_base_rate
+
+    return format_base_rate(d.base_rate) or "—"
+
+
 def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
     """Build the full advisory prompt from signal context + news.
 
@@ -75,6 +105,10 @@ def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
         f"Data Tier: {input_data.tier or '—'}\n"
         f"Event Risk: {input_data.event_risk or '—'}\n"
         f"Setup Reason: {input_data.reason or '—'}\n\n"
+        "## TECHNICAL POSTURE\n"
+        f"{_fmt_posture(input_data)}\n\n"
+        "## HISTORICAL EDGE (this setup's base rate over past resolved trades)\n"
+        f"{_fmt_edge(input_data)}\n\n"
         "## MARKET CONTEXT (shared backdrop, already reflected in Market Regime "
         "above — do not disagree on this alone)\n"
         f"{input_data.market_context or '—'}\n\n"
@@ -90,6 +124,11 @@ def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
         "ticker-adverse news — treat it as no news. Do not manufacture a risk to "
         "justify a 'disagree': if the setup is sound and there is no "
         "ticker-specific adverse news, 'agree' is the correct verdict.\n"
+        "The HISTORICAL EDGE line is this setup's base rate; 'disagree' means "
+        "this entry is materially worse than that base rate, not merely that some "
+        "risk exists. Overextension (stretched RSI, far above the MA, a thin ATR "
+        "buffer to the stop) and thin liquidity are flags to weigh, not automatic "
+        "vetoes.\n"
         "Return a JSON object: verdict (agree|disagree|flag), confidence "
         "(0-1), reasoning (at most two short sentences on the technical + news "
         "picture), and risks (the single biggest risk to this entry in one "
