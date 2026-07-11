@@ -23,6 +23,13 @@ set "PYTHONIOENCODING=utf-8"
 if not exist "logs" mkdir "logs"
 
 echo ============================================================>> "logs\scheduler.log"
+
+REM Ensure the local Ollama server is up so the AI advisor can score entries.
+REM Fail-safe: the helper always exits 0, so a down/missing Ollama never blocks
+REM the scan (the advisor is fail-open and simply omits its note).
+echo [%DATE% %TIME%] ensuring ollama...>> "logs\scheduler.log"
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\setup\ensure_ollama.ps1">> "logs\scheduler.log" 2>&1
+
 echo [%DATE% %TIME%] starting main.py %*>> "logs\scheduler.log"
 
 ".venv\Scripts\python.exe" main.py %*>> "logs\scheduler.log" 2>&1
