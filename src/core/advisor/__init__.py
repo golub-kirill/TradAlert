@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from core.advisor.client import ask_llm
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict, VerdictLabel
-from core.advisor.service import AdvisorContext, advise_signal, build_advisor_context
+from core.advisor.service import (
+    AdvisorContext,
+    advise_signal,
+    build_advisor_context,
+    build_advisor_input,
+)
 
 __all__ = [
     "AdvisorInput",
@@ -18,5 +23,6 @@ __all__ = [
     "ask_llm",
     "AdvisorContext",
     "build_advisor_context",
+    "build_advisor_input",
     "advise_signal",
 ]

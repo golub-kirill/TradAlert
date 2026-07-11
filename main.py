@@ -844,8 +844,20 @@ def _process_ticker(
                             _vix = float(vix_df["close"].iloc[-1])
                         except (KeyError, IndexError, ValueError, TypeError):
                             _vix = None
+                    # % above/below the slow MA — overextension read for the critic.
+                    _pct_from_ma = None
+                    try:
+                        _ma_slow = float(df["ma_slow"].iloc[-1])
+                        _close = float(df["close"].iloc[-1])
+                        if _ma_slow:
+                            _pct_from_ma = (_close - _ma_slow) / _ma_slow * 100.0
+                    except (KeyError, IndexError, ValueError, TypeError):
+                        _pct_from_ma = None
                     signal.advisor_note = advise_signal(
                         ticker, signal, advisor_ctx,
+                        scan=scan,
+                        pct_from_ma=_pct_from_ma,
+                        rp_rank=(rp_ranks.get(ticker) if rp_ranks else None),
                         vix_level=_vix,
                         macro_score=getattr(macro_state, "risk_on_score", None),
                         behavioral_score=getattr(behavioral_state, "behavioral_score", None),

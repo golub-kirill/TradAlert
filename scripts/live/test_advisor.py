@@ -126,32 +126,20 @@ class _Review:
 
 def _review_trade(trade: dict, signal, ctx) -> _Review:
     """Mirror of ``advise_signal`` that returns the intermediates instead of
-    swallowing them. Surfaces errors rather than collapsing to an empty note."""
-    from core.advisor import AdvisorInput
+    swallowing them. Surfaces errors rather than collapsing to an empty note.
+
+    Shares ``build_advisor_input`` with the live path so new fields stay in sync.
+    Posture fields are None here — backtest_trades carries no last-bar snapshot."""
     from core.advisor.client import ask_llm
     from core.advisor.prompts import build_prompt
-    from core.advisor.service import _resolve_headlines, format_note
+    from core.advisor.service import build_advisor_input, format_note
 
     rv = _Review()
     ticker = trade["ticker"]
     try:
-        rv.company_name = (ctx.company_names.get(ticker)
-                           or ctx.company_names.get(ticker.upper()) or "")
-        rv.headlines = _resolve_headlines(ticker, ctx)
-        input_data = AdvisorInput(
-            ticker=ticker,
-            company_name=rv.company_name,
-            direction=signal.direction,
-            signal_type=signal.signal_type,
-            stop_price=float(signal.stop_price),
-            target_price=float(signal.target_price),
-            min_rr=float(signal.min_rr),
-            market_regime=signal.market_regime,
-            ticker_trend=signal.ticker_trend,
-            reason=signal.reason,
-            market_context=ctx.market_context,
-            headlines=rv.headlines,
-        )
+        input_data = build_advisor_input(ticker, signal, ctx)
+        rv.company_name = input_data.company_name
+        rv.headlines = input_data.headlines
         rv.prompt = build_prompt(ticker, input_data)
         t0 = time.time()
         rv.verdict = ask_llm(

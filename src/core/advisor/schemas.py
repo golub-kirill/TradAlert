@@ -52,6 +52,20 @@ class AdvisorInput:
     # News context (populated by the news layer)
     market_context: str = ""  # macro/sector paragraph
     headlines: list[dict] = field(default_factory=list)  # ticker-specific news
+    # Technical posture (last-bar snapshot; None when unavailable). All are
+    # relative measures — no absolute entry price — so look-ahead hygiene holds.
+    rsi: float | None = None
+    atr_pct: float | None = None          # atr / close × 100
+    pct_from_ma: float | None = None      # (close − ma_slow) / ma_slow × 100
+    atr_to_stop: float | None = None      # |close − stop| / atr (risk in ATRs)
+    dv20: float | None = None             # 20-day average dollar volume (liquidity)
+    market_cap: float | None = None
+    cap_tier: str = ""                    # large | mid | small | micro | ""
+    rp_rank: float | None = None          # relative-position rank (location, 0–100)
+    # Historical edge for this setup, precomputed over resolved trades only
+    # (aggregate — no per-trade outcome leaks). {n, win_rate, avg_r, expectancy}.
+    base_rate: dict = field(default_factory=dict)
+    reflection: str = ""                  # advisor's own recent calibration line
 
 
 @dataclass
