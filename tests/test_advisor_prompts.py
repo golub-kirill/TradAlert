@@ -112,6 +112,23 @@ def test_prompt_edge_none_safe():
     assert "resolved trades)\n—" in p
 
 
+def test_prompt_includes_calibration_when_present():
+    p = build_prompt("AAPL", _input(reflection="cal line here"))
+    assert "## RECENT CALIBRATION\ncal line here" in p
+
+
+def test_prompt_omits_calibration_when_absent():
+    p = build_prompt("AAPL", _input())  # no reflection
+    assert "## RECENT CALIBRATION" not in p
+
+
+def test_judge_prompt_includes_calibration_and_cases():
+    from core.advisor.prompts import build_judge_prompt
+    p = build_judge_prompt("AAPL", _input(reflection="cal"), None, None)
+    assert "## RECENT CALIBRATION\ncal" in p
+    assert "## BULL CASE" in p and "## BEAR CASE" in p
+
+
 def test_macro_summary_prompt_lists_headlines():
     p = build_macro_summary_prompt([{"headline": "CPI cools"}, {"headline": "Oil slips"}])
     assert "CPI cools" in p and "Oil slips" in p

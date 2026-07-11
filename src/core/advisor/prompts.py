@@ -150,6 +150,12 @@ def _fmt_case(case, *, with_rebuttal: bool = False) -> str:
     return "\n".join(lines) if lines else "—"
 
 
+def _calibration_block(d: AdvisorInput) -> str:
+    """The advisor's own recent calibration — only for the verdict-makers (the
+    single-shot prompt and the judge). Empty string when there's no data yet."""
+    return f"## RECENT CALIBRATION\n{d.reflection}\n\n" if d.reflection else ""
+
+
 def _context_block(ticker: str, d: AdvisorInput) -> str:
     """The shared factual context (signal, posture, edge, market, news) embedded
     by both the single-shot prompt and every debate role. No instruction."""
@@ -192,6 +198,7 @@ def build_prompt(ticker: str, input_data: AdvisorInput) -> str:
     return (
         f"{_SYSTEM}\n\n"
         f"{_context_block(ticker, input_data)}\n\n"
+        f"{_calibration_block(input_data)}"
         "## INSTRUCTION\n"
         f"{_NEWS_RULE} Do not manufacture a risk to justify a 'disagree': if the "
         "setup is sound and there is no ticker-specific adverse news, 'agree' is "
@@ -248,6 +255,7 @@ def build_judge_prompt(ticker: str, input_data: AdvisorInput, bull, bear,
         f"{_fmt_case(bull)}\n\n"
         "## BEAR CASE\n"
         f"{_fmt_case(bear, with_rebuttal=True)}\n\n"
+        f"{_calibration_block(input_data)}"
         "## INSTRUCTION\n"
         f"{tri}{_EDGE_RULE} {_NEWS_RULE}\n"
         "Return a JSON object: verdict (agree|disagree|flag), confidence (0-1), "

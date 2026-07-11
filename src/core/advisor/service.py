@@ -18,6 +18,7 @@ from core.advisor.base_rates import load_base_rates
 from core.advisor.base_rates import lookup as _lookup_base_rate
 from core.advisor.client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ask_llm
 from core.advisor.macro_context import build_market_context
+from core.advisor.reflection import format_reflection, load_reflection
 from core.advisor.news_cache import load_fresh_news, save_news
 from core.advisor.news_fetcher import fetch_ticker_news, search_ticker_news
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict
@@ -56,6 +57,8 @@ class AdvisorContext:
     company_names: dict = field(default_factory=dict)
     # setup base-rate table (scripts/studies/build_advisor_base_rates.py); {} = off.
     base_rates: dict = field(default_factory=dict)
+    # advisor's own recent calibration line (build_advisor_calibration.py); "" = off.
+    reflection: str = ""
     # One keep-alive session for news HTTP across the whole scan.
     session: requests.Session = field(default_factory=requests.Session, repr=False)
 
@@ -97,6 +100,7 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         brave_key=os.environ.get("BRAVE_API_KEY") or None,
         company_names=_load_company_names(),
         base_rates=load_base_rates(),
+        reflection=format_reflection(load_reflection()),
     )
     if news_cfg.get("macro_summarization", True):
         try:
@@ -242,6 +246,7 @@ def build_advisor_input(
         cap_tier=_cap_tier(market_cap),
         rp_rank=_sfloat(rp_rank),
         base_rate=base_rate,
+        reflection=getattr(ctx, "reflection", "") or "",
     )
 
 
