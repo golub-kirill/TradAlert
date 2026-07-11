@@ -72,7 +72,9 @@ _BEAR_SYSTEM = (
 
 _JUDGE_SYSTEM = (
     "You are the JUDGE on a trading desk. You hold the bull case, the bear case, "
-    "and this setup's historical base rate. Commit to one verdict on the entry."
+    "and this setup's historical base rate. The bull and bear were each ASSIGNED "
+    "their side, so a forceful case from either is expected by default and is not "
+    "itself evidence — discount both for advocacy and rule on the facts."
 )
 
 # Shared rule fragments reused across the single-shot and debate prompts.
@@ -89,6 +91,15 @@ _EDGE_RULE = (
     "'this entry is materially worse than that base rate,' not merely that some "
     "risk exists. Overextension (stretched RSI, far above the MA, a thin ATR "
     "buffer to the stop) and thin liquidity are flags to weigh, not vetoes."
+)
+# Judge-only: the bull/bear are assigned advocates, so a strong bear case is the
+# baseline, not evidence. Default to the base rate; disagree needs a concrete edge.
+_JUDGE_RULE = (
+    "Default to 'agree' at the base rate and move to 'disagree' only when the bear "
+    "names a concrete, ticker-specific adverse fact the bull cannot answer — not "
+    "generic macro, a hypothetical, or a mere 'a risk exists'. When the bear has no "
+    "ticker-specific edge over the bull, the assigned-adversary case is not grounds "
+    "to disagree. Use 'flag' for a real but non-decisive ticker risk."
 )
 
 
@@ -257,7 +268,7 @@ def build_judge_prompt(ticker: str, input_data: AdvisorInput, bull, bear,
         f"{_fmt_case(bear, with_rebuttal=True)}\n\n"
         f"{_calibration_block(input_data)}"
         "## INSTRUCTION\n"
-        f"{tri}{_EDGE_RULE} {_NEWS_RULE}\n"
+        f"{tri}{_JUDGE_RULE} {_EDGE_RULE} {_NEWS_RULE}\n"
         "Return a JSON object: verdict (agree|disagree|flag), confidence (0-1), "
         "reasoning (at most two short sentences weighing both cases against the "
         "base rate), and risks (the single biggest risk in one short clause, or "
