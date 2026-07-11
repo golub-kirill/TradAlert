@@ -350,5 +350,33 @@ def main() -> None:
     print()
 
 
+def _owns_console() -> bool:
+    """True when this process is the sole owner of its console — i.e. it was
+    double-clicked from Explorer and the window vanishes the instant it exits.
+    False when launched from an existing cmd/PowerShell/pytest (>1 attached)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        buf = (ctypes.c_uint * 2)()
+        return ctypes.windll.kernel32.GetConsoleProcessList(buf, 2) <= 1
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
-    main()
+    _own = _owns_console()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        print("\n  Crashed. If this is a ModuleNotFoundError, run it from the "
+              "project venv:\n    .venv\\Scripts\\python.exe "
+              "scripts\\live\\test_advisor.py -v")
+    finally:
+        # A double-clicked window would close before any of the above is read.
+        if _own:
+            try:
+                input("\n  — done. Press Enter to close —")
+            except (EOFError, KeyboardInterrupt):
+                pass
