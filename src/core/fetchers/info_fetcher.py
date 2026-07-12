@@ -75,7 +75,7 @@ def get_market_cap(
             return value
 
     logger.debug("Market-cap fetch    ↓ %s", ticker)
-    value = _fetch(ticker)
+    value = fetch_market_cap(ticker)
     # Cache on success only. A failed fetch returns None indistinguishably from a
     # symbol with no fundamentals; caching that None would pin "no market cap" for
     # the whole staleness window, silently skipping the market-cap floor gate for a
@@ -83,6 +83,11 @@ def get_market_cap(
     if value is not None:
         save_section(ticker, _SECTION, {"market_cap": value}, cache_dir)
     return value
+
+
+def fetch_market_cap(ticker: str) -> float | None:
+    """Fetch a market cap without reading or writing the fundamentals cache."""
+    return _fetch(validate_ticker(ticker))
 
 
 # ── internals ─────────────────────────────────────────────────────────────────

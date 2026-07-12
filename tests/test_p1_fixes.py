@@ -121,6 +121,16 @@ def test_market_cap_caches_success(monkeypatch, tmp_path):
     assert saved.get("AAPL") == {"market_cap": 1.0e9}
 
 
+def test_market_cap_direct_fetch_does_not_touch_cache(monkeypatch):
+    monkeypatch.setattr(info_fetcher, "_fetch", lambda t: 1.0e9)
+    monkeypatch.setattr(
+        info_fetcher,
+        "save_section",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not save")),
+    )
+    assert info_fetcher.fetch_market_cap("AAPL") == 1.0e9
+
+
 # ── macro regime delta bugs (#4) ──────────────────────────────────────────────
 
 def _fred(values, index):

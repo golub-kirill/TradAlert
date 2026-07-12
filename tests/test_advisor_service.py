@@ -224,3 +224,19 @@ def test_resolve_headlines_falls_through_to_brave(monkeypatch):
     ctx = service.AdvisorContext(enabled=True)
     assert service._resolve_headlines("AAPL", ctx) == [{"headline": "brave"}]
     assert saved and saved[0][1] == "search"  # cached under the search section
+
+
+def test_resolve_headlines_read_only_never_saves(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "load_fresh_news",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not read cache")),
+    )
+    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [{"headline": "live"}])
+    monkeypatch.setattr(
+        service,
+        "save_news",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not save")),
+    )
+    ctx = service.AdvisorContext(enabled=True, read_only=True)
+    assert service._resolve_headlines("AAPL", ctx) == [{"headline": "live"}]

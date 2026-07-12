@@ -18,9 +18,9 @@ from core.advisor.base_rates import load_base_rates
 from core.advisor.base_rates import lookup as _lookup_base_rate
 from core.advisor.client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ask_llm
 from core.advisor.macro_context import build_market_context
-from core.advisor.reflection import format_reflection, load_reflection
 from core.advisor.news_cache import load_fresh_news, save_news
 from core.advisor.news_fetcher import fetch_ticker_news, search_ticker_news
+from core.advisor.reflection import format_reflection, load_reflection
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,8 @@ class AdvisorContext:
     base_rates: dict = field(default_factory=dict)
     # advisor's own recent calibration line (build_advisor_calibration.py); "" = off.
     reflection: str = ""
+    # Diagnostic callers can fetch current news without mutating data/news/.
+    read_only: bool = False
     # One keep-alive session for news HTTP across the whole scan.
     session: requests.Session = field(default_factory=requests.Session, repr=False)
 
@@ -76,11 +78,15 @@ def _load_company_names() -> dict:
         return {}
 
 
-def build_advisor_context(settings: dict | None) -> AdvisorContext:
+def build_advisor_context(
+        settings: dict | None,
+        *,
+        read_only: bool = False,
+) -> AdvisorContext:
     """Read config + env, summarize macro context. Fail-open → disabled context."""
     adv = (settings or {}).get("advisor") or {}
     if not adv.get("enabled", False):
-        return AdvisorContext(enabled=False)
+        return AdvisorContext(enabled=False, read_only=read_only)
 
     news_cfg = (settings or {}).get("news") or {}
     deb = adv.get("debate") or {}
@@ -101,6 +107,7 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
         company_names=_load_company_names(),
         base_rates=load_base_rates(),
         reflection=format_reflection(load_reflection()),
+        read_only=read_only,
     )
     if news_cfg.get("macro_summarization", True):
         try:
@@ -117,20 +124,24 @@ def build_advisor_context(settings: dict | None) -> AdvisorContext:
 
 
 def _resolve_headlines(ticker: str, ctx: AdvisorContext) -> list[dict]:
-    """Cache → Finnhub/Yahoo (cached) → Brave (cached). ``[]`` if all dry."""
-    heads = load_fresh_news(ticker, staleness_hours=ctx.cache_ttl_hours)
+    """Cache → Finnhub/Yahoo → Brave, or an entirely cache-free read-only path."""
+    # news_cache._read quarantines corrupt files, which is a write. A diagnostic
+    # read-only context must not even inspect it; fetch fresh headlines instead.
+    heads = [] if ctx.read_only else load_fresh_news(ticker, staleness_hours=ctx.cache_ttl_hours)
     if heads:
         return heads
     heads = fetch_ticker_news(
         ticker, finnhub_key=ctx.finnhub_key, session=ctx.session, limit=ctx.max_headlines
     )
     if heads:
-        save_news(ticker, "finnhub", heads)
+        if not ctx.read_only:
+            save_news(ticker, "finnhub", heads)
         return heads
     heads = search_ticker_news(ticker, brave_key=ctx.brave_key, session=ctx.session,
                                limit=ctx.max_headlines)
     if heads:
-        save_news(ticker, "search", heads)
+        if not ctx.read_only:
+            save_news(ticker, "search", heads)
     return heads
 
 
