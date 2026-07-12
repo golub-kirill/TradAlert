@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { ApiError, getBacktests, getBacktestTrades, runBacktest, streamJob } from "../api/client";
-import type { BacktestMode, BacktestRun, BacktestRunReq } from "../api/types";
-import { Card, Note } from "../components/Card";
-import { DateField } from "../components/DateField";
-import { useApi } from "../hooks/useApi";
-import { useToast } from "../components/Toast";
-import { fnum, pct, rstr, signClass, today } from "../lib/format";
+import {useEffect, useRef, useState} from "react";
+import {ApiError, getBacktests, getBacktestTrades, getConfig, runBacktest, streamJob} from "../api/client";
+import type {BacktestMode, BacktestRun, BacktestRunReq} from "../api/types";
+import {Card, Note} from "../components/Card";
+import {DateField} from "../components/DateField";
+import {useApi} from "../hooks/useApi";
+import {useToast} from "../components/Toast";
+import {fnum, pct, rstr, signClass, today} from "../lib/format";
 
 function fiveYearsAgo(): string {
   const d = new Date();
@@ -65,6 +65,31 @@ export function Backtest() {
 
   const stopRef = useRef<(() => void) | null>(null);
   useEffect(() => () => stopRef.current?.(), []);
+
+    // Seed the form defaults from the LIVE shipped config (GET /config) so the sliders
+    // can't silently drift from filters.yaml / settings.yaml — the literals above are
+    // only the fallback if the fetch fails. Applied once, on mount.
+    const defaultsApplied = useRef(false);
+    useEffect(() => {
+        getConfig()
+            .then((cfg) => {
+                if (defaultsApplied.current) return;
+                defaultsApplied.current = true;
+                const ex = (cfg.filters?.execution ?? {}) as Record<string, unknown>;
+                const rk = (cfg.settings?.risk ?? {}) as Record<string, unknown>;
+                const n = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+                setRisk(n(rk.max_open_risk, 5));
+                setHold(n(ex.max_hold_days, 25));
+                if (ex.max_hold_mode === "hard" || ex.max_hold_mode === "if_not_profit")
+                    setHoldMode(ex.max_hold_mode);
+                const beTrig = n(ex.breakeven_trigger_r, 1);
+                setBeOn(beTrig > 0);
+                if (beTrig > 0) setBe(beTrig);
+            })
+            .catch(() => {
+                /* keep the shipped-literal fallbacks above */
+            });
+    }, []);
 
   async function onRun() {
     const req: BacktestRunReq = {

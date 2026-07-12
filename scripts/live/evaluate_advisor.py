@@ -239,10 +239,12 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str,
             _note("errors", s, "non-positive risk (stop through entry)")
             continue
 
-        exit_price, reason = _replay(df, entry_idx, entry, stop, target, is_short,
-                                     max_hold, mode,
-                                     apply_stop_fill, apply_target_fill,
-                                     apply_stop_fill_short, apply_target_fill_short)
+        # Bare replay (no engine) — advisor scoring judges the stop/target/cap outcome,
+        # not the engine exit chain. _replay returns (exit_price, reason, exit_idx).
+        exit_price, reason, _exit_idx = _replay(df, entry_idx, entry, stop, target, is_short,
+                                                max_hold, mode,
+                                                apply_stop_fill, apply_target_fill,
+                                                apply_stop_fill_short, apply_target_fill_short)
         if exit_price is None:
             pending += 1
             bars_open = len(df) - entry_idx

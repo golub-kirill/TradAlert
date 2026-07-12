@@ -51,8 +51,10 @@ class _FakeCursor:
         return list(self._rows)
 
 
-def _run(rid, use_scoring):
+def _run(rid, use_scoring, windowed=False):
     meta = {} if use_scoring is None else {"use_scoring": use_scoring}
+    if windowed:  # a dated diagnostic, not a full-history baseline
+        meta = {**meta, "start_date": "2025-01-01", "end_date": None}
     return {"id": rid, "start_date": None, "end_date": None, "trades_count": 0,
             "expectancy_r": 0.0, "win_rate": 0.0, "notes": f"run{rid}",
             "config_json": json.dumps({"_meta": meta})}
@@ -95,6 +97,14 @@ def test_reference_run_explicit_id_wins():
     assert reference_run(_FakeCursor(runs=runs), run_id=1)["id"] == 1
 
 
+def test_reference_run_skips_windowed_experiment():
+    # Newest scoring-OFF run (id 3) is a 2025-only windowed diagnostic; the reference
+    # must fall through to the newest scoring-OFF FULL-WINDOW run (id 2), so a dated
+    # experiment that merely journaled last can't become the drift reference.
+    runs = [_run(3, False, windowed=True), _run(2, False), _run(1, False)]
+    assert reference_run(_FakeCursor(runs=runs))["id"] == 2
+
+
 # ── reconcile_live._replay max-hold parity ────────────────────────────────────
 
 def test_replay_max_hold_mode_parity():
@@ -113,12 +123,13 @@ def test_replay_max_hold_mode_parity():
     args = (df, 1, 100.0, 90.0, 200.0, False, 3)
     fills = (apply_stop_fill, apply_target_fill, apply_stop_fill_short, apply_target_fill_short)
 
-    # hard: force-close at the cap regardless of P&L.
-    _px, reason_hard = _replay(*args, "hard", *fills)
+    # hard: force-close at the cap regardless of P&L. (engine=None → bare stop/target/
+    # time-stop replay; returns (price, reason, exit_idx).)
+    _px, reason_hard, _k = _replay(*args, "hard", *fills)
     assert reason_hard == "time_stop"
 
     # if_not_profit: in profit at the cap → do NOT exit (parity with the backtester).
-    px_inp, reason_inp = _replay(*args, "if_not_profit", *fills)
+    px_inp, reason_inp, _ = _replay(*args, "if_not_profit", *fills)
     assert px_inp is None and reason_inp == "pending"
 
 

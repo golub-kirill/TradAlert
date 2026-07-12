@@ -275,14 +275,30 @@ def _run_use_scoring(config_json) -> bool | None:
         return None
 
 
+def _run_full_window(config_json) -> bool:
+    """True when a run had NO date window (``_meta.start_date``/``end_date`` both
+    absent) — a full-history baseline. Windowed runs (e.g. a 2025-only diagnostic)
+    are experiments, not the expectancy reference; treat an unparseable snapshot as
+    full-window (fail-open, so a legacy row without ``_meta`` stays eligible)."""
+    if not config_json:
+        return True
+    try:
+        meta = json.loads(config_json).get("_meta", {}) or {}
+    except (ValueError, TypeError):
+        return True
+    return meta.get("start_date") is None and meta.get("end_date") is None
+
+
 def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
     """Resolve the expectancy-reference backtest_runs row (dictionary cursor).
 
-    Explicit ``run_id`` → that row. Otherwise prefer the latest run tagged
-    scoring-OFF (``config_json._meta.use_scoring is False``, matching the live
-    default) so the reconciler never silently references a scoring-ON run; fall
-    back to the newest run overall. Returns the row dict (without config_json) or
-    None.
+    Explicit ``run_id`` → that row. Otherwise prefer the newest scoring-OFF
+    (``config_json._meta.use_scoring is False``, matching the live default),
+    FULL-WINDOW run — so a windowed diagnostic (e.g. a 2025-only run) or any
+    non-baseline experiment that merely happened to journal last can't silently
+    become the drift reference. Fallback ladder: newest scoring-OFF full-window →
+    newest scoring-OFF → newest overall. Returns the row dict (without
+    config_json) or None.
     """
     cols = "id, start_date, end_date, trades_count, expectancy_r, win_rate, notes"
     if run_id is not None:
@@ -292,10 +308,10 @@ def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
     rows = cursor.fetchall()
     if not rows:
         return None
-    chosen = None
-    if prefer_scoring_off:
-        chosen = next((r for r in rows if _run_use_scoring(r.get("config_json")) is False), None)
-    chosen = chosen or rows[0]
+    off = ([r for r in rows if _run_use_scoring(r.get("config_json")) is False]
+           if prefer_scoring_off else rows) or rows
+    full = [r for r in off if _run_full_window(r.get("config_json"))]
+    chosen = (full or off)[0]
     chosen.pop("config_json", None)
     return chosen
 

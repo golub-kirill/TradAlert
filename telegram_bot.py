@@ -428,7 +428,7 @@ def _owner_only(handler):
                     await update.callback_query.answer("Not authorized", show_alert=True)
                 except Exception:
                     pass
-            return
+            return None
         return await handler(update, context)
     return wrapper
 
