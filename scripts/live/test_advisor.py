@@ -122,9 +122,6 @@ class _Review:
     elapsed: float = 0.0
     error: str = ""                 # short reason
     traceback: str = ""             # full trace (verbose only)
-    bull: object = None             # BullCase | None (debate mode)
-    bear: object = None             # BearCase | None (debate mode)
-    fell_back: bool = False         # debate judge failed -> single-shot verdict
 
 
 def _review_trade(trade: dict, signal, ctx) -> _Review:
@@ -133,9 +130,9 @@ def _review_trade(trade: dict, signal, ctx) -> _Review:
 
     Shares ``build_advisor_input`` with the live path so new fields stay in sync.
     Posture fields are None here — backtest_trades carries no last-bar snapshot."""
-    from core.advisor.client import ask_llm
-    from core.advisor.prompts import build_prompt
-    from core.advisor.service import build_advisor_input, format_note
+    from core.advisor.news_query import split_headlines
+    from core.advisor.prompts import build_news_prompt
+    from core.advisor.service import build_advisor_input, build_verdict, format_note
 
     rv = _Review()
     ticker = trade["ticker"]
@@ -143,20 +140,12 @@ def _review_trade(trade: dict, signal, ctx) -> _Review:
         input_data = build_advisor_input(ticker, signal, ctx)
         rv.company_name = input_data.company_name
         rv.headlines = input_data.headlines
-        rv.prompt = build_prompt(ticker, input_data)
+        catalysts, _recaps = split_headlines(input_data.headlines or [])
+        # The model only sees the news prompt; the verdict itself is rubric-computed.
+        rv.prompt = build_news_prompt(ticker, input_data.company_name,
+                                      input_data.direction, catalysts)
         t0 = time.time()
-        if getattr(ctx, "debate_enabled", False):
-            from core.advisor.debate import run_debate
-            dr = run_debate(input_data, ctx)
-            rv.verdict, rv.bull, rv.bear, rv.fell_back = (
-                dr.verdict, dr.bull, dr.bear, dr.fell_back)
-        else:
-            rv.verdict = ask_llm(
-                input_data,
-                endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
-                temperature=ctx.temperature, max_tokens=ctx.max_tokens,
-                session=ctx.session,
-            )
+        rv.verdict = build_verdict(input_data, ctx)
         rv.elapsed = time.time() - t0
         rv.note = format_note(rv.verdict) if rv.verdict else ""
     except Exception as exc:  # surfaced, not swallowed — this is a diagnostic tool
@@ -232,26 +221,16 @@ def _print_trade(trade: dict, signal, rv: _Review, *, verbose: bool) -> None:
             print(f"    • {_headline_line(h)}")
     else:
         print("  Headlines  (none — advisor sees 'no ticker news')")
-    if rv.bull is not None or rv.bear is not None:
-        print("  Debate ▽")
-        if rv.bull is not None:
-            print(f"    🐂 Bull   {rv.bull.thesis or '(none)'}")
-            for p in rv.bull.points:
-                print(f"       · {p}")
-        else:
-            print("    🐂 Bull   (no case returned)")
-        if rv.bear is not None:
-            print(f"    🐻 Bear   {rv.bear.thesis or '(none)'}")
-            for p in rv.bear.points:
-                print(f"       · {p}")
-            if rv.bear.rebuttal:
-                print(f"       ↩ {rv.bear.rebuttal}")
-        else:
-            print("    🐻 Bear   (no case returned)")
-        if rv.fell_back:
-            print("    ⚖ Judge  (failed — fell back to single-shot verdict)")
     if rv.verdict is not None:
-        print(f"  LLM        {rv.elapsed:.1f}s   confidence {rv.verdict.confidence:.0%}")
+        rub = getattr(rv.verdict, "rubric", {}) or {}
+        crits = rub.get("criteria") or {}
+        if crits:
+            axes = "  ".join(f"{n}:{c.get('label')}({c.get('points'):+d})"
+                             for n, c in crits.items())
+            print(f"  Rubric     score {rub.get('score'):+d}  {axes}")
+        conviction = max(1, int(rv.verdict.confidence * 10 + 0.5))
+        print(f"  Verdict    {rv.verdict.verdict}  conviction {conviction}/10  "
+              f"news={getattr(rv.verdict, 'news_stance', '')}   ({rv.elapsed:.1f}s)")
         print(f"  Reasoning  {rv.verdict.reasoning or '(empty)'}")
         print(f"  Risks      {rv.verdict.risks or '(none)'}")
     elif rv.error:
@@ -284,9 +263,6 @@ def main() -> None:
                     help="override advisor.model for this run (e.g. qwen3:8b)")
     ap.add_argument("--no-macro", action="store_true",
                     help="skip the macro-context summarization (faster)")
-    ap.add_argument("--debate", action="store_true",
-                    help="run the multi-agent bull/bear/judge critic instead of "
-                         "the single-shot verdict (slower; -v shows the transcript)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="show company name, news headlines, the full prompt, and "
                          "the raw verdict fields (plus INFO/WARNING advisor logs)")
@@ -314,8 +290,6 @@ def main() -> None:
         settings["advisor"]["model"] = args.model
     if args.no_macro:
         settings.setdefault("news", {})["macro_summarization"] = False
-    if args.debate:
-        settings.setdefault("advisor", {}).setdefault("debate", {})["enabled"] = True
 
     trades = _fetch_trades(args.seed, max(1, args.count))
     if not trades:

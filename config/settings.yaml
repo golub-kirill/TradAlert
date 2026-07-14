@@ -101,7 +101,6 @@ macro: # block: macro data configuration
 
   risk_on_weights: # per-axis state → [0, 1] risk value
     policy_stance_us: { HIKING: 0.0, HOLD: 0.5, CUTTING: 1.0 }
-    policy_stance_ca: { HIKING: 0.0, HOLD: 0.5, CUTTING: 1.0 }
     curve_state: { INVERTED: 0.3, STEEPENING_FROM_INVERTED: 0.0, FLAT: 0.6, NORMAL: 1.0 }
     credit_state: { WIDE: 0.0, WIDENING: 0.2, NORMAL: 0.7, TIGHT: 1.0 }
     liquidity_trend: { CONTRACTING: 0.2, FLAT: 0.6, EXPANDING: 1.0 }
@@ -187,17 +186,20 @@ advisor:
   timeout: 200                        # seconds per LLM call [20]
   temperature: 0.1                   # lower = more deterministic [0.1]
   max_tokens: 300                    # response cap; think mode is disabled [300]
-  debate:                             # multi-agent bull/bear/judge critic
-    enabled: false                    # off -> single-shot verdict [false]
-    risk_trichotomy: true             # judge weighs risk-seeking/neutral/conservative
-    total_timeout: 180                # wall-clock budget for the whole debate [s]
 
 
 # ── NEWS LAYER ────────────────────────────────────────────────────────────────
-# Feeds the advisor. Ticker news: Finnhub (FINNHUB_API_KEY) → Yahoo RSS (keyless)
-# → Brave (BRAVE_API_KEY, fallback). Macro context: Yahoo top-stories → one Ollama
-# summary per scan. Cached to data/news/{TICKER}.json.
+# Feeds the advisor. Ticker news is gathered from every available source and
+# merged: Google News RSS built from the COMPANY NAME (keyless, covers foreign
+# listings, right-company) is primary; Finnhub (FINNHUB_API_KEY) and AlphaVantage
+# NEWS_SENTIMENT (ALPHAVANTAGE_API_KEY, adds sentiment) add US depth; Yahoo RSS /
+# Brave (BRAVE_API_KEY) backstop a thin result. Every headline is relevance-
+# filtered to this company (drops wrong-company leakage). Macro context: Yahoo
+# top-stories → one Ollama summary per scan. Cached to data/news/{TICKER}.json.
 news:
   cache_ttl_hours: 4                 # ticker headlines considered fresh for [4]h
   max_headlines_per_ticker: 5        # max headlines injected into a prompt [5]
   macro_summarization: true          # false → skip the scan-wide market context
+  use_alphavantage: true             # include AlphaVantage sentiment [true]
+  alphavantage_max_per_day: 20       # daily call budget (free tier is 25/day) [20]
+  llm_queries: false                 # let the model build (cached) news queries [false]

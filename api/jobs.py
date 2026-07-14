@@ -19,6 +19,8 @@ from api import ROOT
 
 _JOBS: dict[str, dict] = {}
 _MAX_JOBS = 50  # bound the in-memory registry; evict oldest finished jobs past this
+_MAX_RUNNING = 3  # refuse new launches past this many live subprocesses (each is
+#                   a minutes-long backtest/scan — stacking them starves the box)
 
 
 def _evict() -> None:
@@ -39,8 +41,19 @@ def _clean(line: str) -> str:
 
 
 def launch(cmd: list[str]) -> str:
-    """Start ``cmd`` (a python module invocation) under the repo root, tracked by id."""
+    """Start ``cmd`` (a python module invocation) under the repo root, tracked by id.
+
+    Raises HTTPException 429 when ``_MAX_RUNNING`` jobs are already live — the
+    routers pass it straight through, so a click-happy UI can't stack heavy
+    subprocess runs.
+    """
     _evict()
+    running = sum(1 for j in _JOBS.values() if j["status"] == "running")
+    if running >= _MAX_RUNNING:
+        from fastapi import HTTPException
+        raise HTTPException(
+            429, f"{running} jobs already running (max {_MAX_RUNNING}) — "
+                 "wait for one to finish")
     jid = uuid.uuid4().hex[:8]
     _JOBS[jid] = {
         "status": "running",

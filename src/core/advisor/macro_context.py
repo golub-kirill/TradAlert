@@ -12,7 +12,7 @@ import logging
 
 import requests
 
-from core.advisor.client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ollama_chat
+from core.advisor.ollama_client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ollama_chat
 from core.advisor.news_fetcher import fetch_macro_headlines
 from core.advisor.prompts import build_macro_summary_prompt
 

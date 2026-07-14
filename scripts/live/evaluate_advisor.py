@@ -58,9 +58,9 @@ N_TARGET = 50   # below this: directional only
 N_FLOOR = 30    # below this: insufficient, print no separation verdict
 
 _VERDICTS = ("agree", "flag", "disagree")
-# "✅ Agree · 82% — reasoning  ⚠ risks" (service.format_note). Word-boundary +
-# capitalized labels; Disagree listed first so its "agree" tail can't shadow it.
-_NOTE_RE = re.compile(r"\b(Disagree|Agree|Flag)\b\s*·\s*(\d{1,3})%")
+# "✅ Agree · 8/10 — reasoning  [edge✓ …]  ⚠ risks" (service.format_note). Word-
+# boundary + capitalized labels; Disagree first so its "agree" tail can't shadow it.
+_NOTE_RE = re.compile(r"\b(Disagree|Agree|Flag)\b\s*·\s*(\d{1,2})/10")
 
 
 # ── pure helpers (unit-tested in tests/test_evaluate_advisor.py) ─────────────
@@ -76,7 +76,7 @@ def parse_note(note: str | None) -> tuple[str | None, float | None]:
     m = _NOTE_RE.search(note)
     if not m:
         return None, None
-    return m.group(1).lower(), min(1.0, max(0.0, int(m.group(2)) / 100.0))
+    return m.group(1).lower(), min(1.0, max(0.0, int(m.group(2)) / 10.0))
 
 
 def bucket_stats(rows: list[dict]) -> dict[str, dict]:
@@ -122,8 +122,8 @@ def counterfactuals(rows: list[dict]) -> list[tuple[str, float, int]]:
 
 
 def confidence_bands(rows: list[dict], verdict: str) -> list[tuple[str, int, float, float]]:
-    """(band, n, win-rate, E[R]) for one verdict's confidence bands."""
-    bands = [("<70%", 0.0, 0.70), ("70-85%", 0.70, 0.85), (">=85%", 0.85, 1.01)]
+    """(band, n, win-rate, E[R]) for one verdict's conviction bands."""
+    bands = [("<7/10", 0.0, 0.70), ("7-8/10", 0.70, 0.90), ("9-10/10", 0.90, 1.01)]
     out = []
     for label, lo, hi in bands:
         rs = [row["r"] for row in rows

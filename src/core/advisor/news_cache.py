@@ -67,7 +67,7 @@ def load_fresh_news(
         return []
     now = datetime.now(timezone.utc)
     merged: list[dict] = []
-    for section in ("finnhub", "search"):
+    for section in ("gathered", "finnhub", "search"):
         blob = doc.get(section) or {}
         fetched = blob.get("fetched_at")
         heads = blob.get("headlines") or []

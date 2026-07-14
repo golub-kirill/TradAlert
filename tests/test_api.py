@@ -295,6 +295,42 @@ def test_token_guard_blocks_unauth_post(monkeypatch):
         assert passed.status_code == 400
 
 
+def test_mutations_refused_on_nonloopback_socket_without_token(monkeypatch):
+    """No token + a non-loopback server socket (direct ``uvicorn --host 0.0.0.0``,
+    bypassing python -m api's bind refusal) → mutations 403, reads stay open.
+    TestClient derives ``scope['server']`` from base_url, so a LAN-looking host
+    simulates the exposed bind."""
+    monkeypatch.delenv("TRADALERT_API_TOKEN", raising=False)
+    with TestClient(app, base_url="http://192.168.1.50") as lan:
+        assert lan.get("/api/health").status_code == 200          # reads open
+        r = lan.post("/api/config", json={"updates": {}})
+        assert r.status_code == 403
+    # Loopback stays open without a token: the empty-updates 400 proves the
+    # request reached the handler instead of the guard.
+    with TestClient(app, base_url="http://127.0.0.1") as local:
+        assert local.post("/api/config", json={"updates": {}}).status_code == 400
+    # And a token unlocks the non-loopback bind (the documented LAN posture).
+    monkeypatch.setenv("TRADALERT_API_TOKEN", "tkn")
+    with TestClient(app, base_url="http://192.168.1.50") as lan_tok:
+        r = lan_tok.post("/api/config", json={"updates": {}},
+                         headers={"X-API-Token": "tkn"})
+        assert r.status_code == 400  # past both guards, into the handler
+
+
+def test_job_launch_refuses_past_running_cap(monkeypatch):
+    """A full job registry (3 live subprocesses) refuses a 4th launch with 429 —
+    no thread is spawned, nothing is registered."""
+    from fastapi import HTTPException
+    from api import jobs
+
+    fake = {f"j{i}": {"status": "running"} for i in range(jobs._MAX_RUNNING)}
+    monkeypatch.setattr(jobs, "_JOBS", fake)
+    with pytest.raises(HTTPException) as ei:
+        jobs.launch(["python", "-c", "pass"])
+    assert ei.value.status_code == 429
+    assert len(fake) == jobs._MAX_RUNNING  # nothing was added
+
+
 # ── input validation: ticker / side / mode guards (reject before any effect) ──
 
 def test_open_position_rejects_bad_ticker(client, monkeypatch):

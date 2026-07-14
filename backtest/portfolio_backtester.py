@@ -123,6 +123,14 @@ class PortfolioConfig:
     correlation_lookback_days: int = 60
     correlation_min_overlap: int = 40
     correlation_floor: float = 0.0
+    # Exit-side slippage. 0.0 → OFF (baseline bit-identical): exits fill at the
+    # modeled price exactly, which is a KNOWN optimism (measured on the pinned
+    # snapshot 2026-07-11: symmetric 0.002 costs −58.7R / −0.29 Sharpe). When set,
+    # every MARKET-type exit fill — stop (incl. trail/breakeven), engine_exit
+    # (next-bar open), time_stop (bar close), open_eod (last close) — is worsened
+    # by this fraction: long sells ×(1−slip), short covers ×(1+slip). Target fills
+    # are limit orders and stay exact.
+    exit_slippage_pct: float = 0.0
 
 
 @dataclass
@@ -393,6 +401,16 @@ class PortfolioBacktester:
         # testable in isolation.
         dd_gate = _DrawdownGate(self._cfg.max_drawdown_r)
 
+        # Exit-side slippage on MARKET-type fills only (stop / engine_exit /
+        # time_stop / open_eod); target fills are limit orders and stay exact.
+        # 0.0 (default) returns the price untouched → baseline bit-identical.
+        xslip = float(self._cfg.exit_slippage_pct or 0.0)
+
+        def _exit_fill(price: float, direction: str) -> float:
+            if not xslip:
+                return float(price)
+            return float(price) * ((1.0 + xslip) if direction == "short" else (1.0 - xslip))
+
         for D in timeline:
             D_date = D.date()
             active = [tk for tk in prepped if D in date_sets[tk]]
@@ -430,7 +448,8 @@ class PortfolioBacktester:
                     continue
                 bar = prepped[ticker].df.loc[D]
                 t_idx = int(prepped[ticker].df.index.get_loc(D))
-                _close_trade(open_trades[ticker], D_date, float(bar["open"]),
+                _close_trade(open_trades[ticker], D_date,
+                             _exit_fill(float(bar["open"]), open_trades[ticker].direction),
                              "engine_exit", prepped[ticker].df.index, t_idx,
                              self._cfg.commission_r)
                 closed = open_trades.pop(ticker)
@@ -533,7 +552,8 @@ class PortfolioBacktester:
                     fill = (apply_stop_fill_short(eff_stop, b_open)
                             if is_short
                             else apply_stop_fill(eff_stop, b_open))
-                    _close_trade(trade, D_date, fill, stop_reason,
+                    _close_trade(trade, D_date, _exit_fill(fill, trade.direction),
+                                 stop_reason,
                                  prepped[ticker].df.index, t_idx, self._cfg.commission_r)
                     closed = open_trades.pop(ticker)
                     result.trades.append(closed)
@@ -567,7 +587,8 @@ class PortfolioBacktester:
                             side=("short" if is_short else "long"),
                             max_hold_days=self._cfg.max_hold_days,
                             mode=self._cfg.max_hold_mode):
-                        _close_trade(trade, D_date, b_close, "time_stop",
+                        _close_trade(trade, D_date, _exit_fill(b_close, trade.direction),
+                                     "time_stop",
                                      prepped[ticker].df.index, t_idx,
                                      self._cfg.commission_r)
                         closed = open_trades.pop(ticker)
@@ -626,7 +647,9 @@ class PortfolioBacktester:
                     continue
                 last_bar = in_win.iloc[-1]
                 last_date = last_bar.name.date() if hasattr(last_bar.name, "date") else last_D.date()
-                _close_trade(trade, last_date, float(last_bar["close"]), "open_eod",
+                _close_trade(trade, last_date,
+                             _exit_fill(float(last_bar["close"]), trade.direction),
+                             "open_eod",
                              tdf.index, len(in_win) - 1, self._cfg.commission_r)
                 closed = open_trades.pop(ticker)
                 result.trades.append(closed)

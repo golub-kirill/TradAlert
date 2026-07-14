@@ -7,22 +7,23 @@ Ollama down, news APIs missing, or a malformed response all yield an empty note.
 
 from __future__ import annotations
 
-from core.advisor.client import ask_llm
-from core.advisor.schemas import AdvisorInput, AdvisorVerdict, VerdictLabel
+from core.advisor.schemas import AdvisorInput, AdvisorVerdict, NewsRead, VerdictLabel
 from core.advisor.service import (
     AdvisorContext,
     advise_signal,
     build_advisor_context,
     build_advisor_input,
+    build_verdict,
 )
 
 __all__ = [
     "AdvisorInput",
     "AdvisorVerdict",
+    "NewsRead",
     "VerdictLabel",
-    "ask_llm",
     "AdvisorContext",
     "build_advisor_context",
     "build_advisor_input",
+    "build_verdict",
     "advise_signal",
 ]

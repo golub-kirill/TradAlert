@@ -9,6 +9,10 @@ Two Ollama-specific details that make this reliable:
   is guaranteed to parse (no markdown-fence stripping needed).
 - ``think: false`` disables Qwen3-style reasoning tokens, which would otherwise
   consume the whole ``num_predict`` budget and return empty content.
+
+The advisor's only model call is ``classify_news`` (the hybrid path's news read);
+``ollama_chat`` / ``ask_json`` are the shared transport, also used by the macro
+summarizer and the optional news-query generator.
 """
 
 from __future__ import annotations
@@ -18,12 +22,12 @@ import logging
 
 import requests
 
-from core.advisor.prompts import VERDICT_JSON_SCHEMA, build_prompt
-from core.advisor.schemas import AdvisorInput, AdvisorVerdict
+from core.advisor.prompts import NEWS_JSON_SCHEMA, build_news_prompt
+from core.advisor.schemas import NewsRead
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ask_llm", "ask_json", "ollama_chat", "DEFAULT_ENDPOINT", "DEFAULT_MODEL"]
+__all__ = ["classify_news", "ask_json", "ollama_chat", "DEFAULT_ENDPOINT", "DEFAULT_MODEL"]
 
 DEFAULT_ENDPOINT = "http://localhost:11434"
 # qwen3.5:9b won the 3-scenario judgment probe (2026-07-02) over qwen3:8b/14b:
@@ -106,11 +110,10 @@ def ask_json(
         max_tokens: int = 300,
         session: requests.Session | None = None,
 ) -> dict | None:
-    """One grammar-constrained role call → parsed JSON dict, or None (fail-open).
+    """One grammar-constrained call → parsed JSON dict, or None (fail-open).
 
-    The generic building block for the debate roles (bull/bear/judge): send a
-    prompt + JSON schema, get back the decoded object. Any transport/decode
-    failure returns None so the debate can degrade rather than raise."""
+    The generic building block: send a prompt + JSON schema, get back the decoded
+    object. Any transport/decode failure returns None so the caller degrades."""
     raw = ollama_chat(
         prompt, endpoint=endpoint, model=model, timeout=timeout,
         temperature=temperature, max_tokens=max_tokens, fmt=schema, session=session,
@@ -120,52 +123,43 @@ def ask_json(
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        logger.warning("advisor role JSON parse failed — skipped: %s", str(raw)[:160])
+        logger.warning("advisor JSON parse failed — skipped: %s", str(raw)[:160])
         return None
     return data if isinstance(data, dict) else None
 
 
-def _parse(raw: str) -> AdvisorVerdict | None:
-    """Parse a schema-constrained JSON response into an AdvisorVerdict."""
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("advisor JSON parse failed — skipped: %s", str(raw)[:160])
-        return None
-    try:
-        return AdvisorVerdict(
-            verdict=str(data.get("verdict", "")).lower().strip(),
-            confidence=data.get("confidence", 0.0),
-            reasoning=data.get("reasoning", ""),
-            risks=data.get("risks", ""),
-        )
-    except (ValueError, TypeError) as exc:
-        logger.warning("advisor verdict invalid — skipped: %s", exc)
-        return None
-
-
-def ask_llm(
-        input_data: AdvisorInput,
+def classify_news(
+        ticker: str,
+        company_name: str,
+        direction: str,
+        headlines: list[dict],
         *,
         endpoint: str = DEFAULT_ENDPOINT,
         model: str = DEFAULT_MODEL,
         timeout: int = 20,
         temperature: float = 0.1,
-        max_tokens: int = 300,
+        max_tokens: int = 200,
         session: requests.Session | None = None,
-) -> AdvisorVerdict | None:
-    """Ask the LLM to review one fired signal. Returns a verdict or None."""
-    prompt = build_prompt(input_data.ticker, input_data)
-    raw = ollama_chat(
-        prompt,
-        endpoint=endpoint,
-        model=model,
-        timeout=timeout,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        fmt=VERDICT_JSON_SCHEMA,
-        session=session,
-    )
-    if raw is None:
+) -> NewsRead | None:
+    """Classify ticker news for one fired entry → NewsRead, or None (fail-open).
+
+    The single LLM call of the hybrid path. Returns None when there are no
+    headlines to read or the model is unavailable; the caller then treats news as
+    'none'/'unknown' and the deterministic rubric still yields a verdict.
+    """
+    if not headlines:
         return None
-    return _parse(raw)
+    data = ask_json(
+        build_news_prompt(ticker, company_name, direction, headlines),
+        NEWS_JSON_SCHEMA, endpoint=endpoint, model=model, timeout=timeout,
+        temperature=temperature, max_tokens=max_tokens, session=session,
+    )
+    if not data:
+        return None
+    try:
+        return NewsRead(stance=data.get("news_stance", ""),
+                        severity=data.get("severity", ""),
+                        material_news=data.get("material_news", ""))
+    except (TypeError, ValueError) as exc:
+        logger.warning("advisor news classification invalid — skipped: %s", exc)
+        return None

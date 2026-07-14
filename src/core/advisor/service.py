@@ -1,9 +1,11 @@
 """Advisor orchestration — the single call site main.py uses.
 
 ``build_advisor_context`` runs once per scan (reads config, resolves API keys,
-summarizes macro headlines). ``advise_signal`` runs per fired entry (loads/fetches
-ticker news, calls the LLM, formats the note). Both are fail-open: a disabled
-advisor, missing Ollama, or any error yields ``""`` and the signal is unaffected.
+summarizes macro headlines). ``advise_signal`` runs per fired entry: it scores
+the deterministic rubric, gathers + classifies ticker news, and formats the note.
+Fail-open — a disabled advisor or any error yields ``""`` and the signal is
+unaffected; when only Ollama is unreachable the rubric still returns a note
+(news marked unread, conviction capped).
 """
 
 from __future__ import annotations
@@ -16,17 +18,18 @@ import requests
 
 from core.advisor.base_rates import load_base_rates
 from core.advisor.base_rates import lookup as _lookup_base_rate
-from core.advisor.client import DEFAULT_ENDPOINT, DEFAULT_MODEL, ask_llm
+from core.advisor.ollama_client import DEFAULT_ENDPOINT, DEFAULT_MODEL, classify_news
 from core.advisor.macro_context import build_market_context
 from core.advisor.news_cache import load_fresh_news, save_news
-from core.advisor.news_fetcher import fetch_ticker_news, search_ticker_news
-from core.advisor.reflection import format_reflection, load_reflection
-from core.advisor.schemas import AdvisorInput, AdvisorVerdict
+from core.advisor.news_fetcher import gather_ticker_news
+from core.advisor.news_query import build_queries, generate_queries, split_headlines
+from core.advisor.rubric import apply_news, score_rubric
+from core.advisor.schemas import AdvisorInput, AdvisorVerdict, NewsRead
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["AdvisorContext", "build_advisor_context", "build_advisor_input",
-           "advise_signal", "format_note"]
+           "build_verdict", "advise_signal", "format_note"]
 
 _VERDICT_EMOJI = {"agree": "✅", "disagree": "❌", "flag": "⚠️"}
 _MAX_NOTE = 500  # hard ceiling on the rendered note (safety net)
@@ -44,21 +47,21 @@ class AdvisorContext:
     timeout: int = 20
     temperature: float = 0.1
     max_tokens: int = 300
-    # Multi-agent bull/bear/judge critic (off by default; single-shot otherwise).
-    debate_enabled: bool = False
-    debate_risk_trichotomy: bool = True
-    debate_total_timeout: float = 0.0  # 0 = no wall-clock cap
     cache_ttl_hours: float = 4.0
     max_headlines: int = 5
     market_context: str = ""
     finnhub_key: str | None = None
     brave_key: str | None = None
+    alphavantage_key: str | None = None
+    # AlphaVantage free tier is 25/day — budget calls across scans; 0 disables it.
+    use_alphavantage: bool = True
+    av_max_per_day: int = 20
+    # LLM-generated (cached) news queries; off by default (adds a call per new ticker).
+    use_llm_queries: bool = False
     # ticker -> full company name (warmed by scripts/fetch/fetch_company_names.py).
     company_names: dict = field(default_factory=dict)
     # setup base-rate table (scripts/studies/build_advisor_base_rates.py); {} = off.
     base_rates: dict = field(default_factory=dict)
-    # advisor's own recent calibration line (build_advisor_calibration.py); "" = off.
-    reflection: str = ""
     # Diagnostic callers can fetch current news without mutating data/news/.
     read_only: bool = False
     # One keep-alive session for news HTTP across the whole scan.
@@ -89,7 +92,6 @@ def build_advisor_context(
         return AdvisorContext(enabled=False, read_only=read_only)
 
     news_cfg = (settings or {}).get("news") or {}
-    deb = adv.get("debate") or {}
     ctx = AdvisorContext(
         enabled=True,
         endpoint=str(adv.get("endpoint", DEFAULT_ENDPOINT)),
@@ -97,16 +99,16 @@ def build_advisor_context(
         timeout=int(adv.get("timeout", 20)),
         temperature=float(adv.get("temperature", 0.1)),
         max_tokens=int(adv.get("max_tokens", 300)),
-        debate_enabled=bool(deb.get("enabled", False)),
-        debate_risk_trichotomy=bool(deb.get("risk_trichotomy", True)),
-        debate_total_timeout=float(deb.get("total_timeout", 0) or 0),
         cache_ttl_hours=float(news_cfg.get("cache_ttl_hours", 4.0)),
         max_headlines=int(news_cfg.get("max_headlines_per_ticker", 5)),
         finnhub_key=os.environ.get("FINNHUB_API_KEY") or None,
         brave_key=os.environ.get("BRAVE_API_KEY") or None,
+        alphavantage_key=os.environ.get("ALPHAVANTAGE_API_KEY") or None,
+        use_alphavantage=bool(news_cfg.get("use_alphavantage", True)),
+        av_max_per_day=int(news_cfg.get("alphavantage_max_per_day", 20)),
+        use_llm_queries=bool(news_cfg.get("llm_queries", False)),
         company_names=_load_company_names(),
         base_rates=load_base_rates(),
-        reflection=format_reflection(load_reflection()),
         read_only=read_only,
     )
     if news_cfg.get("macro_summarization", True):
@@ -123,25 +125,54 @@ def build_advisor_context(
     return ctx
 
 
-def _resolve_headlines(ticker: str, ctx: AdvisorContext) -> list[dict]:
-    """Cache → Finnhub/Yahoo → Brave, or an entirely cache-free read-only path."""
+def _resolve_queries(ticker: str, company_name: str, ctx: AdvisorContext) -> list[dict]:
+    """News search queries — deterministic by default; optional cached LLM-built
+    queries when ``advisor`` config enables ``news.llm_queries``."""
+    if not getattr(ctx, "use_llm_queries", False):
+        return build_queries(ticker, company_name)
+    import json
+
+    from core.paths import NEWS_DIR
+    path = NEWS_DIR / ".queries.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    if isinstance(cache, dict) and cache.get(ticker):
+        return cache[ticker]
+    qs = generate_queries(ticker, company_name, endpoint=ctx.endpoint,
+                          model=ctx.model, timeout=ctx.timeout, session=ctx.session)
+    if not qs:
+        return build_queries(ticker, company_name)
+    if not ctx.read_only:
+        try:
+            cache = cache if isinstance(cache, dict) else {}
+            cache[ticker] = qs
+            NEWS_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    return qs
+
+
+def _resolve_headlines(ticker: str, ctx: AdvisorContext, company_name: str = "") -> list[dict]:
+    """Fresh cache → merged multi-source gather (Google News on the company name,
+    Finnhub, AlphaVantage, backstops), relevance-filtered. Read-only skips the
+    cache read/write entirely (a diagnostic path must not mutate data/news/)."""
     # news_cache._read quarantines corrupt files, which is a write. A diagnostic
     # read-only context must not even inspect it; fetch fresh headlines instead.
     heads = [] if ctx.read_only else load_fresh_news(ticker, staleness_hours=ctx.cache_ttl_hours)
     if heads:
         return heads
-    heads = fetch_ticker_news(
-        ticker, finnhub_key=ctx.finnhub_key, session=ctx.session, limit=ctx.max_headlines
+    heads = gather_ticker_news(
+        ticker, company_name,
+        finnhub_key=ctx.finnhub_key, alphavantage_key=ctx.alphavantage_key,
+        brave_key=ctx.brave_key, session=ctx.session, limit=ctx.max_headlines,
+        queries=_resolve_queries(ticker, company_name, ctx),
+        use_alphavantage=ctx.use_alphavantage, av_max_per_day=ctx.av_max_per_day,
     )
-    if heads:
-        if not ctx.read_only:
-            save_news(ticker, "finnhub", heads)
-        return heads
-    heads = search_ticker_news(ticker, brave_key=ctx.brave_key, session=ctx.session,
-                               limit=ctx.max_headlines)
-    if heads:
-        if not ctx.read_only:
-            save_news(ticker, "search", heads)
+    if heads and not ctx.read_only:
+        save_news(ticker, "gathered", heads)
     return heads
 
 
@@ -158,15 +189,43 @@ def _clip(text: str, limit: int) -> str:
     return (head or text[:limit].rstrip()) + "…"
 
 
+# Compact per-axis scorecard glyphs — the descriptive "why" at a glance.
+_AXIS_LABEL = {"edge": "edge", "alignment": "trend", "overextension": "ext",
+               "liquidity": "liq", "rr": "R:R", "event": "event"}
+
+
+def _scorecard(rubric: dict) -> str:
+    """One-line axis checklist: ``edge✓ trend✓ ext· liq✗ R:R✓ event·``.
+
+    ✓ = supports the call, ✗ = counts against it, · = neutral/unknown. Rendered
+    from the rubric breakdown so a trader sees which axes drove the verdict."""
+    crits = (rubric or {}).get("criteria") or {}
+    parts = []
+    for name in ("edge", "alignment", "overextension", "liquidity", "rr", "event"):
+        cell = crits.get(name)
+        if not cell:
+            continue
+        pts = cell.get("points", 0)
+        glyph = "✓" if pts > 0 else ("✗" if pts < 0 else "·")
+        parts.append(f"{_AXIS_LABEL[name]}{glyph}")
+    return " ".join(parts)
+
+
 def format_note(verdict: AdvisorVerdict) -> str:
     """Render a verdict into the display string stored on the signal.
 
-    Reasoning and risks are each clipped to a per-field budget at a word boundary
-    so the card never shows a mid-word cut; ``_MAX_NOTE`` is a final safety net.
+    Conviction is shown as an N/10 score, not a percentage — it is a rubric-
+    derived conviction, not a win probability, and a % invited that misread. The
+    per-axis scorecard gives the "why"; reasoning and risks are clipped at a word
+    boundary so the card never shows a mid-word cut (``_MAX_NOTE`` is the net).
     """
     emoji = _VERDICT_EMOJI.get(verdict.verdict, "🤖")
+    conviction = max(1, int(verdict.confidence * 10 + 0.5))
     reasoning = _clip(verdict.reasoning, _MAX_REASONING)
-    note = f"{emoji} {verdict.verdict.capitalize()} · {verdict.confidence:.0%} — {reasoning}"
+    note = f"{emoji} {verdict.verdict.capitalize()} · {conviction}/10 — {reasoning}"
+    card = _scorecard(verdict.rubric)
+    if card:
+        note += f"  [{card}]"
     if verdict.risks:
         note += f"  ⚠ {_clip(verdict.risks, _MAX_RISK)}"
     return note[:_MAX_NOTE]
@@ -215,10 +274,10 @@ def build_advisor_input(
     derived from the snapshot; ``pct_from_ma``/``rp_rank`` are supplied by the
     caller (they need the DataFrame / rank table not carried on the scan).
     """
-    if headlines is None:
-        headlines = _resolve_headlines(ticker, ctx)
     company_name = (ctx.company_names.get(ticker)
                     or ctx.company_names.get(ticker.upper()) or "")
+    if headlines is None:
+        headlines = _resolve_headlines(ticker, ctx, company_name)
 
     close = _sfloat(getattr(scan, "close", None))
     atr = _sfloat(getattr(scan, "atr", None))
@@ -257,7 +316,36 @@ def build_advisor_input(
         cap_tier=_cap_tier(market_cap),
         rp_rank=_sfloat(rp_rank),
         base_rate=base_rate,
-        reflection=getattr(ctx, "reflection", "") or "",
+    )
+
+
+def build_verdict(input_data: AdvisorInput, ctx: AdvisorContext) -> AdvisorVerdict:
+    """Hybrid verdict: the deterministic rubric computes the technical call and
+    calibrated confidence; the LLM contributes only the news read, which can add
+    caution (downgrade / veto on adverse catalysts, penalize when blind) but
+    never inflate a weak setup. Always returns a verdict — the rubric stands on
+    its own when the model is unreachable."""
+    rubric = score_rubric(input_data)
+    catalysts, _recaps = split_headlines(input_data.headlines or [])
+
+    news = None
+    if catalysts:
+        news = classify_news(
+            input_data.ticker, input_data.company_name, input_data.direction,
+            catalysts, endpoint=ctx.endpoint, model=ctx.model, timeout=ctx.timeout,
+            temperature=ctx.temperature, max_tokens=min(ctx.max_tokens, 200),
+            session=ctx.session,
+        )
+    if news is None:
+        # No catalyst headlines → genuinely no orthogonal news ('none'); catalysts
+        # present but the model unreachable → 'unknown' (blind, so stay humble).
+        news = NewsRead(stance="unknown" if catalysts else "none")
+
+    rubric = apply_news(rubric, news.stance, news.severity, news.material_news)
+    return AdvisorVerdict(
+        verdict=rubric.verdict, confidence=rubric.confidence,
+        reasoning=rubric.reasoning, risks=rubric.risk,
+        rubric=rubric.to_dict(), news_stance=news.stance,
     )
 
 
@@ -284,19 +372,7 @@ def advise_signal(
             vix_level=vix_level, macro_score=macro_score,
             behavioral_score=behavioral_score, open_positions=open_positions,
         )
-        if ctx.debate_enabled:
-            from core.advisor.debate import run_debate
-            verdict = run_debate(input_data, ctx).verdict
-        else:
-            verdict = ask_llm(
-                input_data,
-                endpoint=ctx.endpoint,
-                model=ctx.model,
-                timeout=ctx.timeout,
-                temperature=ctx.temperature,
-                max_tokens=ctx.max_tokens,
-                session=ctx.session,
-            )
+        verdict = build_verdict(input_data, ctx)
         return format_note(verdict) if verdict else ""
     except Exception as exc:  # fail-open — advisor never breaks a scan
         logger.warning("advisor skipped for %s — %s", ticker, exc)

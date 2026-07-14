@@ -18,8 +18,9 @@ from typing import Literal
 VerdictLabel = Literal["agree", "disagree", "flag"]
 
 _VALID_VERDICTS: frozenset[str] = frozenset(("agree", "disagree", "flag"))
+_VALID_STANCES: frozenset[str] = frozenset(("supportive", "adverse", "neutral", "none", "unknown"))
 
-__all__ = ["AdvisorInput", "AdvisorVerdict", "VerdictLabel", "BullCase", "BearCase"]
+__all__ = ["AdvisorInput", "AdvisorVerdict", "VerdictLabel", "NewsRead"]
 
 
 @dataclass
@@ -65,17 +66,24 @@ class AdvisorInput:
     # Historical edge for this setup, precomputed over resolved trades only
     # (aggregate — no per-trade outcome leaks). {n, win_rate, avg_r, expectancy}.
     base_rate: dict = field(default_factory=dict)
-    reflection: str = ""                  # advisor's own recent calibration line
 
 
 @dataclass
 class AdvisorVerdict:
-    """Parsed LLM response — the AI's opinion on a fired signal."""
+    """The advisor's opinion on a fired signal.
+
+    The verdict + confidence are computed by the rubric (deterministic, from
+    quant inputs) and the LLM contributes only the news read; ``rubric`` carries
+    the per-axis breakdown for cards/journaling and ``news_stance`` the
+    classified stance.
+    """
 
     verdict: VerdictLabel
     confidence: float  # [0, 1]
     reasoning: str  # ~1-2 sentence rationale
     risks: str = ""  # optional risk note
+    rubric: dict = field(default_factory=dict)   # per-axis score breakdown
+    news_stance: str = ""                          # supportive|adverse|neutral|none|unknown
 
     def __post_init__(self) -> None:
         if self.verdict not in _VALID_VERDICTS:
@@ -95,30 +103,29 @@ class AdvisorVerdict:
             "confidence": self.confidence,
             "reasoning": self.reasoning,
             "risks": self.risks,
+            "rubric": self.rubric,
+            "news_stance": self.news_stance,
         }
 
 
 @dataclass
-class BullCase:
-    """The bull analyst's case FOR taking the entry (one debate turn)."""
+class NewsRead:
+    """The LLM's news-only classification — the sole model input to the verdict.
 
-    thesis: str = ""
-    points: list[str] = field(default_factory=list)
+    Deliberately narrow: the model judges ticker news novelty and direction, not
+    the technicals (those are the rubric's job), so it cannot rubber-stamp our
+    own numbers.
+    """
 
-    def __post_init__(self) -> None:
-        self.thesis = str(self.thesis or "").strip()
-        self.points = [str(p).strip() for p in (self.points or []) if str(p).strip()]
-
-
-@dataclass
-class BearCase:
-    """The bear analyst's case AGAINST the entry — the critic (one debate turn)."""
-
-    thesis: str = ""
-    points: list[str] = field(default_factory=list)
-    rebuttal: str = ""
+    stance: str = "unknown"          # supportive | adverse | neutral | none | unknown
+    severity: str = "none"           # none | minor | major
+    material_news: str = ""          # one-line most decision-relevant catalyst
 
     def __post_init__(self) -> None:
-        self.thesis = str(self.thesis or "").strip()
-        self.points = [str(p).strip() for p in (self.points or []) if str(p).strip()]
-        self.rebuttal = str(self.rebuttal or "").strip()
+        self.stance = str(self.stance or "unknown").lower().strip()
+        if self.stance not in _VALID_STANCES:
+            self.stance = "unknown"
+        self.severity = str(self.severity or "none").lower().strip()
+        if self.severity not in ("none", "minor", "major"):
+            self.severity = "none"
+        self.material_news = str(self.material_news or "").strip()

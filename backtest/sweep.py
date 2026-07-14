@@ -812,7 +812,7 @@ class SweepEngine:
 
 _PORT_FIELDS = frozenset({
     "max_open_risk", "start_date", "end_date", "earnings_aware",
-    "close_open_at_eod", "entry_slippage_pct", "commission_r",
+    "close_open_at_eod", "entry_slippage_pct", "exit_slippage_pct", "commission_r",
     "max_hold_days", "max_hold_mode",
     "trail_atr_mult", "trail_activate_r",
     "breakeven_trigger_r", "breakeven_buffer_atr",

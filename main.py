@@ -1067,7 +1067,10 @@ def _save_scan(
     """
     scan_passed = [r for r in results if r.scan.passed]
     scan_blocked = [r for r in results if not r.scan.passed and not r.error]
-    signals = [r for r in scan_passed if r.signal and r.signal.passed]
+    # Count EVERY fired signal — a held ticker whose scan failed still proceeds to
+    # signal() and can fire an exit; filtering on scan_passed undercounted those
+    # (the report section below already counts from ``results``).
+    signals = [r for r in results if r.signal and r.signal.passed]
     tickers_scanned = len(scan_passed) + len(scan_blocked)
 
     market_regime: str | None = next(

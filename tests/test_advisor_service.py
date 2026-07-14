@@ -60,10 +60,19 @@ def test_build_context_macro_summarization_off(monkeypatch):
 
 # ── note formatting ──────────────────────────────────────────────────────────
 
-def test_format_note_verdict_confidence_and_risk():
+def test_format_note_verdict_conviction_and_risk():
     note = service.format_note(AdvisorVerdict("agree", 0.82, "strong momentum", risks="gap"))
-    assert note.startswith("✅ Agree · 82% — strong momentum")
+    assert note.startswith("✅ Agree · 8/10 — strong momentum")  # conviction, not a %
     assert "⚠ gap" in note
+
+
+def test_format_note_renders_scorecard_from_rubric():
+    v = AdvisorVerdict("flag", 0.5, "mixed", rubric={"criteria": {
+        "edge": {"label": "negative", "points": -3},
+        "alignment": {"label": "aligned", "points": 2},
+        "liquidity": {"label": "thin", "points": 0}}})
+    note = service.format_note(v)
+    assert "edge✗" in note and "trend✓" in note and "liq·" in note
 
 
 def test_format_note_truncated_to_column_width():
@@ -100,26 +109,29 @@ def test_advise_disabled_returns_empty():
 
 
 def test_advise_enabled_returns_note(monkeypatch):
-    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [{"headline": "h"}])
-    monkeypatch.setattr(service, "ask_llm",
-                        lambda inp, **k: AdvisorVerdict("agree", 0.7, "ok"))
+    # The hybrid path composes the verdict from the rubric + news read; here we
+    # stub build_verdict and assert advise_signal renders/returns its note.
+    monkeypatch.setattr(service, "_resolve_headlines", lambda *a, **k: [{"headline": "h"}])
+    monkeypatch.setattr(service, "build_verdict",
+                        lambda inp, ctx: AdvisorVerdict("agree", 0.7, "ok"))
     ctx = service.AdvisorContext(enabled=True)
     note = service.advise_signal("AAPL", _Signal(), ctx, vix_level=14.0)
-    assert note.startswith("✅ Agree · 70% — ok")
+    assert note.startswith("✅ Agree · 7/10 — ok")
 
 
-def test_advise_passes_company_name_to_llm(monkeypatch):
+def test_advise_passes_company_name_to_news(monkeypatch):
     # Regression: a bare ticker made the model misread name-based news as an
     # identity mismatch (ARX.TO news names "ARC Resources"). The resolved company
-    # name must reach the LLM input.
+    # name must reach the news classifier.
     seen = {}
-    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [{"headline": "h"}])
+    monkeypatch.setattr(service, "_resolve_headlines",
+                        lambda *a, **k: [{"headline": "ARC wins contract award"}])
 
-    def _capture(inp, **k):
-        seen["company_name"] = inp.company_name
-        return AdvisorVerdict("agree", 0.7, "ok")
+    def _capture(ticker, company_name, direction, headlines, **k):
+        seen["company_name"] = company_name
+        return service.NewsRead(stance="neutral")
 
-    monkeypatch.setattr(service, "ask_llm", _capture)
+    monkeypatch.setattr(service, "classify_news", _capture)
     ctx = service.AdvisorContext(enabled=True,
                                  company_names={"ARX.TO": "ARC Resources Ltd."})
     service.advise_signal("ARX.TO", _Signal(), ctx)
@@ -128,27 +140,28 @@ def test_advise_passes_company_name_to_llm(monkeypatch):
 
 def test_advise_missing_company_name_is_blank(monkeypatch):
     seen = {}
-    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [{"headline": "h"}])
+    monkeypatch.setattr(service, "_resolve_headlines",
+                        lambda *a, **k: [{"headline": "Acme wins a big contract"}])
 
-    def _capture(inp, **k):
-        seen["company_name"] = inp.company_name
-        return AdvisorVerdict("agree", 0.7, "ok")
+    def _capture(ticker, company_name, direction, headlines, **k):
+        seen["company_name"] = company_name
+        return service.NewsRead(stance="neutral")
 
-    monkeypatch.setattr(service, "ask_llm", _capture)
-    monkeypatch.setattr(service, "save_news", lambda *a, **k: None)
+    monkeypatch.setattr(service, "classify_news", _capture)
     ctx = service.AdvisorContext(enabled=True, company_names={})
     service.advise_signal("ZZZZ", _Signal(), ctx)
     assert seen["company_name"] == ""
 
 
-def test_advise_none_verdict_returns_empty(monkeypatch):
-    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "search_ticker_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "ask_llm", lambda inp, **k: None)
+def test_advise_rubric_stands_without_llm(monkeypatch):
+    # New contract: enabled advisor always yields a deterministic rubric verdict,
+    # even when the news model is unreachable (classify_news -> None). A clean
+    # setup with no readable news is 'agree', capped for being news-blind.
+    monkeypatch.setattr(service, "_resolve_headlines", lambda *a, **k: [])
+    monkeypatch.setattr(service, "classify_news", lambda *a, **k: None)
     ctx = service.AdvisorContext(enabled=True)
-    assert service.advise_signal("AAPL", _Signal(), ctx) == ""
+    note = service.advise_signal("AAPL", _Signal(), ctx)
+    assert note.startswith("✅ Agree ·")
 
 
 def test_advise_swallows_exceptions(monkeypatch):
@@ -209,21 +222,20 @@ def test_sfloat_safe():
 
 def test_resolve_headlines_prefers_cache(monkeypatch):
     monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [{"headline": "cached"}])
-    monkeypatch.setattr(service, "fetch_ticker_news",
+    monkeypatch.setattr(service, "gather_ticker_news",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fetch")))
     ctx = service.AdvisorContext(enabled=True)
     assert service._resolve_headlines("AAPL", ctx) == [{"headline": "cached"}]
 
 
-def test_resolve_headlines_falls_through_to_brave(monkeypatch):
+def test_resolve_headlines_gathers_and_caches(monkeypatch):
     saved = []
     monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [])
-    monkeypatch.setattr(service, "search_ticker_news", lambda *a, **k: [{"headline": "brave"}])
+    monkeypatch.setattr(service, "gather_ticker_news", lambda *a, **k: [{"headline": "gathered"}])
     monkeypatch.setattr(service, "save_news", lambda *a, **k: saved.append(a))
     ctx = service.AdvisorContext(enabled=True)
-    assert service._resolve_headlines("AAPL", ctx) == [{"headline": "brave"}]
-    assert saved and saved[0][1] == "search"  # cached under the search section
+    assert service._resolve_headlines("AAPL", ctx, "Apple Inc.") == [{"headline": "gathered"}]
+    assert saved and saved[0][1] == "gathered"  # cached under the gathered section
 
 
 def test_resolve_headlines_read_only_never_saves(monkeypatch):
@@ -232,7 +244,7 @@ def test_resolve_headlines_read_only_never_saves(monkeypatch):
         "load_fresh_news",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not read cache")),
     )
-    monkeypatch.setattr(service, "fetch_ticker_news", lambda *a, **k: [{"headline": "live"}])
+    monkeypatch.setattr(service, "gather_ticker_news", lambda *a, **k: [{"headline": "live"}])
     monkeypatch.setattr(
         service,
         "save_news",

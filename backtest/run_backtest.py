@@ -229,6 +229,21 @@ def main() -> None:
     elif args.breakeven_trigger_r is not None:
         print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
 
+    # Exit-side slippage (--exit-slippage-pct). OFF by default (0/absent → exits
+    # fill frictionless, the shipped headline convention — a KNOWN optimism;
+    # symmetric 0.002 measured −58.7R / −0.29 Sharpe on the pinned snapshot
+    # 2026-07-11). YAML execution.exit_slippage_pct or the CLI flag opts in;
+    # applies to stop/engine_exit/time_stop/open_eod fills, never targets.
+    x_slip = exec_cfg.get("exit_slippage_pct")
+    if args.exit_slippage_pct is not None:
+        x_slip = args.exit_slippage_pct
+    if x_slip:  # 0/absent → off
+        base_port["exit_slippage_pct"] = float(x_slip)
+        print(f"  ▸ Exit slippage: ENABLED  ({float(x_slip):.4f} on market-type exit "
+              f"fills; target limit fills stay exact — baseline is OFF)")
+    elif args.exit_slippage_pct is not None:
+        print("  ▸ Exit slippage: DISABLED (CLI override 0)")
+
     # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
     # above); the flag overrides it for tuning this one-number risk lever.
     if args.max_open_risk is not None:
@@ -596,6 +611,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
                    help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
                         "profit past entry (default 0 = exact breakeven).")
+    p.add_argument("--exit-slippage-pct", type=float, default=None, metavar="F",
+                   help="Exit-side slippage fraction on MARKET-type exit fills "
+                        "(stop, engine_exit, time_stop, open_eod; target limit "
+                        "fills stay exact). Default: execution.exit_slippage_pct "
+                        "in filters.yaml (absent/0 = off — the shipped headline "
+                        "fills exits frictionless). Pass 0 to disable.")
     p.add_argument("--correlation-cap", action="store_true",
                    help="Correlation-aware open-risk budget: charge max_open_risk "
                         "against the correlation-adjusted effective risk sqrt(wᵀCw) "

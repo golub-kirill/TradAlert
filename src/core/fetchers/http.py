@@ -58,12 +58,19 @@ _LIMITERS_GUARD = threading.Lock()
 
 
 def get_rate_limiter(key: str, min_interval_s: float) -> _MinIntervalLimiter:
-    """Get-or-create a shared rate limiter for ``key``."""
+    """Get-or-create a shared rate limiter for ``key``.
+
+    A key re-requested with a different interval keeps its ONE limiter and adopts
+    the stricter (larger) spacing — replacing the instance would reset its
+    reservation clock and let two callers hit the host back-to-back.
+    """
     with _LIMITERS_GUARD:
         limiter = _LIMITERS.get(key)
-        if limiter is None or limiter.min_interval != min_interval_s:
+        if limiter is None:
             limiter = _MinIntervalLimiter(min_interval_s)
             _LIMITERS[key] = limiter
+        elif min_interval_s > limiter.min_interval:
+            limiter.min_interval = float(min_interval_s)
         return limiter
 
 

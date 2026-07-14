@@ -40,7 +40,17 @@ def test_to_dict_roundtrip():
         "confidence": 0.9,
         "reasoning": "weak setup",
         "risks": "earnings",
+        "rubric": {},
+        "news_stance": "",
     }
+
+
+def test_news_read_normalizes_bad_fields():
+    from core.advisor.schemas import NewsRead
+
+    nr = NewsRead(stance="ADVERSE", severity="huge", material_news="  cut  ")
+    assert nr.stance == "adverse" and nr.severity == "none" and nr.material_news == "cut"
+    assert NewsRead(stance="banana").stance == "unknown"
 
 
 def test_input_defaults_are_safe():
