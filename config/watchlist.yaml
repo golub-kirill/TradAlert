@@ -19,6 +19,16 @@
 # independently — none read the watchlist). Same pass: TSX 60 completed + liquid
 # Canadian mid-caps added for a deeper commission-free .TO bench.
 #
+# 2026-07-14 prune (FP-anatomy, OWNER OVERRIDE): EFA VEA SPLV EWJ removed — broad
+# developed-ex-US / low-vol-factor / range-bound-Japan baskets that structurally don't
+# trend and are robustly net-negative across runs 26/28/31 (EFA −7.7R/24t worst; EFA≈VEA
+# are near-duplicates). UNLIKE the 2026-06-24 prune this is NOT backtest-neutral: these
+# names DO trade, so cutting them for P&L is survivorship bias (against NORTH STAR #2) —
+# done on an explicit owner override after that was flagged. They are added to
+# survivorship_audit.pruned_losers below so frozen_universe_ab.py re-includes them and
+# quantifies the inflation. Single-name / sign-flipping negatives were deliberately NOT
+# pruned (that would be fitting noise). See TODO §false-positive program.
+#
 # Suffix conventions
 #   .TO   Toronto Stock Exchange (TSX)
 #   (none) US exchanges (NYSE / NASDAQ)
@@ -61,14 +71,10 @@ tier_a:
   # ── Factor / style ────────────────────────────────────────────────────────
   - QUAL                                # quality
   - VLUE                                # value
-  - SPLV                                # low vol large
 
   # ── International equity ──────────────────────────────────────────────────
-  - EFA                                 # developed ex-US
-  - VEA                                 # developed ex-US (alt)
   - EEM                                 # emerging markets
   - VWO                                 # emerging markets (alt)
-  - EWJ                                 # Japan
   - EWZ                                 # Brazil
   - INDA                                # India
   - FXI                                 # China large
@@ -325,6 +331,6 @@ survivorship_audit:
   # Names removed from tier_a AFTER seeing them lose. Re-added to the frozen
   # universe for as-of dates >= their inception (you would NOT have known to prune
   # them at the time). The pruning bias is usually larger than the look-ahead bias.
-  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT]
+  pruned_losers: [MTUM, SIZE, SPHB, EWG, EWU, USO, LIT, EFA, VEA, SPLV, EWJ]
   max_hold_days: 25              # shipped cap so the audit reflects the real strategy
   max_hold_mode: if_not_profit   # shipped exit (ADR-001); breakeven 1.0R also applied (filters.yaml)
