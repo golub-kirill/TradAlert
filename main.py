@@ -140,6 +140,13 @@ def main() -> None:
     # not re-read it.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
+    # Regime indices come from config (filters.regime.index_symbols), same knob
+    # the engine's regime classifier reads — the module default is the fallback.
+    global _REGIME_INDICES
+    _idx = (filters_cfg.get("regime") or {}).get("index_symbols")
+    if _idx:
+        _REGIME_INDICES = [str(s) for s in _idx]
+
     # --allow-shorts flips the master switch on. Only mutated when the flag is
     # set, so an unflagged run leaves the long-only baseline replay-identical
     # (allow_shorts defaults false in filters.yaml).
@@ -470,6 +477,30 @@ def _run_pipeline(
 
     # ── load market context and open positions once per run ──────────────────
     market_dfs, vix_df = _load_market_context(tickers, now=now)
+
+    # Pin the engine's decision frame to the last completed index bar so live
+    # gate semantics (_near_earnings, stop_dates) run on the same clock as the
+    # backtest (which pins _today to the bar) instead of the wall clock, which
+    # drifts +1..+3 days past the bar depending on when the batch runs.
+    frame = _frame_date(market_dfs)
+    if frame is not None:
+        engine._today = frame  # same mutation contract the backtester uses
+        logger.info("[frame] engine._today pinned to last completed bar %s", frame)
+    else:
+        logger.warning(
+            "[frame] no market frame available — engine._today stays wall-clock "
+            "%s; backtest-frame parity NOT guaranteed this run",
+            getattr(engine, "_today", "unset"))
+
+    # Expired-blackout guard: a stop_dates list that is entirely in the past
+    # protects nothing while looking configured — surface it every scan.
+    # getattr: test stubs/fakes may not carry the probe.
+    _dark = getattr(engine, "stop_dates_dark", lambda: None)()
+    if _dark is not None:
+        logger.warning(
+            "[filters] every events.stop_dates row is past (latest %s) — the "
+            "entry blackout is DARK; prune or refresh config/filters.yaml", _dark)
+
     positions = load_open_positions()  # {ticker: Position}
     # Live open-risk budget: the validated portfolio caps aggregate risk at
     # max_open_risk and sizes each entry by size_mult. The scanner surfaces budget
@@ -479,19 +510,23 @@ def _run_pipeline(
     # backtest's bars_held (p25-p75). Computed once per scan, applied to every
     # fired entry. Fail-open.
     expected_hold = _expected_hold_range(engine)
-    # Event-risk advisory (display-only): one scan-wide flag (FOMC/CPI/NFP within N
-    # days) stamped on each fresh entry. now.date() is the UTC date; the scan runs
-    # post-close so it matches the trading date and the advisory window absorbs any
-    # tz edge. Fail-open.
+    # Event-risk advisory (display-only): one scan-wide flag stamped on each fresh
+    # entry, listing EVERY FOMC/CPI/NFP inside the expected hold — an FOMC on day
+    # 14 of a 3–14d hold must read, so the horizon is the hold ceiling, never less
+    # than the configured near-window. now.date() is the UTC date; the scan runs
+    # post-close so it matches the trading date. Fail-open.
     event_risk = ""
     if cal_events:
         try:
-            from core.macro.calendar import event_risk_flag
+            from core.macro.calendar import EVENT_RISK_WITHIN_DAYS, event_risk_flags
             _within = (settings.get("scanner") or {}).get("event_risk_within_days")
-            _kw = {"within_days": int(_within)} if _within is not None else {}
-            event_risk = event_risk_flag(cal_events, now.date(), **_kw)
+            # An explicit scanner.event_risk_within_days wins verbatim; the
+            # DEFAULT widens to the expected-hold ceiling.
+            horizon = (int(_within) if _within is not None
+                       else max(EVENT_RISK_WITHIN_DAYS, int(expected_hold[1])))
+            event_risk = event_risk_flags(cal_events, now.date(), horizon_days=horizon)
         except Exception as exc:
-            logger.debug("[calendar] event_risk_flag failed (skipping): %s", exc)
+            logger.debug("[calendar] event_risk_flags failed (skipping): %s", exc)
 
     # AI advisor (live-only, opt-in). Built once per scan — reads config, resolves
     # news API keys, and summarizes macro headlines into one shared market context.
@@ -908,6 +943,19 @@ def _process_ticker(
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _frame_date(market_dfs: dict[str, pd.DataFrame] | None):
+    """Date of the last completed bar across the regime index frames, or None.
+
+    The scan's decision frame: ``engine._today`` is pinned to it so live gates
+    run on the bar clock the backtest uses. Max across indices — a single stale
+    index frame must not drag the whole scan's frame backwards.
+    """
+    if not market_dfs:
+        return None
+    last = [df.index[-1] for df in market_dfs.values() if df is not None and len(df)]
+    return max(last).date() if last else None
+
 
 def _load_market_context(
         succeeded: list[str],

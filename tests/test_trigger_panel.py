@@ -279,3 +279,53 @@ def test_chart_renders_trigger_panel(tmp_path, direction):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ── panel honesty: rows must mirror the decision path ─────────────────────────
+
+def test_bb_z_row_informational_while_veto_off():
+    """Veto OFF → the decision never grades bb_z, so the panel must not print a
+    failing verdict for it — even at an extreme z (the old |z|<2.0 row could show
+    ✗ beside passed=True)."""
+    eng = _engine()
+    _stub(eng, "long")
+    df = _firing_df()
+    df.loc[df.index[-1], "bb_z"] = 3.5
+    sig = eng.signal("ABC", df, with_checks=True)
+    row = _by_name(sig.checks, "VOLATILITY", "BB z")
+    assert sig.passed and row.passed is True
+    assert "veto off" in row.detail and "+3.50" in row.detail
+
+
+def test_bb_z_row_mirrors_enabled_veto_threshold():
+    cfg = _load_cfg()
+    cfg.setdefault("signals", {})
+    cfg["signals"]["gap_risk"] = {"enabled": False}
+    cfg["signals"]["sector_gate"] = {"enabled": False}
+    cfg["signals"]["require_trigger_bar_up"] = False
+    cfg["signals"]["overextension"] = {"enabled": True, "bb_z_max": 2.5}
+    cfg["events"] = {"earnings_buffer_days": 0, "stop_dates": []}
+    eng = FilterEngine.from_dict(cfg)
+    eng._today = date(2025, 6, 15)
+    _stub(eng, "long")
+
+    # Under the threshold: the fired signal's panel row grades vs the REAL 2.5.
+    sig = eng.signal("ABC", _firing_df(), with_checks=True)
+    row = _by_name(sig.checks, "VOLATILITY", "BB z")
+    assert sig.passed and row.passed is True and "veto±2.5" in row.detail
+
+    # Over the threshold: the DECISION blocks, so no contradictory panel exists.
+    df = _firing_df()
+    df.loc[df.index[-1], "bb_z"] = 3.5
+    blocked = eng.signal("ABC", df, with_checks=True)
+    assert blocked.passed is False and "overextended" in blocked.reason
+
+
+def test_rr_row_is_marked_fixed():
+    """R:R ≡ min_rr by construction (target = stop×min_rr) — the row must say so
+    instead of posing as a measured gate."""
+    eng = _engine()
+    _stub(eng, "long")
+    sig = eng.signal("ABC", _firing_df(), with_checks=True)
+    row = _by_name(sig.checks, "RISK", "R:R")
+    assert row.passed is True and "(fixed)" in row.detail
