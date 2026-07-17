@@ -108,3 +108,86 @@ def test_event_risk_default_window_is_five():
     # Default window picks up an event 5 days out but not 6.
     assert event_risk_flag(_EVENTS, date(2026, 3, 6)) == "CPI in 5d (2026-03-11)"
     assert event_risk_flag(_EVENTS, date(2026, 3, 5)) == ""
+
+
+# ── hold-horizon advisory (events_in_window / event_risk_flags) ───────────────
+
+from core.macro.calendar import events_in_window, event_risk_flags  # noqa: E402
+
+
+def test_events_in_window_returns_every_event_in_horizon():
+    evts = events_in_window(_EVENTS, date(2026, 3, 1), horizon_days=20)
+    assert [e.date for e in evts] == [date(2026, 3, 11), date(2026, 3, 17), date(2026, 3, 18)]
+
+
+def test_event_risk_flags_lists_beyond_the_near_window():
+    """An event on day 13 of the horizon must read — the soonest-only 5d flag misses it."""
+    flags = event_risk_flags(_EVENTS, date(2026, 3, 4), horizon_days=14)
+    assert "CPI in 7d (2026-03-11)" in flags
+    assert "FOMC in 13d (2026-03-17)" in flags
+
+
+def test_event_risk_flags_collapses_consecutive_meeting_days():
+    flags = event_risk_flags(_EVENTS, date(2026, 3, 16), horizon_days=5)
+    assert flags == "FOMC in 1d (2026-03-17)"      # 03-18 folded into the meeting
+
+
+def test_event_risk_flags_empty_out_of_horizon():
+    assert event_risk_flags(_EVENTS, date(2026, 1, 1), horizon_days=5) == ""
+
+
+# ── curated-list fact anchors (dates are looked up, never derived) ────────────
+
+def test_hardcoded_cpi_dates_are_the_published_facts():
+    """June-2026 CPI released 2026-07-14 (BLS archive). The old 07-15 row came from
+    a fictional '2nd Wednesday' rule — this anchor stops any re-derivation."""
+    cpi = {e.date for e in cal._HARDCODED_2026 if e.category == "CPI"}
+    assert date(2026, 7, 14) in cpi
+    assert date(2026, 7, 15) not in cpi
+    assert date(2026, 8, 12) in cpi                # next release, BLS-confirmed
+
+
+def test_hardcoded_fomc_matches_the_fed_page():
+    fomc = {e.date for e in cal._HARDCODED_2026 if e.category == "FOMC"}
+    assert len(fomc) == 16                          # 8 meetings x 2 days
+    assert date(2026, 7, 28) in fomc and date(2026, 7, 29) in fomc
+
+
+# ── TV-feed divergence check ──────────────────────────────────────────────────
+
+def test_tv_divergence_warns_on_date_mismatch(caplog):
+    tv = [CalendarEvent(date(2026, 7, 20), "CPI", "CPI (feed)")]   # curated says 07-14
+    with caplog.at_level("WARNING"):
+        cal._warn_tv_divergence(tv)
+    assert "diverges" in caplog.text and "2026-07-20" in caplog.text
+
+
+def test_tv_divergence_quiet_on_agreement(caplog):
+    tv = [CalendarEvent(date(2026, 7, 14), "CPI", "CPI (feed)")]
+    with caplog.at_level("WARNING"):
+        cal._warn_tv_divergence(tv)
+    assert "diverges" not in caplog.text
+
+
+def test_tv_divergence_catches_phantom_row_beside_the_real_one():
+    """The live-observed failure: the feed carried the correct CPI 07-14 AND a
+    phantom 07-20; the soonest-future flag printed the phantom. A superset with
+    a wrong extra date must warn."""
+    import logging
+    tv = [CalendarEvent(date(2026, 7, 14), "CPI", "CPI (feed)"),
+          CalendarEvent(date(2026, 7, 20), "CPI", "CPI (feed phantom)")]
+    records = []
+    h = logging.Handler(); h.emit = lambda r: records.append(r.getMessage())
+    cal.logger.addHandler(h)
+    try:
+        cal._warn_tv_divergence(tv)
+    finally:
+        cal.logger.removeHandler(h)
+    assert any("2026-07-20" in m and "diverges" in m for m in records)
+
+
+def test_tv_divergence_tolerates_decision_day_only_fomc(caplog):
+    tv = [CalendarEvent(date(2026, 7, 29), "FOMC", "rate decision")]  # no day-1 row
+    with caplog.at_level("WARNING"):
+        cal._warn_tv_divergence(tv)
+    assert "diverges" not in caplog.text

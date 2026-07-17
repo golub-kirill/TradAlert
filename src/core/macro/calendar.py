@@ -44,10 +44,14 @@ class CalendarEvent:
     action: str = "no-trade"
 
 
-# ── Hard-coded 2026 calendar ─────────────────────────────────────────────────
-# FOMC: Federal Reserve published schedule.
-# CPI: BLS releases on the 2nd Wednesday of the month (08:30 ET).
-# NFP: BLS first Friday of each month at 08:30 ET.
+# ── Hard-coded 2026 calendar (offline fallback) ──────────────────────────────
+# Release dates are published facts — looked up, never derived from a weekday
+# pattern (BLS shifts for holidays and reschedules; e.g. the Jan-2026 CPI moved
+# 02-11 → 02-13, and the Jun-2026 CPI landed on a Tuesday).
+# FOMC: federalreserve.gov/monetarypolicy/fomccalendars.htm  (verified 2026-07-17)
+# CPI:  bls.gov/schedule/news_release/cpi.htm    (trued-up 2026-07-17; Jun-2026
+#       release = 07-14 per the BLS news-release archive)
+# NFP:  bls.gov/schedule/news_release/empsit.htm (02-06 / 08-07 anchors verified)
 _HARDCODED_2026: tuple[CalendarEvent, ...] = (
     CalendarEvent(date(2026, 1, 27), "FOMC", "FOMC meeting day 1"),
     CalendarEvent(date(2026, 1, 28), "FOMC", "FOMC decision day"),
@@ -65,17 +69,17 @@ _HARDCODED_2026: tuple[CalendarEvent, ...] = (
     CalendarEvent(date(2026, 10, 28), "FOMC", "FOMC decision day"),
     CalendarEvent(date(2026, 12, 8), "FOMC", "FOMC meeting day 1"),
     CalendarEvent(date(2026, 12, 9), "FOMC", "FOMC decision day + SEP"),
-    CalendarEvent(date(2026, 1, 14), "CPI", "Dec 2025 CPI release"),
-    CalendarEvent(date(2026, 2, 11), "CPI", "Jan 2026 CPI release"),
+    CalendarEvent(date(2026, 1, 13), "CPI", "Dec 2025 CPI release"),
+    CalendarEvent(date(2026, 2, 13), "CPI", "Jan 2026 CPI release"),  # resched. from 02-11
     CalendarEvent(date(2026, 3, 11), "CPI", "Feb 2026 CPI release"),
-    CalendarEvent(date(2026, 4, 14), "CPI", "Mar 2026 CPI release"),
-    CalendarEvent(date(2026, 5, 13), "CPI", "Apr 2026 CPI release"),
+    CalendarEvent(date(2026, 4, 10), "CPI", "Mar 2026 CPI release"),
+    CalendarEvent(date(2026, 5, 12), "CPI", "Apr 2026 CPI release"),
     CalendarEvent(date(2026, 6, 10), "CPI", "May 2026 CPI release"),
-    CalendarEvent(date(2026, 7, 15), "CPI", "Jun 2026 CPI release"),
+    CalendarEvent(date(2026, 7, 14), "CPI", "Jun 2026 CPI release"),
     CalendarEvent(date(2026, 8, 12), "CPI", "Jul 2026 CPI release"),
-    CalendarEvent(date(2026, 9, 10), "CPI", "Aug 2026 CPI release"),
+    CalendarEvent(date(2026, 9, 11), "CPI", "Aug 2026 CPI release"),
     CalendarEvent(date(2026, 10, 14), "CPI", "Sep 2026 CPI release"),
-    CalendarEvent(date(2026, 11, 12), "CPI", "Oct 2026 CPI release"),
+    CalendarEvent(date(2026, 11, 10), "CPI", "Oct 2026 CPI release"),
     CalendarEvent(date(2026, 12, 10), "CPI", "Nov 2026 CPI release"),
     CalendarEvent(date(2026, 1, 2), "NFP", "Dec 2025 jobs report"),
     CalendarEvent(date(2026, 2, 6), "NFP", "Jan 2026 jobs report"),
@@ -112,6 +116,11 @@ def get_calendar_events(
 
     if not events:
         events = _load_tv_calendar()
+        if events:
+            try:
+                _warn_tv_divergence(events)
+            except Exception as exc:  # noqa: BLE001 - advisory check, never fatal
+                logger.debug("[calendar] divergence check failed: %s", exc)
 
     if not events:
         events = list(_HARDCODED_2026)
@@ -165,6 +174,53 @@ def upcoming_event_risk(
     return min(upcoming, key=lambda e: e.date)
 
 
+def events_in_window(
+        events: Iterable[CalendarEvent], today: date, *,
+        horizon_days: int,
+        categories: Iterable[str] | None = None,
+) -> list[CalendarEvent]:
+    """Every scheduled event in ``[today, today + horizon_days]`` (inclusive), soonest first.
+
+    Unlike :func:`upcoming_event_risk` (soonest-only, near-window) this returns the
+    full set, so a caller can cover a trade's whole expected hold — an FOMC on day
+    14 of a 3–14d hold must read even though the 5-day near-window misses it.
+    """
+    if horizon_days < 0:
+        return []
+    horizon = today + timedelta(days=horizon_days)
+    whitelist = {c.upper() for c in categories} if categories is not None else None
+    hits = [
+        e for e in events
+        if today <= e.date <= horizon
+        and (whitelist is None or e.category.upper() in whitelist)
+    ]
+    return sorted(hits, key=lambda e: e.date)
+
+
+def event_risk_flags(
+        events: Iterable[CalendarEvent], today: date, *,
+        horizon_days: int,
+        categories: Iterable[str] | None = None,
+) -> str:
+    """Advisory flag listing EVERY event inside the horizon, ``""`` when none.
+
+    e.g. ``"CPI in 2d (2026-08-12); FOMC in 12d (2026-08-22)"``. Consecutive
+    same-category days (the two-day FOMC meeting) collapse to the first day.
+    """
+    hits = events_in_window(events, today, horizon_days=horizon_days, categories=categories)
+    parts: list[str] = []
+    prev: CalendarEvent | None = None
+    for e in hits:
+        if prev is not None and e.category == prev.category and (e.date - prev.date).days == 1:
+            prev = e  # second day of a multi-day meeting — already flagged
+            continue
+        days = (e.date - today).days
+        when = "today" if days == 0 else f"in {days}d ({e.date.isoformat()})"
+        parts.append(f"{e.category} {when}")
+        prev = e
+    return "; ".join(parts)
+
+
 def event_risk_flag(
         events: Iterable[CalendarEvent], today: date, *,
         within_days: int = EVENT_RISK_WITHIN_DAYS,
@@ -181,6 +237,38 @@ def event_risk_flag(
     days = (evt.date - today).days
     when = "today" if days == 0 else f"in {days}d ({evt.date.isoformat()})"
     return f"{evt.category} {when}"
+
+
+def _warn_tv_divergence(tv_events: list[CalendarEvent]) -> None:
+    """Warn loudly when the TV feed carries a date the curated list does not.
+
+    Per (category, month) bucket: any feed date absent from the curated set is
+    flagged — this catches both a wrong date AND a mislabeled extra row beside
+    the right one (the feed shipped a phantom "CPI 2026-07-20" alongside the
+    real 07-14, and the soonest-future flag then printed the phantom). A feed
+    that carries a SUBSET (e.g. FOMC decision day without meeting day 1) is
+    tolerated. Advisory only; the operator verifies against the publisher.
+    """
+    def by_month(events: Iterable[CalendarEvent]) -> dict[tuple, set[date]]:
+        idx: dict[tuple, set[date]] = {}
+        for e in events:
+            idx.setdefault((e.category.upper(), e.date.year, e.date.month), set()).add(e.date)
+        return idx
+
+    tv, ref = by_month(tv_events), by_month(_HARDCODED_2026)
+    diverged = []
+    for key in sorted(set(tv) & set(ref)):
+        extra = sorted(tv[key] - ref[key])
+        if extra:
+            cat, y, m = key
+            diverged.append(
+                f"{cat} {y}-{m:02d}: feed-only {', '.join(map(str, extra))} "
+                f"(curated: {', '.join(map(str, sorted(ref[key])))})")
+    if diverged:
+        logger.warning(
+            "[calendar] TV feed diverges from the curated list on %d bucket(s): %s "
+            "— verify against the publisher (bls.gov / federalreserve.gov) before "
+            "trusting either.", len(diverged), "; ".join(diverged))
 
 
 def _load_yaml_calendar() -> list[CalendarEvent]:
