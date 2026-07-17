@@ -60,6 +60,18 @@ def test_parse_confidence_clamped():
     assert parse_note("✅ Agree · 130% — over-eager")[1] == 1.0
 
 
+def test_parse_rubric_note_with_scorecard():
+    # Current hybrid-rubric format: N/10 conviction + axis scorecard + risks.
+    note = ("✅ Agree · 8/10 — momentum intact  "
+            "[edge✓ trend✓ ext· liq✗ R:R✓ event·]  ⚠ earnings soon")
+    assert parse_note(note) == ("agree", 0.8)
+
+
+def test_parse_rubric_disagree_and_full_conviction():
+    assert parse_note("❌ Disagree · 3/10 — thesis broken") == ("disagree", 0.3)
+    assert parse_note("⚠️ Flag · 10/10 — event window") == ("flag", 1.0)
+
+
 # ── bucket_stats ─────────────────────────────────────────────────────────────
 
 def test_bucket_stats_groups_and_base_rate():
