@@ -95,8 +95,18 @@ _LOCK_FH = None
 # Lazily-built engine (FilterEngine.from_dict) shared by /recalc and /chart.
 _ENGINE = None
 
-_REGIME_INDICES = ["SPY", "QQQ"]
+_REGIME_INDICES = ["SPY", "QQQ"]  # fallback; _regime_indices() reads the config knob
 _VIX_SYMBOL = "^VIX"
+
+
+def _regime_indices() -> list[str]:
+    """Regime index symbols from ``filters.regime.index_symbols`` (fallback SPY/QQQ)."""
+    try:
+        cfg = yaml.safe_load(FILTERS_YAML.read_text(encoding="utf-8")) or {}
+        idx = (cfg.get("regime") or {}).get("index_symbols")
+        return [str(s) for s in idx] if idx else list(_REGIME_INDICES)
+    except Exception:
+        return list(_REGIME_INDICES)
 
 
 # ── startup: credentials, logging, single-instance lock ──────────────────────
@@ -211,7 +221,7 @@ def _load_market_context():
     from persistence.cache import load as cache_load
 
     market_dfs = {}
-    for sym in _REGIME_INDICES:
+    for sym in _regime_indices():
         try:
             market_dfs[sym] = cache_load(sym)
         except Exception as exc:  # fail-open: regime degrades, never aborts

@@ -86,4 +86,7 @@ def format_base_rate(cell: dict) -> str:
         parts.append(f"{wr:.0%} win")
     if ar is not None:
         parts.append(f"{ar:+.2f}R avg (expectancy)")
-    return f"{'; '.join(parts)}; n={int(cell.get('n', 0))}"
+    out = f"{'; '.join(parts)}; n={int(cell.get('n', 0))}"
+    # The matched key makes the quoted cell auditable (which stratum, or __all__).
+    key = cell.get("key")
+    return f"{out} [{key}]" if key else out
