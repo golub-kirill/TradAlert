@@ -88,6 +88,12 @@ class PortfolioConfig:
     # Chronic-loser tracker (see core.ticker_health.TickerHealth). None → off,
     # baseline behavior exact. The penalty multiplies into signal.size_mult at entry.
     ticker_health: Optional["TickerHealth"] = None
+    # Market-state size throttle (chop de-grossing). None → OFF, baseline
+    # bit-identical. A {date: mult} mapping multiplied into entry size on the
+    # ENTRY-FILL date; never touches exits or held positions. Point-in-time
+    # safety is the caller's contract: every mult must derive from data STRICTLY
+    # BEFORE its date (shift the source series by one session).
+    size_throttle: Optional[dict] = None
     # Time-based max-hold exit (swing-horizon enforcement). None → OFF (baseline
     # bit-identical). When set, a still-open trade closes at the bar's CLOSE once
     # held ``max_hold_days`` bars (same convention as Trade.bars_held = exit_idx -
@@ -483,8 +489,13 @@ class PortfolioBacktester:
                         if self._cfg.ticker_health is not None
                         else 1.0
                     )
-                    final_mult = base_mult * chronic_mult
-                    if final_mult <= 0:  # regime + chronic-loser
+                    throttle_mult = (
+                        float(self._cfg.size_throttle.get(D_date, 1.0))
+                        if self._cfg.size_throttle is not None
+                        else 1.0
+                    )
+                    final_mult = base_mult * chronic_mult * throttle_mult
+                    if final_mult <= 0:  # regime + chronic-loser + throttle
                         result.capped_signals.append(
                             CappedSignal(D_date, ticker, signal)
                         )
@@ -525,7 +536,7 @@ class PortfolioBacktester:
                         initial_stop=float(signal.stop_price),
                         initial_target=adj_target,
                         market_regime=signal.market_regime, ticker_trend=signal.ticker_trend,
-                        size_mult=final_mult,  # regime × chronic-loser
+                        size_mult=final_mult,  # regime × chronic-loser × throttle
                         borrow_annual_rate=self._borrow_rate(ticker, signal.direction),
                     )
 
