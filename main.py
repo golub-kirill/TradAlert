@@ -765,12 +765,28 @@ def _process_ticker(
     # ── 7. signal ─────────────────────────────────────────────────────────
     # Earnings buffer only applies to entries; exits skip the fetch.
     earnings_date = None
+    prev_earnings = None
     if held_side is None:
         try:
             earnings_date = get_next_earnings(ticker)
         except Exception as exc:
             logger.warning("[%s] earnings fetch failed (continuing) — %s",
                            ticker, exc)
+        # Two-sided buffer (opt-in): the last earnings date, from the history
+        # cache. Flag-gated so the baseline pays no extra fetch. Fail-open.
+        try:  # stubs/fakes may not carry a full cfg
+            _two_sided = bool(engine.cfg.events.earnings_buffer_two_sided)
+        except AttributeError:
+            _two_sided = False
+        if _two_sided:
+            try:
+                from core.fetchers.earnings_history import get_earnings_history
+                hist = get_earnings_history(ticker)
+                prev_earnings = max(
+                    (d for d in hist if d < engine._today), default=None)
+            except Exception as exc:
+                logger.warning("[%s] prev-earnings fetch failed (continuing) — %s",
+                               ticker, exc)
 
     try:
         # Compute and enrich regime BEFORE signal() so behavioral gate applies.
@@ -786,6 +802,11 @@ def _process_ticker(
                 behavioral=behavioral_state,
             )
 
+        # prev_earnings threads only when present (two-sided flag on AND a date
+        # found) → with the flag off the call shape is unchanged.
+        _prev_kw = (
+            {"prev_earnings_date": prev_earnings} if prev_earnings is not None else {}
+        )
         signal = engine.signal(
             ticker, df,
             market_dfs=market_dfs,
@@ -795,6 +816,7 @@ def _process_ticker(
             held_short=held_short,
             regime=regime,
             with_checks=True,
+            **_prev_kw,
         )
     except InsufficientDataError as exc:
         logger.info("[%s] signal skipped — %s", ticker, exc)

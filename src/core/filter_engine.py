@@ -299,6 +299,7 @@ class FilterEngine:
             vix_df: pd.DataFrame | None = None,
             earnings_date: date | None = None,
             earnings_events: list[EarningsEvent] | None = None,
+            prev_earnings_date: date | None = None,
             held_long: bool = False,
             held_short: bool = False,
             regime: MarketRegime | None = None,
@@ -365,6 +366,7 @@ class FilterEngine:
             else self._signal_entry(
                 ticker, df, regime, earnings_date, market_dfs,
                 earnings_events=earnings_events,
+                prev_earnings_date=prev_earnings_date,
                 with_checks=with_checks,
             )
         )
@@ -425,6 +427,7 @@ class FilterEngine:
             earnings_date: date | None,
             market_dfs: dict[str, pd.DataFrame] | None = None,
             earnings_events: list[EarningsEvent] | None = None,
+            prev_earnings_date: date | None = None,
             with_checks: bool = False,
     ) -> SignalResult:
         """Long-entry signal detection with full gate chain.
@@ -449,6 +452,17 @@ class FilterEngine:
             days_to = (earnings_date - self._today).days
             return self._fail_result(
                 f"earnings in {days_to}d (buffer {buf}d)",
+                regime, ticker_trend,
+            )
+
+        # 3b. two-sided buffer (opt-in, default OFF → byte-identical): also block
+        # inside the buffer AFTER the last earnings. Runs before PEAD candidacy,
+        # so it is incompatible with signals.pead (which enters that window).
+        if self._recent_earnings(prev_earnings_date):
+            buf = self._earnings_buffer_days()
+            days_ago = (self._today - prev_earnings_date).days
+            return self._fail_result(
+                f"earnings {days_ago}d ago (two-sided buffer {buf}d)",
                 regime, ticker_trend,
             )
 
@@ -1442,6 +1456,18 @@ class FilterEngine:
         if earnings_date is None or earnings_date < self._today:
             return False
         return (earnings_date - self._today).days <= self._earnings_buffer_days()
+
+    def _recent_earnings(self, prev_earnings_date: date | None) -> bool:
+        """
+        Two-sided buffer arm (``events.earnings_buffer_two_sided``, opt-in):
+        True when the LAST earnings landed within ``events.earnings_buffer_days``
+        before today. OFF (default) or no date → False, byte-identical baseline.
+        """
+        if (not self.cfg.events.earnings_buffer_two_sided
+                or prev_earnings_date is None
+                or prev_earnings_date > self._today):
+            return False
+        return (self._today - prev_earnings_date).days <= self._earnings_buffer_days()
 
     def _earnings_buffer_days(self) -> int:
         """Return ``events.earnings_buffer_days`` as int."""

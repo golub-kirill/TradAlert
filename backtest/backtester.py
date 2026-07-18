@@ -604,6 +604,11 @@ class BarReplayBacktester:
         pead_kwargs = (
             {"earnings_events": earnings_events} if earnings_events else {}
         )
+        # Two-sided earnings buffer: prev-earnings computed only when the opt-in
+        # flag is on — zero work and an unchanged call shape on the baseline.
+        if earnings_history and self._engine.cfg.events.earnings_buffer_two_sided:
+            pead_kwargs["prev_earnings_date"] = _prev_earnings_from(
+                earnings_history, today)
         try:
             return self._engine.signal(
                 ticker, df_t,
@@ -627,6 +632,11 @@ class BarReplayBacktester:
 
 
 # ── module-level helpers ──────────────────────────────────────────────────────
+
+def _prev_earnings_from(history, today):
+    """Latest earnings date strictly before ``today``, or None. No sort assumed."""
+    return max((d for d in history if d < today), default=None)
+
 
 def _apply_dynamic_stop(
         trade: Trade,
@@ -751,6 +761,9 @@ def call_engine_slice(
     next_earn = _nef(earnings_history, today) if earnings_history else None
     # Pass PEAD events only when present → with PEAD off the call shape is unchanged.
     _pead = {"earnings_events": earnings_events} if earnings_events else {}
+    # Two-sided earnings buffer: prev-earnings only when the opt-in flag is on.
+    if earnings_history and engine.cfg.events.earnings_buffer_two_sided:
+        _pead["prev_earnings_date"] = _prev_earnings_from(earnings_history, today)
     saved = engine._today
     engine._today = today
     try:

@@ -142,6 +142,10 @@ class ExecutionCfg:
 @dataclass(frozen=True)
 class EventsCfg:
     earnings_buffer_days: int
+    # Opt-in: also block entries within the buffer AFTER the last earnings
+    # (default False → byte-identical baseline). Incompatible with signals.pead,
+    # which deliberately enters that window.
+    earnings_buffer_two_sided: bool
     # Raw [{id, date, description}] list; FilterEngine._build_stop_dates_index
     # validates + indexes it at construction.
     stop_dates: list
@@ -303,6 +307,8 @@ def parse(cfg: dict) -> EngineConfig:
         events=EventsCfg(
             earnings_buffer_days=_int(cfg, "events.earnings_buffer_days",
                                       D("filters.events.earnings_buffer_days", 5)),
+            earnings_buffer_two_sided=_bool(
+                cfg, "events.earnings_buffer_two_sided", False),
             stop_dates=_node(cfg, "events.stop_dates", []) or []),
         signals=SignalsCfg(
             momentum=MomentumCfg(

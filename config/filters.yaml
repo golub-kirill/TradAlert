@@ -46,6 +46,9 @@ regime: # block: broad-market regime classifier
 
 events: # block: calendar gates
   earnings_buffer_days: 5               # block new longs within N days of next earnings
+  earnings_buffer_two_sided: false      # opt-in: also block N days AFTER the last earnings
+  # (A/B lever, default OFF → byte-identical; incompatible with signals.pead —
+  # PEAD deliberately enters the post-earnings window)
 
   stop_dates: # signal blackout calendar; suppresses ENTRIES only — exits on held positions always proceed
     - id: 1                             # row id; logged in the block reason
