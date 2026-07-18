@@ -103,6 +103,9 @@ def print_baseline(point, equity=None, bootstrap=None, kelly=None,
     if kelly:     print_kelly(kelly, streaks)
     if mc_dd:     print_mc_drawdown(mc_dd)
     if attribution: print_attribution(attribution)
+    # Single-run stats correct for nothing selected across configs/sweeps.
+    print("\n  Not snooping-adjusted — DSR / White's RC verdict: "
+          "python scripts/studies/multiple_testing.py")
     print()
 
 
