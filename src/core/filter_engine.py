@@ -786,7 +786,16 @@ class FilterEngine:
                     f"{pctile:.0f}%ile", clamp01(1 - pctile / 100))
         bbz = f("bb_z")
         if bbz is not None:
-            add("VOLATILITY", "BB z", abs(bbz) < 2.0, f"{bbz:+.2f}")
+            oxt = self.cfg.signals.overextension
+            if oxt.enabled:
+                # Mirror the decision gate exactly: direction-aware, its threshold.
+                stretched = (bbz > oxt.bb_z_max) if is_long else (bbz < -oxt.bb_z_max)
+                add("VOLATILITY", "BB z", not stretched,
+                    f"{bbz:+.2f} veto±{oxt.bb_z_max:g}")
+            else:
+                # Veto OFF → the decision path never grades bb_z; informational
+                # only — a failing verdict here would claim a gate that never ran.
+                add("VOLATILITY", "BB z", True, f"{bbz:+.2f} (veto off)")
         if close is not None and atr is not None and close > 0:
             atr_pct = atr / close * 100
             min_atr = self.cfg.volatility.min_atr_pct
@@ -797,7 +806,10 @@ class FilterEngine:
         # The R:R + Stop rows are the trade's risk/reward geometry — omitted on the
         # neutral no-signal scoreboard (no trade is implied, so no risk calc).
         if not neutral:
-            add("RISK", "R:R", True, f"{float(min_rr):.2f}")
+            # R:R is definitional, not measured: target = stop_dist × min_rr, so the
+            # ratio equals min_rr on every long by construction. "(fixed)" marks it
+            # informational — it can never reject.
+            add("RISK", "R:R", True, f"{float(min_rr):.2f} (fixed)")
             if close is not None and atr is not None and close > 0:
                 stop_dist = atr * atr_mult
                 add("RISK", "Stop", True, f"{stop_dist / close * 100:.1f}% / {atr_mult:.1f}ATR")
@@ -1411,6 +1423,16 @@ class FilterEngine:
         return True, (
             f"stop date #{entry['id']}: {entry['description']} ({today_str})"
         )
+
+    def stop_dates_dark(self) -> date | None:
+        """Latest configured stop_date when EVERY row predates ``_today`` — the
+        entry blackout can no longer fire and is running on expired data. Returns
+        None when a row is still current/future, or when no rows are configured
+        (an absent blackout is intentional, not dark)."""
+        if not self._stop_dates:
+            return None
+        latest = max(date.fromisoformat(d) for d in self._stop_dates)
+        return latest if latest < self._today else None
 
     def _near_earnings(self, earnings_date: date | None) -> bool:
         """

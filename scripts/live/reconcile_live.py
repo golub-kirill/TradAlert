@@ -90,12 +90,23 @@ def _max_open_risk() -> int:
         return 5
 
 
+def _regime_indices() -> list[str]:
+    """``filters.regime.index_symbols`` (fallback SPY/QQQ) — same knob the engine reads."""
+    try:
+        import yaml
+        with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
+            idx = ((yaml.safe_load(f) or {}).get("regime") or {}).get("index_symbols")
+        return [str(s) for s in idx] if idx else ["SPY", "QQQ"]
+    except Exception:
+        return ["SPY", "QQQ"]
+
+
 def _load_market_context():
-    """SPY/QQQ regime frames + ^VIX for the engine exit chain (raw OHLCV, as the
+    """Regime index frames + ^VIX for the engine exit chain (raw OHLCV, as the
     backtester feeds the regime classifier). Fail-open to whatever loads."""
     from persistence.cache import load as cache_load
     md = {}
-    for sym in ("SPY", "QQQ"):
+    for sym in _regime_indices():
         try:
             md[sym] = cache_load(sym)
         except Exception:

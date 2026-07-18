@@ -52,7 +52,17 @@ from core.types import ScanResult, SignalResult
 from core.validators.dataframe_validator import validate_ohlcv
 from exceptions import InsufficientDataError
 
-_REGIME_INDICES = ("SPY", "QQQ")
+def _config_regime_indices() -> tuple[str, ...]:
+    """``filters.regime.index_symbols`` (fallback SPY/QQQ) — same knob the engine reads."""
+    try:
+        cfg = yaml.safe_load((_ROOT / "config" / "filters.yaml").read_text(encoding="utf-8")) or {}
+        idx = (cfg.get("regime") or {}).get("index_symbols")
+        return tuple(str(s) for s in idx) if idx else ("SPY", "QQQ")
+    except Exception:
+        return ("SPY", "QQQ")
+
+
+_REGIME_INDICES = _config_regime_indices()
 _VIX_SYMBOL = "^VIX"
 
 

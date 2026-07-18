@@ -46,3 +46,13 @@ def test_format_base_rate():
 
 def test_load_base_rates_missing_is_empty(tmp_path):
     assert base_rates.load_base_rates(tmp_path / "nope.json") == {}
+
+
+def test_format_base_rate_shows_the_matched_key():
+    s = base_rates.format_base_rate(
+        {"n": 50, "win_rate": 0.60, "avg_r": 0.40, "key": "momentum|BULL_LOW|UPTREND"})
+    assert s.endswith("[momentum|BULL_LOW|UPTREND]")
+
+
+def test_format_base_rate_without_key_keeps_legacy_shape():
+    assert "[" not in base_rates.format_base_rate({"n": 5, "win_rate": 0.5})
