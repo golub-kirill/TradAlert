@@ -42,6 +42,9 @@ def _run(uni, base_cfg, settings, breakeven_trigger_r=None):
         max_open_risk=5.0,
         earnings_aware=True,
         entry_slippage_pct=exec_cfg.get("entry_slippage_pct", 0.002),
+        # Exit friction follows the production YAML (symmetric 0.002 ADOPTED
+        # 2026-07-19, D-008a) so the gate quotes the real convention.
+        exit_slippage_pct=float(exec_cfg.get("exit_slippage_pct", 0.0) or 0.0),
         commission_r=exec_cfg.get("commission_r", 0.005),
         close_open_at_eod=True,
         max_hold_days=int(exec_cfg.get("max_hold_days", 25)),

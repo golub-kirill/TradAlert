@@ -229,11 +229,10 @@ def main() -> None:
     elif args.breakeven_trigger_r is not None:
         print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
 
-    # Exit-side slippage (--exit-slippage-pct). OFF by default (0/absent → exits
-    # fill frictionless, the shipped headline convention — a KNOWN optimism;
-    # symmetric 0.002 measured −58.7R / −0.29 Sharpe on the pinned snapshot
-    # 2026-07-11). YAML execution.exit_slippage_pct or the CLI flag opts in;
-    # applies to stop/engine_exit/time_stop/open_eod fills, never targets.
+    # Exit-side slippage: symmetric 0.002 is the headline convention (ADOPTED
+    # 2026-07-19, D-008a — YAML execution.exit_slippage_pct); the CLI flag
+    # overrides (0 disables). Applies to stop/engine_exit/time_stop/open_eod
+    # fills, never targets.
     x_slip = exec_cfg.get("exit_slippage_pct")
     if args.exit_slippage_pct is not None:
         x_slip = args.exit_slippage_pct
