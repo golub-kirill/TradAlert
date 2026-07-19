@@ -350,6 +350,28 @@ any other `python telegram_bot.py` first). Deploy at logon with auto-restart:
 powershell -ExecutionPolicy Bypass -File scripts/setup/register_telegram_bot.ps1
 ```
 
+### AI advisor (live-only second opinion)
+
+Gated by `settings.yaml::advisor.enabled`. A **hybrid** critic on every fired entry:
+a deterministic Python rubric computes the verdict and a calibrated confidence from
+technical posture plus historical base rates (`data/advisor_base_rates.json`,
+rebuilt per journaled backtest via `scripts/studies/build_advisor_base_rates.py
+--latest`), while a local LLM (Ollama; `qwen3:8b` default) reads **only the news**
+— it can add caution (downgrade / veto on adverse catalysts, penalize when blind)
+but can never inflate a weak setup, so a negative-EV signal cannot be rubber-stamped.
+
+Ticker news is gathered multi-source (Google News on the company name, Finnhub,
+AlphaVantage, Yahoo/Brave backstops), relevance-filtered with price-recaps demoted,
+and **SEC EDGAR 8-K material events** (keyless) are prepended as the highest-signal
+issuer-authored items (`news.sec_filings`). The verdict + conviction render on the
+Telegram/web cards and journal to `scan_results.advisor_note`;
+`scripts/live/evaluate_advisor.py` scores resolved verdicts once enough accumulate.
+
+Live-path only — the advisor is never imported by the engine or backtester, so every
+backtest replays byte-identically with it on or off. `scripts/setup/ensure_ollama.ps1`
+(hooked into `scripts/run_daily.bat`) starts Ollama before the scheduled scan so the
+news read doesn't silently degrade.
+
 ## Web control panel
 
 A local dashboard over the same engine and journals — scanner results, backtest launch +
