@@ -59,9 +59,10 @@ scanner: # block: chart rendering
 
 macro: # block: macro data configuration
   enabled: true                         # master toggle; false → no macro regime
-  blackout_failsafe: false              # opt-in: TOTAL macro blackout sizes at the floor,
-  # not neutral mid-size (A/B lever, default OFF → byte-identical; pre-reg in
-  # docs/backtest_out/blackout_failsafe_prereg.md)
+  blackout_failsafe: true               # ADOPTED 2026-07-19 (D-012): TOTAL macro blackout
+  # sizes at the floor, not the ~0.775 the earnings_breadth placeholder otherwise yields.
+  # A/B byte-identical on the gate snapshot (window never blacks out) → FREE tail-risk
+  # fail-safe; docs/backtest_out/blackout_failsafe_prereg.md
   fred_api_key_env: "FRED_API_KEY"      # env var name for the FRED API key
   staleness_hours: 24                   # re-fetch interval for all macro series
   series_dir: "data/macro"              # parquet cache directory
