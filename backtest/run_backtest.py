@@ -146,13 +146,13 @@ def main() -> None:
         "close_open_at_eod": True,
     }
 
-    # Chronic-loser penalty (--chronic-penalty). Pass the raw config dict through
+    # Chronic-loser penalty: ON when the YAML switch is set (ADOPTED 2026-07-17,
+    # D-011) or forced via --chronic-penalty. Pass the raw config dict through
     # base_port; each sweep worker builds its own TickerHealth so per-run ledgers
-    # stay isolated. Flag off → key absent, PortfolioConfig.ticker_health=None.
-    if args.chronic_penalty:
-        chronic_cfg = base_cfg.get("chronic_loser_penalty", {}) or {}
-        # Force enabled even if YAML default is False (the flag is opt-in).
-        chronic_cfg = {**chronic_cfg, "enabled": True}
+    # stay isolated. Both off → key absent, PortfolioConfig.ticker_health=None.
+    _chronic_yaml = base_cfg.get("chronic_loser_penalty", {}) or {}
+    if args.chronic_penalty or _chronic_yaml.get("enabled"):
+        chronic_cfg = {**_chronic_yaml, "enabled": True}
         base_port["chronic_loser_cfg"] = chronic_cfg
         print(f"  ▸ Chronic-loser penalty: ENABLED  "
               f"(lookback={chronic_cfg.get('lookback_days', 90)}d, "

@@ -184,7 +184,10 @@ signals: # block: trigger configuration
 # Per-ticker sliding-scale size penalty after consecutive losses inside a
 # rolling window.
 chronic_loser_penalty:
-  enabled: false                        # master switch
+  enabled: true                         # master switch; ADOPTED 2026-07-17 (D-011):
+  # −2.40R maxDD / +0.025 Sortino, Sharpe-neutral, era-stable, reproduced on both
+  # universes (chop_throttle study leg C). Honored by run_backtest/paired_ab and
+  # the live scanner (journal-fed tracker sizes fresh entries).
   lookback_days: 90                     # losses older than this age off the streak
   # Scale: consecutive_losses_threshold → size_mult. Monotonic floors, NO hard
   # block — forward expectancy stays POSITIVE even after 4+ consecutive losses

@@ -49,6 +49,13 @@ def _run(uni, base_cfg, settings, breakeven_trigger_r=None):
     )
     if breakeven_trigger_r is not None:
         kwargs["breakeven_trigger_r"] = float(breakeven_trigger_r)
+    # Chronic-loser penalty follows the production YAML switch (ADOPTED
+    # 2026-07-17, D-011) in BOTH legs — the A/B keeps isolating the BE lever.
+    # Fresh tracker per leg: it is stateful and must never be shared.
+    chronic_cfg = base_cfg.get("chronic_loser_penalty", {}) or {}
+    if chronic_cfg.get("enabled"):
+        from core.ticker_health import TickerHealth
+        kwargs["ticker_health"] = TickerHealth.from_config(chronic_cfg)
     pcfg = PortfolioConfig(**kwargs)
     engine = FilterEngine.from_dict(base_cfg)
     bt = PortfolioBacktester(engine, pcfg)

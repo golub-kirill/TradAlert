@@ -502,6 +502,9 @@ def _run_pipeline(
             "entry blackout is DARK; prune or refresh config/filters.yaml", _dark)
 
     positions = load_open_positions()  # {ticker: Position}
+    # Chronic-loser tracker (D-011): journal-fed, built once per scan; None when
+    # the switch is off or the journal is unreadable (fail-open, no penalty).
+    ticker_health = _load_ticker_health(engine)
     # Live open-risk budget: the validated portfolio caps aggregate risk at
     # max_open_risk and sizes each entry by size_mult. The scanner surfaces budget
     # consumed + size_mult rather than executing.
@@ -553,7 +556,7 @@ def _run_pipeline(
             settings=settings, macro_state=macro_state,
             behavioral_state=behavioral_state, rp_ranks=rp_ranks,
             now=now, event_risk=event_risk, morning=morning,
-            advisor_ctx=advisor_ctx,
+            advisor_ctx=advisor_ctx, ticker_health=ticker_health,
         ))
 
     return results
@@ -660,6 +663,7 @@ def _process_ticker(
         event_risk: str = "",
         morning: bool = False,
         advisor_ctx: object | None = None,
+        ticker_health: object | None = None,
 ) -> TickerResult:
     """Run scan → signal → (max-hold / breakeven / chart) for one ticker.
 
@@ -880,6 +884,15 @@ def _process_ticker(
         # Data-driven expected-hold range for the chart/Telegram caption.
         # Entries only — exits don't display a hold horizon.
         if signal.direction in ("long", "short"):
+            # Chronic-loser penalty (D-011): scale the fresh entry's size by the
+            # journal-fed streak multiplier; the panel Size row is kept in sync.
+            if ticker_health is not None:
+                try:
+                    _apply_chronic_penalty(
+                        signal, ticker, ticker_health,
+                        getattr(engine, "_today", None) or datetime.now(timezone.utc).date())
+                except Exception as exc:
+                    logger.warning("[%s] chronic penalty skipped — %s", ticker, exc)
             signal.expected_hold_days = expected_hold
             # Advisory only — flags a fresh entry landing near a scheduled FOMC/CPI/NFP.
             # Never gates/sizes; "" when nothing is in the window.
@@ -965,6 +978,81 @@ def _process_ticker(
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _position_r(p) -> float | None:
+    """Realized R of a closed position — same convention as reconcile_fills
+    (initial stop as the risk denominator, stop_price fallback for legacy rows).
+    Sign-level input for the chronic-loser ledger; partials are ignored (they
+    cannot flip a win into a loss at the streak level). None → unscorable.
+    """
+    stop = p.initial_stop if p.initial_stop is not None else p.stop_price
+    if stop is None or p.exit_price is None or p.entry_price is None:
+        return None
+    if p.side == "long":
+        risk = p.entry_price - stop
+        gain = p.exit_price - p.entry_price
+    else:
+        risk = stop - p.entry_price
+        gain = p.entry_price - p.exit_price
+    if risk <= 0:
+        return None
+    return gain / risk
+
+
+def _load_ticker_health(engine):
+    """Journal-fed chronic-loser tracker (ADOPTED 2026-07-17, D-011).
+
+    Builds a TickerHealth from the closed rows of the positions journal when
+    ``chronic_loser_penalty.enabled`` is set. None when the switch is off, the
+    engine carries no full cfg (test stubs), or the journal is unreadable —
+    fail-open: no penalty, never a blocked scan.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        cfg = (engine.cfg.raw or {}).get("chronic_loser_penalty")
+        from core.ticker_health import TickerHealth
+        health = TickerHealth.from_config(cfg)
+        if not health.enabled:
+            return None
+        from core.position_manager import list_all
+        closed = [p for p in list_all() if p.exit_date is not None]
+        closed.sort(key=lambda p: p.exit_date)
+        n = 0
+        for p in closed:
+            r = _position_r(p)
+            if r is None:
+                continue
+            health.record_trade(p.ticker, p.exit_date, r)
+            n += 1
+        logger.info("[chronic] tracker ON — %d closed fill(s) in the ledger", n)
+        return health
+    except Exception as exc:
+        logger.warning("[chronic] tracker build failed (no penalty this scan) — %s",
+                       exc)
+        return None
+
+
+def _apply_chronic_penalty(signal, ticker: str, health, as_of) -> None:
+    """Scale a fresh entry's size by the chronic-loser multiplier and keep the
+    panel's RISK/Size row telling the same story (penalized value + streak)."""
+    from dataclasses import replace as _replace
+    mult = health.size_multiplier(ticker, as_of)
+    if mult >= 1.0:
+        return
+    streak = health.consecutive_losses(ticker, as_of)
+    signal.size_mult = round(float(signal.size_mult) * mult, 4)
+    for i, c in enumerate(signal.checks or []):
+        if c.group == "RISK" and c.name == "Size":
+            new = float(signal.size_mult)
+            signal.checks[i] = _replace(
+                c, passed=new >= 0.5,
+                detail=f"{new:.2f}x (chronic {streak}L ×{mult:g})",
+                strength=new)
+            break
+    logging.getLogger(__name__).info(
+        "[%s] chronic-loser penalty ×%g (streak %d) → size %.2fx",
+        ticker, mult, streak, signal.size_mult)
+
 
 def _frame_date(market_dfs: dict[str, pd.DataFrame] | None):
     """Date of the last completed bar across the regime index frames, or None.
