@@ -89,7 +89,10 @@ def main() -> int:
         for f in sorted((_ROOT / root).glob("*.yaml")):
             rel = f.relative_to(_ROOT)
             for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-                if _ISO.search(line) and not line.strip().startswith("#"):
+                # Strip inline comments — a date after ` #` is provenance, not a
+                # value the loader reads (the whole point of the curated lists).
+                code = line.split(" #", 1)[0]
+                if _ISO.search(code) and not code.strip().startswith("#"):
                     if rel in ALLOWLIST:
                         allowed += 1
                     else:
