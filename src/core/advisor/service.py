@@ -21,7 +21,7 @@ from core.advisor.base_rates import lookup as _lookup_base_rate
 from core.advisor.ollama_client import DEFAULT_ENDPOINT, DEFAULT_MODEL, classify_news
 from core.advisor.macro_context import build_market_context
 from core.advisor.news_cache import load_fresh_news, save_news
-from core.advisor.news_fetcher import gather_ticker_news
+from core.advisor.news_fetcher import fetch_sec_filings, gather_ticker_news
 from core.advisor.news_query import build_queries, generate_queries, split_headlines
 from core.advisor.rubric import apply_news, score_rubric
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict, NewsRead
@@ -56,6 +56,8 @@ class AdvisorContext:
     # AlphaVantage free tier is 25/day — budget calls across scans; 0 disables it.
     use_alphavantage: bool = True
     av_max_per_day: int = 20
+    # Prepend SEC EDGAR 8-K material events (US tickers, keyless, fail-open).
+    sec_filings: bool = True
     # LLM-generated (cached) news queries; off by default (adds a call per new ticker).
     use_llm_queries: bool = False
     # ticker -> full company name (warmed by scripts/fetch/fetch_company_names.py).
@@ -106,6 +108,7 @@ def build_advisor_context(
         alphavantage_key=os.environ.get("ALPHAVANTAGE_API_KEY") or None,
         use_alphavantage=bool(news_cfg.get("use_alphavantage", True)),
         av_max_per_day=int(news_cfg.get("alphavantage_max_per_day", 20)),
+        sec_filings=bool(news_cfg.get("sec_filings", True)),
         use_llm_queries=bool(news_cfg.get("llm_queries", False)),
         company_names=_load_company_names(),
         base_rates=load_base_rates(),
@@ -171,6 +174,15 @@ def _resolve_headlines(ticker: str, ctx: AdvisorContext, company_name: str = "")
         queries=_resolve_queries(ticker, company_name, ctx),
         use_alphavantage=ctx.use_alphavantage, av_max_per_day=ctx.av_max_per_day,
     )
+    # SEC 8-K material events prepend AFTER the gather — issuer-authored filings
+    # would never survive the company-name relevance filter, and they outrank
+    # headline noise. Deduped by title; fail-open ([] on any problem).
+    if ctx.sec_filings:
+        filings = fetch_sec_filings(ticker, session=ctx.session)
+        if filings:
+            seen = {str(h.get("headline", "")).lower() for h in heads}
+            heads = [f for f in filings
+                     if str(f.get("headline", "")).lower() not in seen] + heads
     if heads and not ctx.read_only:
         save_news(ticker, "gathered", heads)
     return heads

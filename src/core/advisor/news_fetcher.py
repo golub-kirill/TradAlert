@@ -37,7 +37,27 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["fetch_ticker_news", "search_ticker_news", "fetch_macro_headlines",
            "fetch_finnhub_news", "fetch_alphavantage_news", "fetch_google_news",
-           "gather_ticker_news"]
+           "gather_ticker_news", "fetch_sec_filings"]
+
+# SEC EDGAR — free, no key, requires a declared User-Agent. 8-K = material events.
+_SEC_UA = {"User-Agent": "TradAlert/1.0 research (admin@tradealert.local)"}
+_SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
+_SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+# 8-K item codes → the material event they signal (the high-signal subset).
+_8K_ITEMS = {
+    "1.01": "material agreement", "1.02": "agreement terminated",
+    "1.03": "bankruptcy/receivership",
+    "2.01": "acquisition/disposition", "2.02": "earnings results",
+    "2.03": "material obligation", "2.04": "triggering event on obligation",
+    "2.05": "restructuring costs", "2.06": "material impairment",
+    "3.01": "delisting notice", "3.03": "shareholder-rights change",
+    "4.01": "auditor change", "4.02": "financials no longer reliable",
+    "5.01": "change in control", "5.02": "exec/director change",
+    "5.03": "bylaw change", "5.07": "shareholder vote results",
+    "7.01": "Reg-FD disclosure",
+    "8.01": "other material event", "9.01": "financial exhibits",
+}
+_cik_map: dict | None = None  # ticker(upper) → CIK int; lazy-loaded once
 
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; TradAlert/1.0)"}
 _FINNHUB_NEWS = "https://finnhub.io/api/v1/company-news"
@@ -296,6 +316,82 @@ def _av_budget_ok(max_per_day: int) -> bool:
     except OSError:
         pass
     return True
+
+
+def _load_cik_map(session: requests.Session | None) -> dict:
+    """Ticker→CIK map from SEC's company_tickers.json, cached for the process.
+    ``{}`` on failure — SEC filings simply won't augment the news then."""
+    global _cik_map
+    if _cik_map is not None:
+        return _cik_map
+    try:
+        get = (session or requests).get
+        resp = get(_SEC_TICKERS, headers=_SEC_UA, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        _cik_map = {str(v["ticker"]).upper(): int(v["cik_str"])
+                    for v in data.values() if v.get("ticker")}
+    except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+        logger.warning("news_fetcher SEC cik map failed — skipped: %s", exc)
+        _cik_map = {}
+    return _cik_map
+
+
+def fetch_sec_filings(
+        ticker: str,
+        *,
+        session: requests.Session | None = None,
+        limit: int = 2,
+        lookback_days: int = 21,
+) -> list[dict]:
+    """Recent 8-K **material-event** filings for a US ticker — the highest-signal
+    ticker-specific news (earnings, M&A, guidance, exec changes, impairments).
+
+    ``[]`` for non-US / unmapped tickers (no CIK) and on any failure. Requires no
+    API key. Normalized to the same headline dict shape as the news fetchers."""
+    cik = _load_cik_map(session).get(ticker.upper())
+    if cik is None:
+        return []  # non-US or unmapped — nothing to add
+    try:
+        get = (session or requests).get
+        resp = get(_SEC_SUBMISSIONS.format(cik=cik), headers=_SEC_UA, timeout=10)
+        resp.raise_for_status()
+        recent = ((resp.json() or {}).get("filings") or {}).get("recent") or {}
+        forms = recent.get("form") or []
+        dates = recent.get("filingDate") or []
+        items = recent.get("items") or []
+        accns = recent.get("accessionNumber") or []
+        docs = recent.get("primaryDocument") or []
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=lookback_days)
+        out: list[dict] = []
+        for i, form in enumerate(forms):
+            if form != "8-K":
+                continue
+            try:
+                fdate = datetime.strptime(dates[i], "%Y-%m-%d").date()
+            except (ValueError, IndexError):
+                continue
+            if fdate < cutoff:
+                continue
+            codes = [c.strip() for c in str(items[i] if i < len(items) else "").split(",")
+                     if c.strip()]
+            desc = ", ".join(_8K_ITEMS.get(c, c) for c in codes) or "material event"
+            accn = accns[i].replace("-", "") if i < len(accns) else ""
+            doc = docs[i] if i < len(docs) else ""
+            url = (f"https://www.sec.gov/Archives/edgar/data/{cik}/{accn}/{doc}"
+                   if accn and doc else "")
+            out.append({
+                "headline": f"SEC 8-K: {desc}",
+                "source": "SEC EDGAR",
+                "datetime": dates[i],
+                "url": url,
+            })
+            if len(out) >= limit:
+                break
+        return out
+    except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+        logger.warning("news_fetcher SEC filings failed for %s — skipped: %s", ticker, exc)
+        return []
 
 
 def gather_ticker_news(

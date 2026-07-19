@@ -200,6 +200,7 @@ news:
   cache_ttl_hours: 4                 # ticker headlines considered fresh for [4]h
   max_headlines_per_ticker: 5        # max headlines injected into a prompt [5]
   macro_summarization: true          # false → skip the scan-wide market context
+  sec_filings: true                  # prepend SEC 8-K material events (US, keyless, fail-open)
   use_alphavantage: true             # include AlphaVantage sentiment [true]
   alphavantage_max_per_day: 20       # daily call budget (free tier is 25/day) [20]
   llm_queries: false                 # let the model build (cached) news queries [false]
