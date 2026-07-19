@@ -15,8 +15,10 @@ byte-identical — the backtest is the ground truth for every live decision.
   (baseline · OFAT sweep · walk-forward · robustness) share `core.FilterEngine`; live ≡ backtest by construction.
 - 🧭 **Regime-aware sizing** — macro (FRED/BoC) × behavioral (COT / breadth / sector-rotation)
   composite scales position *size*, never the signal direction.
-- 🛡️ **Risk discipline** — ATR stops, R:R gate, max-hold time-stop, breakeven stop (ADR-004),
-  and a portfolio open-risk budget.
+- 🛡️ **Risk discipline** — ATR stops, breakeven stop (ADR-004), max-hold time-stop,
+  a per-ticker chronic-loser size penalty (D-011), and a portfolio open-risk budget —
+  quoted under a friction-honest fill convention (0.002 slippage on entries **and**
+  market-type exits, D-008a).
 - 📲 **Telegram cockpit** — push alerts (chart + trigger panel) plus an interactive,
   owner-only daemon that is **journal-only and never auto-trades**.
 - 🔬 **Honest validation** — paired same-snapshot A/Bs, walk-forward, and reconciliation
@@ -31,7 +33,7 @@ byte-identical — the backtest is the ground truth for every live decision.
 [Web control panel](#web-control-panel) ·
 [Environment variables](#environment-variables-configsecretsenv) ·
 [Configuration files](#configuration-files) · [Indicators](#indicators) ·
-[Signal pipeline](#signal-pipeline) · [MySQL tables](#mysql-tables) · [Outstanding work](#outstanding-work)
+[Signal pipeline](#signal-pipeline) · [MySQL tables](#mysql-tables) · [Program state](#program-state)
 
 ## Layout
 
@@ -45,7 +47,9 @@ backtest/repair_parquet Cross-platform parquet re-save utility
 api/                   FastAPI control-panel backend (read endpoints + job launchers)
 frontend/              Vite/React SPA (built to web/dist, served by api at "/")
 web/                   Single-file fallback panel (index.html) + built SPA (dist/)
-scripts/               Live ops + studies: intraday_monitor, reconcilers, task registrars, A/B harnesses
+scripts/               live/ (intraday_monitor, reconcilers, false-positive + frame meters),
+                       fetch/, setup/ (task registrars, ensure_ollama, date-literal checker),
+                       studies/ (pre-registered A/B harnesses), paired_ab.py (the regression gate)
 
 config/
   filters.yaml         Scan + signal + regime + stop-loss + exit rules
@@ -108,16 +112,24 @@ can never drift from the real decision and the backtest replays bit-identically.
 With `--allow-shorts`, the stdout summary adds a **SHORTS** block (short
 entries) and a **COVERS** block (held-short exits) alongside ENTRIES/EXITS.
 
+**Decision frame (live-only).** The engine's clock (`engine._today`) is pinned to the
+**last completed regime-index bar** — the same bar-date frame the backtester replays —
+instead of the wall clock, so live gate semantics (earnings buffer, stop-dates) cannot
+drift from the backtest around weekends/holidays. A scan whose `events.stop_dates`
+rows are all in the past warns loudly that the manual blackout is dark.
+
 **Data-freshness tier + event-risk (live-only).** Before each ticker the scan drops any
 unclosed current-day bar and force-refetches stale data; a fired entry that is still
 stale-after-refetch, gapped > 2×ATR overnight, or whose live gap can't be verified is
 downgraded from `LIVE` to **NEEDS_REVIEW** — split into a separate `⚠ NEEDS REVIEW`
 stdout block (with the reason) and persisted to `scan_results.tier`/`review_reason`.
-When a fresh entry lands within `scanner.event_risk_within_days` (default 5) of a
-scheduled FOMC/CPI/NFP, the summary also prints a display-only `⚠ EVENT RISK` advisory
-(never gates or sizes). Its calendar resolves a YAML override → the live TradingView
-economic-calendar feed (cached, fail-open, forward-extending) → a hard-coded fallback
-list, so the advisory survives without manual upkeep. Both are LIVE-path only, so the
+Fresh entries carry a display-only `⚠ EVENT RISK` advisory listing **every** scheduled
+FOMC/CPI/NFP inside the expected hold window (an explicit
+`scanner.event_risk_within_days` overrides the horizon; never gates or sizes). Its
+calendar resolves a YAML override → the live TradingView economic-calendar feed
+(cached, fail-open, forward-extending) → a curated, provenance-commented fallback
+list — and TV-feed dates are cross-checked against the curated list, warning on any
+feed-only date (a feed once shipped a phantom CPI date). All LIVE-path only, so the
 backtest stays byte-identical.
 
 Held positions (long or short) are also force-exited live when they reach the
@@ -199,14 +211,17 @@ Window / IO flags:
 
 Strategy refinement flags — each **CLI flag** defaults off, but the YAML supplies the
 operative default: the shipped `filters.yaml` already enables max-hold
-(`25`/`if_not_profit`), the breakeven stop (`1.0R`, ADR-004) and the anti-gap trigger
-filter, so the no-flag baseline runs **with** those (it is the shipped headline config, not
-a bare strategy). Pass a flag to force its key on for an A/B even when the YAML default is off:
+(`25`/`if_not_profit`), the breakeven stop (`1.0R`, ADR-004), the anti-gap trigger
+filter, the chronic-loser size penalty (D-011) and symmetric `0.002` exit slippage
+(D-008a), so the no-flag baseline runs **with** those (it is the shipped headline
+config, not a bare strategy). Pass a flag to force its key on for an A/B even when the
+YAML default is off:
 
 | Flag                | Effect                                                                                                                                                                                                                                                                                                                                                                                              | Config key                             |
 |---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
-| `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling window, scale that ticker's position size down (sliding scale → 0).                                                                                                                                                                                                                                               | `chronic_loser_penalty` (filters.yaml) |
-| `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected).                                                                                                                                                                                                                                                       | `regime.vix_slope_block`               |
+| `--chronic-penalty` | Per-ticker chronic-loser **size penalty**: after repeated losses inside a rolling 90-day window, scale that ticker's entry size down (`2` losses → `0.5×`, `3+` → `0.25×` floor, never a hard block). **ADOPTED 2026-07-17 (D-011) — the YAML ships it ON** (−2.40R maxDD, Sharpe-neutral, era-stable on both A/B universes); the flag only forces it for a run where the YAML was turned off. The live scanner applies the same penalty from the positions journal. | `chronic_loser_penalty` (filters.yaml) |
+| `--exit-slippage-pct F` | **Exit-side slippage** on market-type exit fills (stop / engine_exit / time_stop / open_eod; target limit fills stay exact). **Symmetric `0.002` is the shipped headline convention (D-008a, 2026-07-19)** — frictionless exits were a measured −58.7R optimism. Pass `0` to disable for a comparison run. | `execution.exit_slippage_pct` (filters.yaml) |
+| `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected). **A/B-refuted** (−43R / −0.19 Sharpe — entry vetoes tax the right tail); ships `false`, kept as a documented, tested lever.                                                                                                                            | `regime.vix_slope_block`               |
 | `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
 | `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
 | `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
@@ -277,6 +292,15 @@ risk unit, bucketed by direction and compared to `backtest_trades.r_multiple`
 so the comparison isolates entry/exit quality from the sizing layer. Open
 positions are listed as carried risk but not scored; closed positions without a
 recorded stop can't be scored (no risk unit).
+
+Two further read-only meters cover failure anatomy and frame parity:
+
+```bash
+python scripts/live/false_positive_report.py   # per-fill MFE/MAE taxonomy (dead-on-arrival
+                                               # failed breakouts etc.) vs the backtest reference
+python scripts/live/frame_contamination.py     # replay the bar-frame earnings gate over every
+                                               # journaled alert — fires the backtest would block
+```
 
 ### Telegram alerts (push)
 
@@ -435,8 +459,9 @@ Loaded by `python-dotenv` at startup.
 | `trend.{ma_fast,ma_slow}`                                                        | MA periods (50/200). Used by ticker-trend + regime.                                       |
 | `regime.{vix_symbol,vix_low,vix_high}`                                           | Volatility classifier.                                                                    |
 | `regime.{index_symbols,require_all_indices,ma_short,require_ma_short_alignment}` | Trend voting + secondary MA-short gate.                                                   |
-| `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout + manual stop-date calendar.                                            |
-| `execution.{entry_slippage_pct,commission_r}`                                    | Backtest fill model.                                                                      |
+| `events.{earnings_buffer_days,stop_dates}`                                       | Earnings blackout (forward-looking, vs the bar-date frame) + manual stop-date calendar (a historical record — expired rows stay for backtest replay; live warns when all are past). |
+| `events.earnings_buffer_two_sided`                                               | Opt-in trailing arm (also block N days AFTER the last earnings). **A/B'd 2026-07-17 and CLOSED — right-tail tax (−19.5R); ships `false`, do not flip.** Incompatible with `signals.pead`. |
+| `execution.{entry_slippage_pct,exit_slippage_pct,commission_r}`                  | Backtest fill model. **Symmetric `0.002` on entries and market-type exits is the headline convention (D-008a)**; target limit fills stay exact.                                        |
 | `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit. **Default `25` bars, `if_not_profit`.** `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit` (lets winners run). CLI `--max-hold-days` / `--max-hold-mode` override. |
 | `execution.breakeven_trigger_r`                                                  | Breakeven stop trigger in initial-risk units. **Default `1.0`** (ADR-004): at `+1R` best excursion the stop moves to entry, upside uncapped; applied identically in the backtest and the live scan. `0`/absent = off; CLI `--breakeven-trigger-r` overrides. |
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
@@ -447,8 +472,10 @@ Loaded by `python-dotenv` at startup.
 | `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
 | `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Held-long exit toggles (also accept dict for `signals.exits.*` parameter blocks).         |
 | `signals.exits.{regime_flip_bear_only,regime_flip_confirm_bars}`                 | Regime-flip exit shaping (A/B levers). `regime_flip_bear_only` (default `false`) exits only on BEAR (CHOP no longer flattens); `regime_flip_confirm_bars` (default `1`) requires the flip to persist N bars first. Defaults reproduce the exit-on-any-non-BULL-bar behavior byte-for-byte. **A/B + walk-forward (`scripts/studies/regime_exit_{ab,wf}.py`, snapshot 2026-06-10):** full-period `bear_only` looks strong (+31.97R, +0.093 Sharpe, −7.89R maxDD) but the walk-forward **refutes it as a default** — it wins totalR in only 10/26 yearly windows, the aggregate rides ~5 years (2004/12/13/14/17), and it nets negative over the last 5. Kept as a documented, tested lever (ships `false`); `confirm_bars` is marginal-to-negative. The live "flatten-on-chop" UX concern is handled separately by `telegram.regime_flip_exit_mode`. |
-| `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + R:R sanity.                                                               |
-| `signals.stop_loss.min_rr_short`                                                 | Optional: R:R gate for shorts only; absent → falls back to `min_rr`.                      |
+| `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + target definition. The target is **derived** (`target = stop_dist × min_rr`), so long-side R:R equals `min_rr` by construction — the panel marks it `(fixed)`; shorts additionally require the derived target to stay positive. |
+| `signals.stop_loss.min_rr_short`                                                 | Optional: shorts-only target multiple; absent → falls back to `min_rr`.                   |
+| `signals.overextension.{enabled,bb_z_max}`                                       | Anti-chase veto (block entries stretched past ±`bb_z_max`). **A/B-refuted (right-tail tax); ships `false`** — kept as a documented, tested lever. |
+| `chronic_loser_penalty.{enabled,lookback_days,scale}`                            | Per-ticker post-streak size penalty. **ADOPTED (D-011) — ships `true`**; applied at entry fill in the backtest and from the positions journal live. |
 | `signals.hard_to_borrow_list`                                                    | Optional: symbols that cannot be shorted (longs unaffected). Default `[]`.                |
 | `signals.borrow.{annual_rate_default,per_ticker}`                                | Optional: short stock-borrow cost → per-trade R drag. Default `0.0` (off).                |
 
@@ -460,7 +487,9 @@ Loaded by `python-dotenv` at startup.
 | `fetcher.max_workers`                                                       | ThreadPool size for watchlist fetch.                                                                                                                                                                                                                              |
 | `risk.max_open_risk`                                                        | Aggregate open-risk cap the live scanner surfaces (budget consumed vs. cap, size_mult); alerter only, never auto-executes.                                                                                                                                          |
 | `scanner.chart.signal_history`                                              | Render historical signal markers on charts.                                                                                                                                                                                                                       |
-| `scanner.event_risk_within_days`                                           | Advisory window (calendar days, default 5): surface an upcoming FOMC/CPI/NFP on a fresh entry; display-only, never gates/sizes (distinct from the `events.stop_dates` entry-day block). |
+| `scanner.event_risk_within_days`                                           | Advisory horizon override (calendar days). Unset, the flag lists every FOMC/CPI/NFP inside the expected-hold ceiling; an explicit value wins verbatim. Display-only, never gates/sizes (distinct from the `events.stop_dates` entry-day block). |
+| `advisor.{enabled,endpoint,model,timeout,temperature,max_tokens}`           | AI advisor (live-only second opinion; see its section above). Rubric computes the verdict; the LLM reads only news.                                                                                                                                |
+| `news.{cache_ttl_hours,max_headlines_per_ticker,macro_summarization,sec_filings}` | Advisor news layer: headline cache/caps, scan-wide macro summary, SEC 8-K prepend (keyless).                                                                                                                                                |
 | `macro.{enabled,fred_api_key_env,staleness_hours,series_dir,series_subset}` | Macro layer toggles + cache.                                                                                                                                                                                                                                      |
 | `macro.{fred_series,boc_series,yf_series}`                                  | Series IDs to fetch.                                                                                                                                                                                                                                              |
 | `macro.{size_mult_floor,size_mult_ceiling}`                                 | risk_on_score → size_multiplier mapping.                                                                                                                                                                                                                          |
@@ -507,14 +536,19 @@ attaches: `atr`, `rsi`, `macd`, `macd_signal`, `macd_hist`, `bb_mid`,
 
 ```
 FilterEngine.scan(ticker, df, market_cap)         → ScanResult
-FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, held_long, held_short, regime, with_checks)
+FilterEngine.signal(ticker, df, market_dfs, vix_df, earnings_date, earnings_events,
+                    prev_earnings_date, held_long, held_short, regime, with_checks)
                                                   → SignalResult
 ```
 
 Direction `long`/`short` for fresh entries; `exit_long`/`exit_short` for held
 positions (`held_long`/`held_short=True`). `SignalResult.size_mult` carries the composite macro ×
-behavioral multiplier; the backtester scales R-distance by it (sizing layer, never the
-direction).
+behavioral multiplier (further scaled by the chronic-loser penalty at entry); the
+backtester scales R-distance by it (sizing layer, never the direction). The engine's
+clock is `engine._today`: the backtester pins it to each bar, and the live scan pins it
+to the last completed regime-index bar, so both paths run the same decision frame.
+`earnings_events`/`prev_earnings_date` thread only when their opt-in features
+(PEAD, the closed two-sided buffer) are on — the baseline call shape is unchanged.
 
 ## MySQL tables
 
@@ -530,6 +564,14 @@ Credentials from `config/secrets.env`. Each table group ships a DDL file under
 | `positions`       | `src/core/position_manager.py` | `position_CLI.py`        | `data/positions_schema.sql` |
 | `price_alerts`    | `src/persistence/db.py`        | `telegram_bot.py` (`/alert`) | `data/price_alerts_schema.sql` |
 
-## Outstanding work
+## Program state
 
-See `TODO.md`.
+The validation program is **complete**: every proposed lever was pre-registered and
+either adopted (breakeven stop, chronic-loser penalty, friction-honest fills) or
+refuted with a recorded paired A/B (entry vetoes, give-back exits, broad de-grossing,
+sentiment/positioning replacements). The backtest headline is quoted under the
+friction-honest convention against a pinned snapshot, and the open question is the one
+only time can answer: the **live forward-test** — real fills, scored by the
+reconciliation meters above, decide whether the edge holds. Development is in
+measurement mode; new levers require a genuinely new premise plus a fresh
+pre-registration.
