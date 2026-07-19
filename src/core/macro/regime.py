@@ -421,7 +421,18 @@ def classify_macro_state(
         weighted_sum += risk_val * weight
         total_weight += weight
 
-    if total_weight > 0:
+    # Opt-in blackout fail-safe: when every DATA-BACKED axis is missing, size at
+    # the floor instead of letting the earnings_breadth placeholder (hardcoded
+    # STABLE, never in `missing`) masquerade as a moderately confident read —
+    # without the flag an all-feeds-down scan sizes ~0.775, not even neutral.
+    # Default OFF → byte-identical baseline; A/B lever (blackout_failsafe_prereg).
+    _placeholder_axes = {"earnings_breadth"}
+    _data_blackout = all(a in missing for a in axis_weights
+                         if a not in _placeholder_axes)
+    if (_data_blackout
+            and bool((settings or {}).get("macro", {}).get("blackout_failsafe", False))):
+        state.risk_on_score = 0.0
+    elif total_weight > 0:
         state.risk_on_score = weighted_sum / total_weight
     else:
         state.risk_on_score = 0.5

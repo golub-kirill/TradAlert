@@ -132,6 +132,10 @@ def main() -> None:
           f"{ec_e.max_dd - ec_b.max_dd:+.2f}R maxDD · "
           f"{st_e.expectancy_r - st_b.expectancy_r:+.4f} E[R]")
 
+    # Standing robustness readout on the gate leg (era table + leave-one-out).
+    from backtest.stress import print_stress
+    print_stress(trades_be, label="breakeven leg")
+
 
 if __name__ == "__main__":
     main()
