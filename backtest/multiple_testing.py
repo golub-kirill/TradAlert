@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -459,4 +460,135 @@ def whites_reality_check(
     return RealityCheckResult(
         p_value=p_value, best_config_idx=best, observed_stat=V,
         n_bootstrap=n_bootstrap, n_configs=K, n_periods=T, mean_block=mean_block,
+    )
+
+
+# ── Probability of Backtest Overfitting (CSCV) ──────────────────────────────────
+
+@dataclass(frozen=True)
+class PBOResult:
+    """Probability of Backtest Overfitting via Combinatorially-Symmetric CV.
+
+    Attributes
+    ----------
+    pbo             : Fraction of splits where the IS-best config ranks BELOW the
+                      OOS median. 0 ⇒ the selected config generalises; 0.5 ⇒ IS
+                      rank carries no OOS information (indistinguishable from
+                      overfit noise); → 1 ⇒ selection is systematically overfit.
+    n_splits        : S — number of contiguous time groups the matrix was cut into.
+    n_combinations  : C(S, S/2) — splits actually evaluated (non-degenerate).
+    n_configs       : Columns K in the matrix (the trials searched).
+    n_periods       : Rows T in the matrix.
+    embargo         : Rows dropped from IS on each side of an IS↔OOS seam.
+    median_logit    : Median of logit(ω) over splits; > 0 ⇒ IS-best beats the OOS
+                      median more often than not.
+    """
+    pbo: float
+    n_splits: int
+    n_combinations: int
+    n_configs: int
+    n_periods: int
+    embargo: int
+    median_logit: float
+
+    def __str__(self) -> str:
+        return (f"PBO={self.pbo:.3f}  (S={self.n_splits}, "
+                f"splits={self.n_combinations}, K={self.n_configs}, "
+                f"T={self.n_periods}, embargo={self.embargo}, "
+                f"med.logit={self.median_logit:+.3f})")
+
+
+def _col_sharpe(block: np.ndarray) -> np.ndarray:
+    """Per-column monthly Sharpe (mean/std, ddof=1) of a (rows × K) block.
+
+    Columns with < 2 rows or zero variance return −inf so they rank worst — a
+    config with no OOS dispersion is not evidence of a generalising edge.
+    """
+    if block.shape[0] < 2:
+        return np.full(block.shape[1], -np.inf)
+    mu = block.mean(axis=0)
+    sd = block.std(axis=0, ddof=1)
+    out = np.full(block.shape[1], -np.inf)
+    ok = sd > 0
+    out[ok] = mu[ok] / sd[ok]
+    return out
+
+
+def probability_of_backtest_overfitting(
+        monthly_matrix: np.ndarray,
+        n_splits: int = 16,
+        embargo: int = 1,
+) -> PBOResult:
+    """Probability of Backtest Overfitting — Bailey, Borwein, López de Prado, Zhu
+    (2015), via Combinatorially-Symmetric Cross-Validation (CSCV).
+
+    Input is the same ``(T × K)`` monthly-R matrix that ``align_monthly_matrix``
+    builds and ``whites_reality_check`` consumes: T periods (rows) × K searched
+    configs (columns). Answers "how often does the config that looks best
+    IN-SAMPLE land in the bottom half OUT-OF-SAMPLE" across every symmetric split
+    of the timeline — a direct, distribution-free overfitting probability that
+    complements the DSR (single selected config) and White's RC (best-vs-cash).
+
+    Method
+    ------
+    Cut the T rows into ``n_splits`` (= S, forced even) contiguous groups. For each
+    combination of S/2 groups as in-sample (complement = out-of-sample):
+      • drop IS rows within ``embargo`` of any OOS row (seam leakage; rows are
+        months and a trade's label ≈ 1 month, so a small embargo suffices);
+      • pick n* = argmax IS Sharpe; find its relative rank ω ∈ (0, 1) among the K
+        OOS Sharpes; λ = logit(ω).
+    PBO = fraction of splits with λ < 0 (n* below the OOS median).
+
+    Returns ``pbo = NaN`` when T < n_splits, K < 2, or no split is evaluable.
+    """
+    mat = np.asarray(monthly_matrix, dtype=float)
+    S = int(n_splits) - (int(n_splits) % 2)  # force even
+    nan = PBOResult(pbo=float("nan"), n_splits=S, n_combinations=0,
+                    n_configs=int(mat.shape[1]) if mat.ndim == 2 else 0,
+                    n_periods=int(mat.shape[0]) if mat.ndim == 2 else 0,
+                    embargo=int(embargo), median_logit=float("nan"))
+    if mat.ndim != 2 or S < 2 or mat.shape[0] < S or mat.shape[1] < 2:
+        return nan
+
+    T, K = mat.shape
+    groups = np.array_split(np.arange(T), S)          # contiguous, near-equal
+    logits: list[float] = []
+
+    for is_groups in combinations(range(S), S // 2):
+        is_set = set(is_groups)
+        is_rows = np.concatenate([groups[g] for g in is_groups])
+        oos_rows = np.concatenate([groups[g] for g in range(S) if g not in is_set])
+
+        # Embargo: drop IS rows within `embargo` of any OOS row (seam purge).
+        if embargo > 0 and oos_rows.size:
+            near = np.zeros(T, dtype=bool)
+            near[oos_rows] = True
+            for e in range(1, embargo + 1):
+                near[e:] |= near[:-e]
+                near[:-e] |= near[e:]
+            is_rows = is_rows[~near[is_rows]]
+        if is_rows.size < 2 or oos_rows.size < 2:
+            continue
+
+        is_sharpe = _col_sharpe(mat[is_rows])
+        if not np.any(np.isfinite(is_sharpe)):
+            continue
+        n_star = int(np.argmax(is_sharpe))
+
+        oos_sharpe = _col_sharpe(mat[oos_rows])
+        # Average rank of n* among the K OOS Sharpes: 1 (worst) .. K (best).
+        less = int(np.sum(oos_sharpe < oos_sharpe[n_star]))
+        equal = int(np.sum(oos_sharpe == oos_sharpe[n_star]))
+        rank = less + (equal + 1) / 2.0
+        omega = rank / (K + 1.0)                        # ∈ (0, 1)
+        omega = min(max(omega, 1e-9), 1 - 1e-9)
+        logits.append(math.log(omega / (1.0 - omega)))
+
+    if not logits:
+        return nan
+    arr = np.asarray(logits, dtype=float)
+    return PBOResult(
+        pbo=float(np.mean(arr < 0.0)),
+        n_splits=S, n_combinations=len(logits), n_configs=K, n_periods=T,
+        embargo=int(embargo), median_logit=float(np.median(arr)),
     )
