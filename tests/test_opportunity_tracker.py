@@ -302,6 +302,123 @@ def test_classify_short_side_inverts_sign():
     assert ot.classify(0.08, side="short") == "avoided_loser"
 
 
+# ── tail statistics ─────────────────────────────────────────────────────────
+
+def test_mean_ex_tail_flips_the_sign_on_a_tail_carried_sample():
+    # The live shape in miniature: a net-negative body plus one big winner. The
+    # plain mean reads positive; removing the top 5% flips it. When these
+    # disagree the headline is a tail artifact, not a population property.
+    sample = [-1.0] * 19 + [30.0]
+    assert np.mean(sample) > 0
+    assert ot.mean_ex_tail(sample, 0.05) == pytest.approx(-1.0)
+
+
+def test_tail_share_above_one_means_the_body_is_negative():
+    sample = [-1.0] * 19 + [30.0]          # total = 11, top 1 = 30
+    assert ot.tail_share(sample, 0.05) == pytest.approx(30.0 / 11.0)
+    assert ot.tail_share(sample, 0.05) > 1.0
+
+
+def test_tail_share_is_nan_when_the_total_is_not_positive():
+    assert np.isnan(ot.tail_share([-1.0, -2.0, -3.0]))
+
+
+def test_tail_share_is_one_for_a_single_positive_contributor():
+    assert ot.tail_share([0.0, 0.0, 0.0, 5.0], 0.25) == pytest.approx(1.0)
+
+
+def test_trimmed_mean_drops_both_ends():
+    # 10% off each end of 10 sorted values removes one per side.
+    sample = [-100.0] + [1.0] * 8 + [100.0]
+    assert ot.trimmed_mean(sample, 0.10) == pytest.approx(1.0)
+
+
+def test_winsorized_mean_clamps_rather_than_drops():
+    sample = [1.0] * 19 + [1000.0]
+    w = ot.winsorized_mean(sample, 0.05)
+    assert w < np.mean(sample)             # outlier's leverage capped
+    assert w >= 1.0                        # but still counted, not discarded
+
+
+def test_percentiles_and_empty_sample_are_nan_safe():
+    p = ot.percentiles([1.0, 2.0, 3.0, 4.0, 5.0], qs=(50,))
+    assert p[50] == pytest.approx(3.0)
+    assert all(np.isnan(v) for v in ot.percentiles([], qs=(5, 50, 95)).values())
+
+
+def test_tail_helpers_ignore_non_finite_values():
+    sample = [1.0, float("nan"), 2.0, float("inf"), 3.0]
+    assert ot.trimmed_mean(sample, 0.0) == pytest.approx(2.0)
+    assert ot.percentiles(sample, qs=(50,))[50] == pytest.approx(2.0)
+
+
+# ── cluster bootstrap / power gate ──────────────────────────────────────────
+
+def test_cluster_bootstrap_ci_is_deterministic_under_a_seed():
+    vals = list(np.linspace(-1.0, 1.0, 40))
+    keys = [f"TEST.{i % 8}" for i in range(40)]
+    a = ot.cluster_bootstrap_ci(vals, keys, n=200, seed=7)
+    b = ot.cluster_bootstrap_ci(vals, keys, n=200, seed=7)
+    assert a == b
+
+
+def test_cluster_bootstrap_ci_brackets_the_estimate():
+    vals = [1.0] * 20 + [3.0] * 20
+    keys = [f"TEST.{i % 10}" for i in range(40)]
+    est, lo, hi = ot.cluster_bootstrap_ci(vals, keys, n=500, seed=1)
+    assert est == pytest.approx(2.0)
+    assert lo <= est <= hi
+
+
+def test_cluster_bootstrap_ci_is_wider_than_iid_when_clusters_are_correlated():
+    # Every observation inside a cluster is identical, so the cluster carries no
+    # more information than one point. An IID bootstrap would not see that.
+    rng = np.random.default_rng(0)
+    per_cluster = rng.normal(size=12)
+    vals, keys = [], []
+    for i, v in enumerate(per_cluster):
+        vals.extend([float(v)] * 10)       # 10 duplicates per cluster
+        keys.extend([f"TEST.{i}"] * 10)
+    _, c_lo, c_hi = ot.cluster_bootstrap_ci(vals, keys, n=2000, seed=3)
+    _, i_lo, i_hi = ot.cluster_bootstrap_ci(vals, list(range(len(vals))),
+                                            n=2000, seed=3)
+    assert (c_hi - c_lo) > (i_hi - i_lo)
+
+
+def test_cluster_bootstrap_ci_needs_two_clusters():
+    est, lo, hi = ot.cluster_bootstrap_ci([1.0, 2.0], ["TEST.1", "TEST.1"], n=10)
+    assert all(np.isnan(v) for v in (est, lo, hi))
+
+
+def test_min_detectable_effect_shrinks_with_more_clusters():
+    vals = list(np.linspace(-1.0, 1.0, 100))
+    assert ot.min_detectable_effect(vals, n_eff=25) > ot.min_detectable_effect(vals, n_eff=100)
+
+
+def test_verdict_blocks_when_the_interval_straddles_zero():
+    call, blockers = ot.verdict(-0.02, 0.03, n_clusters=100, tail=0.1)
+    assert call == "NO CONCLUSION"
+    assert any("straddles zero" in b for b in blockers)
+
+
+def test_verdict_blocks_on_too_few_clusters():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=5, tail=0.1)
+    assert call == "NO CONCLUSION"
+    assert any("clusters" in b for b in blockers)
+
+
+def test_verdict_blocks_when_the_tail_carries_the_result():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=100, tail=0.80)
+    assert call == "NO CONCLUSION"
+    assert any("tail" in b for b in blockers)
+
+
+def test_verdict_supported_only_when_every_gate_passes():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=100, tail=0.20)
+    assert call == "SUPPORTED"
+    assert blockers == []
+
+
 # ── anchor_indices ──────────────────────────────────────────────────────────
 
 def test_anchor_indices_on_a_trading_day():

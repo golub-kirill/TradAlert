@@ -295,6 +295,155 @@ def classify(mkt_adj_fwd21: float, *, win: float = 0.05, lose: float = 0.05,
     return "neutral"
 
 
+# ── tail statistics and power (pure; numpy only) ────────────────────────────
+#
+# The mean is the wrong headline for this distribution. On the live sample the
+# top 5% of observations supply more than the whole total — the body is
+# net-negative — so the mean flips sign on a handful of names and reports a
+# verdict the sample cannot support. These give the shape instead, and the
+# verdict gate below refuses to speak when the evidence is not there.
+
+def _finite_array(values) -> np.ndarray:
+    a = np.asarray(list(values), dtype=float)
+    return a[np.isfinite(a)]
+
+
+def trimmed_mean(values, trim: float = 0.10) -> float:
+    """Mean after dropping ``trim`` of the sample from EACH end. NaN when the
+    trim would empty it."""
+    a = np.sort(_finite_array(values))
+    n = a.size
+    if n == 0:
+        return float("nan")
+    k = int(n * trim)
+    core = a[k:n - k] if n - 2 * k > 0 else a
+    return float(np.mean(core)) if core.size else float("nan")
+
+
+def winsorized_mean(values, limit: float = 0.05) -> float:
+    """Mean with the extreme ``limit`` of each tail clamped to the surviving
+    percentile rather than dropped — keeps the observation, caps its leverage."""
+    a = _finite_array(values)
+    if a.size == 0:
+        return float("nan")
+    lo, hi = np.percentile(a, [100 * limit, 100 * (1 - limit)])
+    return float(np.mean(np.clip(a, lo, hi)))
+
+
+def tail_share(values, frac: float = 0.05) -> float:
+    """Share of the total contributed by the top ``frac`` of observations.
+
+    NaN when the total is <= 0 (the ratio has no meaning there). A value above
+    1.0 is the diagnostic that matters: it means the rest of the sample is
+    net-negative and the headline is carried entirely by the tail.
+    """
+    a = np.sort(_finite_array(values))
+    total = float(np.sum(a))
+    if a.size == 0 or total <= 0:
+        return float("nan")
+    k = max(1, int(a.size * frac))
+    return float(np.sum(a[-k:]) / total)
+
+
+def mean_ex_tail(values, frac: float = 0.05) -> float:
+    """Mean after removing the top ``frac`` of observations — the flip
+    diagnostic. When this has the opposite sign to the plain mean, the headline
+    is a tail artifact and not a property of the population."""
+    a = np.sort(_finite_array(values))
+    if a.size == 0:
+        return float("nan")
+    k = max(1, int(a.size * frac))
+    core = a[:-k]
+    return float(np.mean(core)) if core.size else float("nan")
+
+
+def percentiles(values, qs=(5, 25, 50, 75, 95)) -> dict:
+    """``{q: value}`` for each requested percentile; all NaN on an empty sample."""
+    a = _finite_array(values)
+    if a.size == 0:
+        return {q: float("nan") for q in qs}
+    return {q: float(np.percentile(a, q)) for q in qs}
+
+
+def cluster_bootstrap_ci(values, cluster_keys, stat=None, n: int = 10_000,
+                         ci: float = 0.95, seed: int = 42) -> tuple:
+    """``(estimate, lo, hi)`` resampling whole CLUSTERS with replacement.
+
+    Observations here are clustered, not a time-ordered series: several names
+    share a (ticker, month) window and every name in a month shares residual
+    market and sector beta the benchmark adjustment does not remove. An IID
+    bootstrap would treat those as independent and report a CI far too narrow.
+    Resampling whole ``cluster_keys`` groups is the matching estimator.
+
+    (``backtest.multiple_testing._stationary_bootstrap_indices`` is the
+    alternative, but Politis-Romano assumes serial structure in a time-ordered
+    series — the wrong shape for a single-year cluster sample.)
+
+    Returns all-NaN with fewer than two non-empty clusters.
+    """
+    stat = stat or (lambda a: float(np.mean(a)))
+    groups: dict = defaultdict(list)
+    for v, k in zip(values, cluster_keys):
+        if np.isfinite(v):
+            groups[k].append(float(v))
+    arrs = [np.asarray(g, dtype=float) for g in groups.values() if g]
+    if len(arrs) < 2:
+        return (float("nan"), float("nan"), float("nan"))
+
+    est = stat(np.concatenate(arrs))
+    rng = np.random.default_rng(seed)
+    m = len(arrs)
+    draws = np.empty(n, dtype=float)
+    for i in range(n):
+        idx = rng.integers(0, m, m)
+        draws[i] = stat(np.concatenate([arrs[j] for j in idx]))
+    half = (1.0 - ci) / 2.0
+    return (float(est),
+            float(np.percentile(draws, 100 * half)),
+            float(np.percentile(draws, 100 * (1 - half))))
+
+
+def min_detectable_effect(values, n_eff: int | None = None,
+                          ci: float = 0.95) -> float:
+    """Smallest mean effect this sample could distinguish from zero.
+
+    ``z * sd / sqrt(n_eff)``. Pass ``n_eff`` as the CLUSTER count, not the
+    observation count — overlapping windows mean the nominal n overstates the
+    information available. NaN below two observations.
+    """
+    from backtest.multiple_testing import norm_ppf
+    a = _finite_array(values)
+    if a.size < 2:
+        return float("nan")
+    n = int(n_eff) if n_eff else a.size
+    if n < 1:
+        return float("nan")
+    z = norm_ppf(1.0 - (1.0 - ci) / 2.0)
+    return float(z * np.std(a, ddof=1) / np.sqrt(n))
+
+
+def verdict(lo: float, hi: float, *, n_clusters: int, tail: float,
+            min_clusters: int = 20, max_tail_share: float = 0.5) -> tuple:
+    """``(verdict, blockers)`` for the headline read.
+
+    Returns ``"NO CONCLUSION"`` whenever the confidence interval straddles zero,
+    the cluster count is below ``min_clusters``, or the top-5% tail carries more
+    than ``max_tail_share`` of the total. Any one of those makes a directional
+    claim unsupportable, and the previous unconditional "gates net-COST you"
+    printed off a tail-driven mean is exactly the failure this prevents.
+    """
+    blockers = []
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        blockers.append("no usable confidence interval")
+    elif lo <= 0.0 <= hi:
+        blockers.append("the confidence interval straddles zero")
+    if n_clusters < min_clusters:
+        blockers.append(f"{n_clusters} clusters < {min_clusters} required")
+    if np.isfinite(tail) and tail > max_tail_share:
+        blockers.append(f"top-5% tail carries {tail:.0%} of the total")
+    return ("NO CONCLUSION" if blockers else "SUPPORTED"), blockers
+
+
 def anchor_indices(dates, signal_date) -> tuple[int, int]:
     """``(t_sig, i_entry)`` for a signal session date.
 
@@ -593,6 +742,9 @@ def main() -> None:
     ap.add_argument("--csv", default=None,
                     help="Write the per-observation rows to this CSV "
                          "(manual run results belong under docs/backtest_out/).")
+    ap.add_argument("--bootstrap", type=int, default=10_000,
+                    help="Cluster-bootstrap draws for the confidence interval. "
+                         "Default 10000.")
     args = ap.parse_args()
 
     if args.win < 0 or args.lose < 0:
@@ -739,22 +891,53 @@ def main() -> None:
     print("  " + _fmt_row("ALL (dedup ticker-month)", allr))
     print("=" * 104)
 
-    mean = allr["mean_fwd21"]
-    if not np.isfinite(mean):
-        verdict = "—"
-    elif mean < 0:
-        verdict = (f"gates net-AVOIDED losers ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book underperformed its benchmark")
-    elif mean > 0:
-        verdict = (f"gates net-COST you ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book beat its benchmark")
-    else:
-        verdict = "gates net-flat vs benchmark"
-
     if hidden:
         print(f"\n  ({hidden} gate(s) hidden below --min-n {args.min_n}.)")
-    print(f"\n  Two-sided read: {verdict}.\n"
-          f"  (negative mean ⇒ the gate avoided losers; positive ⇒ it cost you a winner.)\n"
+
+    # ── power: what this sample can and cannot support ──────────────────────
+    # Cluster by TICKER. The ALL rollup has already deduped to one row per
+    # (ticker, month), so clustering on that key would give singleton clusters
+    # and silently degrade to an IID bootstrap. Ticker is the real repeated
+    # measurement. Same-month cross-sectional dependence (residual sector beta
+    # the benchmark does not remove) is NOT modelled, so the interval below is a
+    # lower bound on the true width — clustering on month instead would be
+    # stricter but leaves ~2 clusters on a two-month journal.
+    all_rows = _dedupe_by_ticker_month(observations)
+    vals = [o["fwd21"] for o in all_rows]
+    clusters = [o["ticker"] for o in all_rows]
+    n_clusters = len({c for c, v in zip(clusters, vals) if np.isfinite(v)})
+    est, lo, hi = cluster_bootstrap_ci(vals, clusters, n=args.bootstrap)
+    tail = tail_share(vals, 0.05)
+    ex_tail = mean_ex_tail(vals, 0.05)
+    mde = min_detectable_effect(vals, n_eff=n_clusters)
+    unattr = sum(1 for o in observations if o["gate"] == UNATTRIBUTED)
+
+    print("\n  POWER")
+    print(f"    {len(observations)} matured obs across {n_clusters} ticker "
+          f"clusters; {100.0 * unattr / max(1, len(observations)):.0f}% carry no "
+          f"attributable gate.")
+    if np.isfinite(mde):
+        print(f"    smallest detectable mean effect at 95%: ±{mde:.2%}")
+    if np.isfinite(est) and np.isfinite(lo):
+        print(f"    ALL mean {est:+.2%}  95% CI [{lo:+.2%}, {hi:+.2%}]  "
+              f"(cluster bootstrap, {args.bootstrap} draws)")
+    if np.isfinite(tail):
+        print(f"    top 5% carries {tail:.0%} of the total; mean excluding it "
+              f"{ex_tail:+.2%}")
+
+    call, blockers = verdict(lo, hi, n_clusters=n_clusters, tail=tail)
+    if blockers:
+        print(f"\n  => {call}: " + "; ".join(blockers) + ".")
+        print("     This sample cannot tell a positive edge from a negative one. "
+              "No directional\n     claim about any gate is supportable yet.")
+    else:
+        mean = allr["mean_fwd21"]
+        direction = ("net-AVOIDED losers — the passed-on book underperformed "
+                     "its benchmark") if mean < 0 else (
+                    "net-COST you — the passed-on book beat its benchmark")
+        print(f"\n  => {call}: gates {direction} ({mean:+.2%} mean mkt-adj fwd21).")
+
+    print(f"\n  (negative mean ⇒ the gate avoided losers; positive ⇒ it cost you a winner.)\n"
           f"  '{UNATTRIBUTED}' = the journal kept no signal-stage reason for those rows,\n"
           f"  so no gate is attributable — they are not evidence about any gate.\n")
 
