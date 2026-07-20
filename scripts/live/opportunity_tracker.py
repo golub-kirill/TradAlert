@@ -30,8 +30,21 @@ scan-*pass* snapshot ("UPTREND | vol×1.2 | RSI 55 | MACD↑"). No gate rejected
 those names, so they bucket as `(no gate recorded)` instead of being reported as
 a gate that cost you.
 
-For each (ticker, scan_date, gate) the forward return from the bar on/after
-scan_date is market-adjusted vs SPY over the identical span (same `.asof`
+Bar anchor: a run's signal bar is the last exchange session COMPLETED as of its
+wall-clock `created_at`, via `core.freshness.last_completed_session` — NOT
+`DATE(created_at)`. A scan that runs before the close is reading the previous
+session's bar. Measured on this journal, the naive date put the signal bar one
+bar early on ~47% of rows and correct on ~43% — a coin flip; the session-aware
+anchor lands on the right bar 82% of the time. It also handles the NYSE/TSX
+holiday divergence, which no fixed offset can.
+
+Benchmark: per listing exchange (`_BENCH_BY_EXCHANGE`) — SPY for NYSE names,
+XIU.TO for `.TO` names. 40% of the journalled universe is Canadian, and
+adjusting a CAD-priced name against SPY in USD measures the currency and the
+wrong market.
+
+For each (ticker, signal_date, gate) the forward return from the signal bar is
+market-adjusted vs that ticker's benchmark over the identical span (same `.asof`
 approach as `core.pead.car_event`), then classified per gate:
   • > +win  → missed_winner   (the gate cost you)
   • < -lose → avoided_loser   (the gate saved you)
@@ -39,7 +52,7 @@ approach as `core.pead.car_event`), then classified per gate:
 
 Overlap control: the same name is often blocked on many consecutive days, so the
 forward windows overlap heavily. Per-gate stats dedupe to one observation per
-(ticker, gate, year-month) — the earliest scan_date that month. The ALL rollup
+(ticker, gate, year-month) — the earliest signal_date that month. The ALL rollup
 dedupes further, to one per (ticker, year-month), so a name blocked by two gates
 in the same month is not counted twice against a single price move.
 
@@ -56,7 +69,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -86,23 +99,33 @@ UNATTRIBUTED = "(no gate recorded)"
 # Owner pressed 🚫 Skip on a fired entry — not a gate rejection.
 DECLINED = "declined (owner skip)"
 
+# Market benchmark per listing exchange (``core.freshness.exchange_for``). 40% of
+# the journalled universe is ``.TO``; adjusting a CAD-priced TSX name against
+# SPY in USD measures the currency and the wrong market. XIU = TSX 60, which
+# matches a liquidity-gated scanner universe — XIC (broad composite) is the
+# alternative and is a one-line change here.
+_BENCH_BY_EXCHANGE = {"TSX": "XIU.TO", "NYSE": "SPY"}
+
 
 # ── pure helpers (import-safe; unit-tested; no DB / no network) ──────────────
 
-def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
+def forward_returns(close: np.ndarray, dates, bench_close, i0: int,
                     horizons=(5, 21)) -> dict:
-    """Market-adjusted forward returns from index ``i0`` (the bar on/after scan_date).
+    """Market-adjusted forward returns from index ``i0`` (the signal bar).
 
     For each horizon ``h``::
 
         mkt_adj_h = (close[i0+h]/close[i0] - 1)
-                    - (spy.asof(dates[i0+h])/spy.asof(dates[i0]) - 1)
+                    - (bench.asof(dates[i0+h])/bench.asof(dates[i0]) - 1)
+
+    ``bench_close`` is the benchmark resolved for this ticker's listing exchange
+    (see ``_BENCH_BY_EXCHANGE``), not SPY unconditionally.
 
     NaN when ``i0+h`` is past the end of the series or any of the four prices is
     non-finite or <= 0 (mirrors ``core.pead.car_event``'s finiteness guards and
-    ``.asof`` usage). A scan_date predating the SPY series makes ``spy.asof``
-    NaN, which correctly NaNs every horizon rather than reporting an unadjusted
-    raw return as if it were market-adjusted.
+    ``.asof`` usage). A signal date predating the benchmark series makes
+    ``.asof`` NaN, which correctly NaNs every horizon rather than reporting an
+    unadjusted raw return as if it were market-adjusted.
 
     Also returns ``mdd21`` — the worst close-to-close drawdown over the 21-bar
     window from ``i0`` (the avoided downside), as a non-positive fraction; NaN
@@ -116,9 +139,9 @@ def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
 
     in_range = 0 <= i0 < n
     c0 = float(close[i0]) if in_range else float("nan")
-    spy0 = float(spy_close.asof(dates[i0])) if in_range else float("nan")
+    b0 = float(bench_close.asof(dates[i0])) if in_range else float("nan")
     base_ok = (in_range and np.isfinite(c0) and c0 > 0
-               and np.isfinite(spy0) and spy0 > 0)
+               and np.isfinite(b0) and b0 > 0)
 
     for h in horizons:
         j = i0 + h
@@ -126,11 +149,11 @@ def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
             out[f"fwd{h}"] = float("nan")
             continue
         c_h = float(close[j])
-        spy_h = float(spy_close.asof(dates[j]))
-        if not (np.isfinite(c_h) and c_h > 0 and np.isfinite(spy_h) and spy_h > 0):
+        b_h = float(bench_close.asof(dates[j]))
+        if not (np.isfinite(c_h) and c_h > 0 and np.isfinite(b_h) and b_h > 0):
             out[f"fwd{h}"] = float("nan")
             continue
-        out[f"fwd{h}"] = (c_h / c0 - 1.0) - (spy_h / spy0 - 1.0)
+        out[f"fwd{h}"] = (c_h / c0 - 1.0) - (b_h / b0 - 1.0)
 
     # Worst close-to-close drawdown over the 21-bar window (i0 .. i0+21).
     out["mdd21"] = _max_drawdown(close, i0, HORIZON)
@@ -272,6 +295,25 @@ def classify(mkt_adj_fwd21: float, *, win: float = 0.05, lose: float = 0.05,
     return "neutral"
 
 
+def anchor_indices(dates, signal_date) -> tuple[int, int]:
+    """``(t_sig, i_entry)`` for a signal session date.
+
+    ``t_sig`` is the last bar on/before ``signal_date`` — the bar whose close sets
+    the entry geometry (``core.filter_engine`` builds stop/target off bar T's
+    close). ``i_entry`` is the next bar, where the fill lands (the backtester
+    enters at T+1's open).
+
+    ``t_sig`` is ``-1`` when no bar exists on/before the date.
+
+    Using ``side="right") - 1`` keeps one meaning for one expression. The former
+    ``searchsorted(D, side="left")`` returned the signal bar on a trading day but
+    the *entry* bar on a weekend/holiday — two different anchors from one call.
+    """
+    import pandas as pd
+    t_sig = int(dates.searchsorted(pd.Timestamp(signal_date), side="right")) - 1
+    return t_sig, t_sig + 1
+
+
 def _dedupe_by_ticker_month(observations: list[dict]) -> list[dict]:
     """One observation per (ticker, year-month), keeping the first seen.
 
@@ -282,7 +324,7 @@ def _dedupe_by_ticker_month(observations: list[dict]) -> list[dict]:
     seen: set[tuple] = set()
     out: list[dict] = []
     for o in observations:
-        ticker, date = o.get("ticker"), o.get("scan_date")
+        ticker, date = o.get("ticker"), o.get("signal_date")
         if ticker is None or date is None:
             return list(observations)
         key = (ticker, date.year, date.month)
@@ -346,9 +388,20 @@ def aggregate(observations: list[dict]) -> dict:
 # ── DB + price I/O (main; not import-safe) ──────────────────────────────────
 
 def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
-    """Passed-on rows: (ticker, scan_date, gate). See module docstring for the
-    definition. Ordered by scan_date, ticker so the monthly dedupe keeps the
-    earliest scan_date deterministically."""
+    """Passed-on rows: (ticker, signal_date, gate). See module docstring for the
+    definition. Ordered by created_at, ticker so the monthly dedupe keeps the
+    earliest run deterministically.
+
+    ``signal_date`` is the last exchange session COMPLETED as of the run's
+    wall-clock ``created_at`` — not ``DATE(created_at)``. A scan that runs before
+    the close is looking at the previous session's bar, so the naive date
+    mis-anchors it by one bar. Measured on this journal: runs at 20:00-23:00 UTC
+    (after the 16:00 ET close) anchor to the same-day bar, runs at 00:00-16:00 to
+    the prior bar — overall a coin flip. ``last_completed_session`` also handles
+    the NYSE/TSX holiday divergence, which a fixed offset would not.
+    """
+    from core.freshness import exchange_for, last_completed_session
+
     cur = conn.cursor(dictionary=True)
     where_days = ""
     params: tuple = ()
@@ -358,18 +411,21 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
     # SQL only narrows to the candidate set; the row-level definition stays in
     # is_passed_on() so the two cannot drift apart.
     cur.execute(
-        "SELECT sr.ticker, DATE(r.created_at) AS scan_date, sr.reason AS reason, "
+        "SELECT sr.ticker, r.created_at AS scan_ts, sr.reason AS reason, "
         "       sr.passed AS passed, sr.signal_kind AS signal_kind, "
         "       sr.declined AS declined "
         "FROM scan_results sr JOIN scan_runs r ON r.id = sr.run_id "
         "WHERE (sr.passed = 0 OR sr.signal_kind IS NULL "
         "       OR sr.signal_kind = 'none' OR sr.declined = 1) "
         + where_days +
-        "ORDER BY scan_date, sr.ticker",
+        "ORDER BY r.created_at, sr.ticker",
         params,
     )
     rows = cur.fetchall()
     cur.close()
+
+    # ~113 runs x 2 exchanges, so memoising collapses 20k calendar lookups to ~226.
+    session: dict[tuple, object] = {}
 
     out = []
     for row in rows:
@@ -379,9 +435,13 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
                             declined=declined,
                             reason=row.get("reason")):
             continue
+        ticker = row["ticker"]
+        key = (row["scan_ts"], exchange_for(ticker))
+        if key not in session:
+            session[key] = last_completed_session(row["scan_ts"], key[1])
         out.append({
-            "ticker": row["ticker"],
-            "scan_date": row["scan_date"],
+            "ticker": ticker,
+            "signal_date": session[key],
             "gate": normalize_gate(row.get("reason"), declined=declined),
         })
     return out
@@ -403,13 +463,16 @@ def _naive_index(pd, index):
     return idx.tz_localize(None) if getattr(idx, "tz", None) is not None else idx
 
 
-def build_observations(passed_on: list[dict], load_prices, spy_close, *,
+def build_observations(passed_on: list[dict], load_prices, bench_for, *,
                        win: float = 0.05, lose: float = 0.05) -> tuple[list[dict], dict]:
     """Score passed-on rows into matured, deduped observations.
 
     ``load_prices`` maps a ticker to its price DataFrame (or None when the cache
-    has no usable file). Returns ``(observations, stats)`` where stats carries
-    ``deduped`` / ``not_matured`` / ``missing_price`` / ``bad`` / ``bad_samples``.
+    has no usable file). ``bench_for`` maps a ticker to its
+    ``(benchmark_close_series, benchmark_label)`` — see ``_BENCH_BY_EXCHANGE``;
+    a ``.TO`` name is adjusted against the TSX, not against SPY in USD.
+    Returns ``(observations, stats)`` where stats carries ``deduped`` /
+    ``not_matured`` / ``missing_price`` / ``bad`` / ``bad_samples``.
 
     The (ticker, gate, year-month) key is claimed on the first ATTEMPT rather
     than on success, so a later date in the same month can never silently
@@ -431,12 +494,12 @@ def build_observations(passed_on: list[dict], load_prices, spy_close, *,
     for rec in passed_on:
         ticker, gate = rec["ticker"], rec["gate"]
         try:
-            d = pd.Timestamp(rec["scan_date"]).normalize()
+            d = pd.Timestamp(rec["signal_date"]).normalize()
         except (ValueError, TypeError) as exc:
-            _note(f"{ticker}: bad scan_date ({exc})")
+            _note(f"{ticker}: bad signal_date ({exc})")
             continue
 
-        # Rows arrive scan_date-ascending, so the first key seen is the earliest.
+        # Rows arrive created_at-ascending, so the first key seen is the earliest.
         key = (ticker, gate, d.year, d.month)
         if key in seen_keys:
             continue
@@ -446,16 +509,24 @@ def build_observations(passed_on: list[dict], load_prices, spy_close, *,
         if df is None:
             stats["missing_price"].add(ticker)
             continue
+        bench_close, bench_label = bench_for(ticker)
+        if bench_close is None:
+            _note(f"{ticker}: no benchmark series")
+            continue
         try:
             dates = df.index
             close = df["close"].to_numpy(dtype=float)
-            # First bar on/after scan_date (the shadow "entry" reference bar).
-            i0 = int(dates.searchsorted(d, side="left"))
-            # Require the full +21d window to exist, else it has not matured.
-            if i0 + HORIZON >= len(close):
+            # t_sig = signal bar (its close sets the geometry); i_entry = fill bar.
+            t_sig, i_entry = anchor_indices(dates, d)
+            if t_sig < 0:
+                _note(f"{ticker}: no bar on/before {d.date()}")
+                continue
+            # The window is measured from the fill bar, so maturity keys off
+            # i_entry — one bar stricter than anchoring on the signal bar.
+            if i_entry + HORIZON >= len(close):
                 stats["not_matured"] += 1
                 continue
-            fr = forward_returns(close, dates, spy_close, i0, horizons=(5, HORIZON))
+            fr = forward_returns(close, dates, bench_close, t_sig, horizons=(5, HORIZON))
         except (KeyError, ValueError, TypeError) as exc:
             _note(f"{ticker} @ {d.date()}: {exc}")
             continue
@@ -463,7 +534,10 @@ def build_observations(passed_on: list[dict], load_prices, spy_close, *,
         observations.append({
             "ticker": ticker,
             "gate": gate,
-            "scan_date": d.date(),
+            "signal_date": d.date(),
+            "bench": bench_label,
+            "t_sig": t_sig,
+            "i_entry": i_entry,
             "fwd5": fr["fwd5"],
             "fwd21": fr["fwd21"],
             "mdd21": fr["mdd21"],
@@ -549,15 +623,25 @@ def main() -> None:
               "(python main.py).")
         return
 
-    # SPY market benchmark — loaded once, as a close Series for .asof lookups.
-    spy_path = prices_dir / "SPY.parquet"
-    if not spy_path.exists():
-        print(f"  ✗ SPY benchmark missing at {spy_path} — cannot market-adjust. "
-              f"Populate the price cache first.")
-        return
-    spy_df = pd.read_parquet(spy_path)
-    spy_df.index = _naive_index(pd, spy_df.index)
-    spy_close = spy_df["close"].sort_index()
+    # Market benchmarks — one per listing exchange, each loaded once as a close
+    # Series for .asof lookups. Hard-fail on a missing one: silently falling back
+    # to SPY for a .TO name is the CAD-vs-USD bug this routing exists to remove.
+    from core.freshness import exchange_for
+
+    bench_close: dict[str, "pd.Series"] = {}
+    for sym in sorted(set(_BENCH_BY_EXCHANGE.values())):
+        b_path = prices_dir / f"{sym}.parquet"
+        if not b_path.exists():
+            print(f"  ✗ benchmark {sym} missing at {b_path} — cannot market-adjust. "
+                  f"Populate the price cache first.")
+            return
+        b_df = pd.read_parquet(b_path)
+        b_df.index = _naive_index(pd, b_df.index)
+        bench_close[sym] = b_df["close"].sort_index()
+
+    def _bench_for(ticker: str):
+        sym = _BENCH_BY_EXCHANGE[exchange_for(ticker)]
+        return bench_close.get(sym), sym
 
     # Per-ticker price cache so each parquet is read once across many scan dates.
     price_cache: dict[str, "pd.DataFrame | None"] = {}
@@ -581,7 +665,7 @@ def main() -> None:
 
     raw_count = len(passed_on)
     observations, stats = build_observations(
-        passed_on, _load_prices, spy_close, win=args.win, lose=args.lose)
+        passed_on, _load_prices, _bench_for, win=args.win, lose=args.lose)
     deduped = stats["deduped"]
     not_matured = stats["not_matured"]
     missing_price = stats["missing_price"]
@@ -614,15 +698,21 @@ def main() -> None:
         pd.DataFrame(observations).to_csv(csv_path, index=False)
         print(f"  → {len(observations)} observation(s) written to {csv_path}")
 
-    dates_seen = [o["scan_date"] for o in observations]
+    dates_seen = [o["signal_date"] for o in observations]
     print(f"\n  Opportunity-cost shadow tracker  ·  passed-on rows {raw_count}  ·  "
           f"deduped {deduped}  ·  matured {len(observations)}  ·  "
           f"{min(dates_seen)} → {max(dates_seen)}  ·  win>+{args.win:.0%} lose<-{args.lose:.0%}")
+    bench_split = Counter(o["bench"] for o in observations)
+    print("  benchmarks: " + " · ".join(
+        f"{sym} ({n} obs)" for sym, n in sorted(bench_split.items())))
     extra = []
     if not_matured:
         extra.append(f"{not_matured} not matured")
     if missing_price:
-        extra.append(f"{len(missing_price)} missing price")
+        # Delisted names have no parquet and drop out here. They are
+        # disproportionately the losers, so this count is a survivorship read,
+        # not a footnote.
+        extra.append(f"{len(missing_price)} missing price (delisted/uncached)")
     if bad:
         extra.append(f"{bad} bad/skipped")
     if extra:
@@ -654,12 +744,12 @@ def main() -> None:
         verdict = "—"
     elif mean < 0:
         verdict = (f"gates net-AVOIDED losers ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book underperformed SPY")
+                   f"the passed-on book underperformed its benchmark")
     elif mean > 0:
         verdict = (f"gates net-COST you ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book beat SPY")
+                   f"the passed-on book beat its benchmark")
     else:
-        verdict = "gates net-flat vs SPY"
+        verdict = "gates net-flat vs benchmark"
 
     if hidden:
         print(f"\n  ({hidden} gate(s) hidden below --min-n {args.min_n}.)")

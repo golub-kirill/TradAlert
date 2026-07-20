@@ -165,11 +165,11 @@ def test_aggregate_all_dedupes_ticker_month_across_gates():
     # ALL rollup must count it once while each gate still sees its own row.
     day = pd.Timestamp("2026-03-04").date()
     obs = [
-        {"ticker": "TEST.1", "gate": "a", "scan_date": day,
+        {"ticker": "TEST.1", "gate": "a", "signal_date": day,
          "fwd5": 0.0, "fwd21": 0.20, "mdd21": -0.01, "cls": "missed_winner"},
-        {"ticker": "TEST.1", "gate": "b", "scan_date": day,
+        {"ticker": "TEST.1", "gate": "b", "signal_date": day,
          "fwd5": 0.0, "fwd21": 0.20, "mdd21": -0.01, "cls": "missed_winner"},
-        {"ticker": "TEST.2", "gate": "a", "scan_date": day,
+        {"ticker": "TEST.2", "gate": "a", "signal_date": day,
          "fwd5": 0.0, "fwd21": -0.10, "mdd21": -0.12, "cls": "avoided_loser"},
     ]
     out = ot.aggregate(obs)
@@ -302,6 +302,76 @@ def test_classify_short_side_inverts_sign():
     assert ot.classify(0.08, side="short") == "avoided_loser"
 
 
+# ── anchor_indices ──────────────────────────────────────────────────────────
+
+def test_anchor_indices_on_a_trading_day():
+    # freq="B" from Thu 2026-01-01 → Jan 1, 2, 5, 6, ...  Mon Jan 5 is index 2.
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp("2026-01-05"))
+    assert (t_sig, i_entry) == (2, 3)
+
+
+def test_anchor_indices_non_trading_day_resolves_backwards():
+    # Sun 2026-01-04 has no bar. t_sig must be the PRIOR bar (Fri Jan 2), not the
+    # next one — the old searchsorted(side="left") returned Monday's bar here and
+    # Monday's bar for Monday too, conflating the signal bar with the entry bar.
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp("2026-01-04"))
+    assert (t_sig, i_entry) == (1, 2)
+    assert dates[t_sig] == pd.Timestamp("2026-01-02")
+
+
+def test_anchor_indices_before_series_start_is_negative():
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, _ = ot.anchor_indices(dates, pd.Timestamp("2025-12-01"))
+    assert t_sig == -1
+
+
+def test_anchor_entry_is_the_bar_after_the_signal_bar():
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    for d in ("2026-01-05", "2026-01-04", "2026-01-08"):
+        t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp(d))
+        assert i_entry == t_sig + 1
+
+
+# ── benchmark routing ───────────────────────────────────────────────────────
+
+def test_bench_map_routes_tsx_and_nyse():
+    assert ot._BENCH_BY_EXCHANGE["TSX"] == "XIU.TO"
+    assert ot._BENCH_BY_EXCHANGE["NYSE"] == "SPY"
+
+
+def test_benchmark_choice_changes_the_adjusted_return():
+    # A .TO name adjusted against a RISING TSX proxy must not read the same as
+    # against a flat SPY — routing has to actually reach the arithmetic.
+    n = 40
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    close = np.full(n, 100.0)
+    close[2 + 21] = 110.0                            # +10% ticker move
+    flat = _series(np.full(n, 400.0), dates)
+    rising = np.full(n, 400.0)
+    rising[2 + 21] = 416.0                           # +4% benchmark over the span
+    out_flat = ot.forward_returns(close, dates, flat, 2, horizons=(21,))
+    out_rise = ot.forward_returns(close, dates, _series(rising, dates), 2, horizons=(21,))
+    assert out_flat["fwd21"] == pytest.approx(0.10)
+    assert out_rise["fwd21"] == pytest.approx(0.10 - 0.04)
+
+
+def test_build_observations_records_the_benchmark_label():
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(),
+        _bench_for(label="XIU.TO"))
+    assert obs[0]["bench"] == "XIU.TO"
+
+
+def test_build_observations_drops_rows_with_no_benchmark():
+    obs, stats = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(),
+        lambda t: (None, "MISSING"))
+    assert obs == []
+    assert stats["bad"] == 1
+
+
 # ── build_observations (dedupe + maturity accounting) ───────────────────────
 
 def _frame(n=60, start="2026-01-01", price=100.0):
@@ -309,13 +379,19 @@ def _frame(n=60, start="2026-01-01", price=100.0):
     return pd.DataFrame({"close": np.full(n, price)}, index=dates)
 
 
-def _flat_spy(n=60, start="2026-01-01"):
+def _flat_bench(n=60, start="2026-01-01"):
     dates = pd.date_range(start, periods=n, freq="B")
     return pd.Series(np.full(n, 400.0), index=dates)
 
 
+def _bench_for(series=None, label="SPY"):
+    """build_observations' benchmark resolver: ticker -> (series, label)."""
+    s = _flat_bench() if series is None else series
+    return lambda t: (s, label)
+
+
 def _row(ticker, date, gate):
-    return {"ticker": ticker, "scan_date": date, "gate": gate}
+    return {"ticker": ticker, "signal_date": date, "gate": gate}
 
 
 def test_build_observations_dedupes_to_earliest_per_gate_month():
@@ -324,9 +400,9 @@ def test_build_observations_dedupes_to_earliest_per_gate_month():
         _row("TEST.1", "2026-01-12", "g"),      # same ticker/gate/month → dropped
         _row("TEST.1", "2026-01-19", "g"),      # same again → dropped
     ]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert len(obs) == 1
-    assert obs[0]["scan_date"] == pd.Timestamp("2026-01-05").date()
+    assert obs[0]["signal_date"] == pd.Timestamp("2026-01-05").date()
     assert stats["deduped"] == 1
 
 
@@ -337,7 +413,7 @@ def test_build_observations_keeps_distinct_gates_and_months():
         _row("TEST.1", "2026-02-03", "g"),      # different month → kept
         _row("TEST.2", "2026-01-05", "g"),      # different ticker → kept
     ]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert stats["deduped"] == 4
     assert len(obs) == 4
 
@@ -348,7 +424,7 @@ def test_build_observations_counters_are_per_observation_not_per_row():
     # retried each row and reported an inflated "not matured" headline.
     rows = [_row("TEST.1", f"2026-01-{d:02d}", "g") for d in (5, 6, 7, 8, 9)]
     short = _frame(n=10)                        # no +21d window exists
-    obs, stats = ot.build_observations(rows, lambda t: short, _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: short, _bench_for())
     assert obs == []
     assert stats["deduped"] == 1
     assert stats["not_matured"] == 1
@@ -363,7 +439,7 @@ def test_build_observations_accounting_balances():
         _row("TEST.3", "2026-01-05", "g"),      # too recent
     ]
     frames = {"TEST.1": _frame(), "TEST.2": None, "TEST.3": _frame(n=10)}
-    obs, stats = ot.build_observations(rows, frames.get, _flat_spy())
+    obs, stats = ot.build_observations(rows, frames.get, _bench_for())
     assert stats["deduped"] == 3
     assert (len(obs) + stats["not_matured"]
             + len(stats["missing_price"]) + stats["bad"]) == stats["deduped"]
@@ -371,14 +447,14 @@ def test_build_observations_accounting_balances():
 
 def test_build_observations_missing_price_recorded_not_counted_as_matured():
     rows = [_row("TEST.9", "2026-01-05", "g")]
-    obs, stats = ot.build_observations(rows, lambda t: None, _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: None, _bench_for())
     assert obs == []
     assert stats["missing_price"] == {"TEST.9"}
 
 
-def test_build_observations_bad_scan_date_is_sampled():
+def test_build_observations_bad_signal_date_is_sampled():
     rows = [_row("TEST.1", "not-a-date", "g")]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert obs == []
     assert stats["bad"] == 1
     assert stats["bad_samples"] and "TEST.1" in stats["bad_samples"][0]
@@ -391,7 +467,7 @@ def test_build_observations_scores_and_classifies():
     close[i0 + 21] = 120.0                       # +20% over flat SPY
     df = pd.DataFrame({"close": close}, index=dates)
     obs, _ = ot.build_observations(
-        [_row("TEST.1", "2026-01-05", "g")], lambda t: df, _flat_spy())
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: df, _bench_for())
     assert len(obs) == 1
     assert obs[0]["fwd21"] == pytest.approx(0.20)
     assert obs[0]["cls"] == "missed_winner"
@@ -404,5 +480,5 @@ def test_build_observations_short_gate_flips_classification():
     df = pd.DataFrame({"close": close}, index=dates)
     obs, _ = ot.build_observations(
         [_row("TEST.1", "2026-01-05", "hard-to-borrow (short blocked)")],
-        lambda t: df, _flat_spy())
+        lambda t: df, _bench_for())
     assert obs[0]["cls"] == "missed_winner"
