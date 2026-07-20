@@ -198,10 +198,7 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str,
     import pandas as pd
 
     from persistence.cache import load as cache_load
-    from backtest.backtester import (adjust_target_for_slippage, apply_stop_fill,
-                                     apply_stop_fill_short, apply_target_fill,
-                                     apply_target_fill_short)
-    from reconcile_live import _replay  # single source of replay-scoring truth
+    from backtest.counterfactual import replay_counterfactual
 
     def _note(kind: str, s: dict, why: str) -> None:
         if details is not None:
@@ -224,7 +221,6 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str,
             pending += 1
             _note("pending", s, "no T+1 bar yet")
             continue
-        entry = float(df.iloc[entry_idx]["open"])
         is_short = s["signal_kind"] == "entry_short"
 
         # Advisor-era rows always journal geometry; guard anyway (fail-open).
@@ -234,32 +230,29 @@ def _score(sigs: list[dict], cfg: dict, max_hold: int, mode: str,
             continue
         stop, target = float(s["stop_price"]), float(s["target_price"])
 
-        slip = cfg["entry_slippage_pct"]
-        if slip:
-            entry *= (1.0 - slip) if is_short else (1.0 + slip)
-            target = adjust_target_for_slippage(
-                entry, stop, target, cfg["min_rr"],
-                direction="short" if is_short else "long")
-
-        risk = (stop - entry) if is_short else (entry - stop)
-        if risk <= 0:
+        # Bare mechanical replay via the shared ladder — advisor scoring judges the
+        # stop/target/cap outcome, NOT the engine exit chain, so no probe and no
+        # breakeven ratchet (exit_probe=None, breakeven off). Entry slippage +
+        # commission match the reconciler; exit slippage stays off, as it always
+        # was on this scoring path.
+        cf = replay_counterfactual(
+            df, signal_idx=entry_idx - 1, ticker=s["ticker"],
+            direction="short" if is_short else "long",
+            stop_price=stop, target_price=target, min_rr=cfg["min_rr"],
+            max_hold_days=max_hold, max_hold_mode=mode,
+            breakeven_trigger_r=None,
+            commission_r=cfg["commission_r"],
+            entry_slippage_pct=cfg["entry_slippage_pct"], exit_slippage_pct=0.0,
+            exit_probe=None)
+        if cf is None or cf.gapped_through:
             errors += 1
             _note("errors", s, "non-positive risk (stop through entry)")
             continue
-
-        # Bare replay (no engine) — advisor scoring judges the stop/target/cap outcome,
-        # not the engine exit chain. _replay returns (exit_price, reason, exit_idx).
-        exit_price, reason, _exit_idx = _replay(df, entry_idx, entry, stop, target, is_short,
-                                                max_hold, mode,
-                                                apply_stop_fill, apply_target_fill,
-                                                apply_stop_fill_short, apply_target_fill_short)
-        if exit_price is None:
+        if not cf.matured:
             pending += 1
-            bars_open = len(df) - entry_idx
-            _note("pending", s, f"open {bars_open} bar(s), no stop/target/cap yet")
+            _note("pending", s, f"open {len(df) - entry_idx} bar(s), no stop/target/cap yet")
             continue
-        r = ((entry - exit_price) / risk) if is_short else ((exit_price - entry) / risk)
-        r -= cfg["commission_r"]
+        r, reason = cf.r_multiple, cf.exit_reason
 
         verdict, conf = parse_note(s["advisor_note"])
         resolved.append({
@@ -401,9 +394,9 @@ def main() -> None:
     args = ap.parse_args()
 
     from persistence.db_conn import connect
-    from reconcile_live import _cfg  # same config read as the drift meter
+    from backtest.counterfactual import replay_config  # same config read as the drift meter
 
-    cfg = _cfg()
+    cfg = replay_config(_ROOT)
     max_hold = args.max_hold_days if args.max_hold_days is not None else cfg["max_hold_days"]
     mode = cfg["max_hold_mode"]
 

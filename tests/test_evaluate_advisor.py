@@ -168,6 +168,9 @@ import pandas as pd  # noqa: E402
 from evaluate_advisor import _score  # noqa: E402
 
 _SCAN_DAY = _dt.datetime(2026, 5, 1, 22, 0)  # post-close scan on Fri May 1
+# _D0 is the SIGNAL bar (T): the scan runs on its evening, so the shared replay
+# anchors here and fills at _D1 (T+1). Entry-onward bars start at _D1.
+_D0 = pd.Timestamp("2026-05-01")
 _D1, _D2, _D3, _D4 = (pd.Timestamp("2026-05-04"), pd.Timestamp("2026-05-05"),
                       pd.Timestamp("2026-05-06"), pd.Timestamp("2026-05-07"))
 
@@ -188,11 +191,15 @@ def _sig(**over):
 
 
 def _df(bars):
-    """bars: list of (open, high, low, close), one per day from _D1."""
-    idx = [_D1, _D2, _D3, _D4][:len(bars)]
-    return pd.DataFrame(
-        [{"open": o, "high": h, "low": lo, "close": c} for o, h, lo, c in bars],
-        index=idx)
+    """bars: list of (open, high, low, close) entry-onward, one per day from _D1.
+
+    A neutral signal bar T is prepended at _D0 so the frame includes the bar the
+    shared replay anchors on; it is never walked (the fill is T+1 = _D1)."""
+    idx = [_D0, _D1, _D2, _D3, _D4][:len(bars) + 1]
+    sig_bar = {"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+    rows = [sig_bar] + [{"open": o, "high": h, "low": lo, "close": c}
+                        for o, h, lo, c in bars]
+    return pd.DataFrame(rows, index=idx)
 
 
 def _patch_prices(monkeypatch, df):

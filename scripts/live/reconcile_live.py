@@ -4,10 +4,15 @@ Live-vs-backtest reconciliation — is the strategy tracking expectancy NOW?
 
 Pulls fired entry signals from the live journal (`scan_results` + `scan_runs`),
 replays each one forward against the cached price history through the SAME exit
-chain the backtester uses (stop / target / max-hold / engine-exit via
-`core.exits` + the shared `call_engine_slice`), then scores the tradeable book —
-NOT the raw alert stream — against `backtest_trades` expectancy. Flags drift
-> ±0.15 R/trade.
+ladder the backtester uses — stop / target / max-hold / breakeven ratchet /
+engine-exit — via the shared `backtest.counterfactual.replay_counterfactual`,
+then scores the tradeable book (NOT the raw alert stream) against
+`backtest_trades` expectancy. Flags drift > ±0.15 R/trade.
+
+The replay is the same module the opportunity tracker uses, and a faithful mirror
+of the friction-bearing `PortfolioBacktester` that journals the reference run:
+entry AND exit slippage, commission, and the breakeven ratchet
+(`execution.breakeven_trigger_r`) all apply, and R is taken on the initial stop.
 
 WHY THIS IS NOT A NAIVE PER-ALERT METER (the 2026-07-11 fix)
 ───────────────────────────────────────────────────────────
@@ -20,10 +25,11 @@ TRADED:
     still open is skipped (the backtester holds; it never re-enters).
   • open-risk budget          — at most `risk.max_open_risk` concurrent positions
     (approximated at size_mult=1, chronological fill order).
-  • hold to the real exit     — each held position runs the engine exit chain
-    (regime-flip / momentum-fade / mean-rev) and fills at the next bar's open,
-    exactly like the backtester, so the meter captures the runners the bare 25-bar
-    cap would truncate (those `engine_exit` winners ARE the edge).
+  • hold to the real exit     — each held position runs the full exit ladder
+    (breakeven ratchet + the regime-flip / momentum-fade / mean-rev engine chain)
+    and fills at the next bar's open, exactly like the backtester, so the meter
+    captures the runners the bare 25-bar cap would truncate (those `engine_exit`
+    winners ARE the edge).
 
 Scoring (the "Both" plan):
   • New rows (post-migration) carry stop_price/target_price/signal_type → scored exactly.
@@ -61,23 +67,6 @@ except ImportError:
     pass
 
 
-def _cfg():
-    import yaml
-    with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
-        c = yaml.safe_load(f)
-    sl = (c.get("signals", {}) or {}).get("stop_loss", {}) or {}
-    ex = c.get("execution", {}) or {}
-    return {
-        "raw": c,  # full filters dict → FilterEngine.from_dict for the exit chain
-        "atr_mult": float(sl.get("atr_multiplier", 2.5)),
-        "min_rr": float(sl.get("min_rr", 2.5)),
-        "commission_r": float(ex.get("commission_r", 0.005)),
-        "entry_slippage_pct": float(ex.get("entry_slippage_pct", 0.0)),
-        "max_hold_days": int(ex.get("max_hold_days", 25)),
-        "max_hold_mode": str(ex.get("max_hold_mode", "if_not_profit")).replace("-", "_"),
-    }
-
-
 def _max_open_risk() -> int:
     """Concurrent-position budget (settings.risk.max_open_risk), floored to an int
     slot count (approximates the size_mult budget at full size). 0/absent → no cap."""
@@ -88,34 +77,6 @@ def _max_open_risk() -> int:
         return int(float((s.get("risk") or {}).get("max_open_risk", 5.0)))
     except Exception:
         return 5
-
-
-def _regime_indices() -> list[str]:
-    """``filters.regime.index_symbols`` (fallback SPY/QQQ) — same knob the engine reads."""
-    try:
-        import yaml
-        with open(_ROOT / "config" / "filters.yaml", encoding="utf-8") as f:
-            idx = ((yaml.safe_load(f) or {}).get("regime") or {}).get("index_symbols")
-        return [str(s) for s in idx] if idx else ["SPY", "QQQ"]
-    except Exception:
-        return ["SPY", "QQQ"]
-
-
-def _load_market_context():
-    """Regime index frames + ^VIX for the engine exit chain (raw OHLCV, as the
-    backtester feeds the regime classifier). Fail-open to whatever loads."""
-    from persistence.cache import load as cache_load
-    md = {}
-    for sym in _regime_indices():
-        try:
-            md[sym] = cache_load(sym)
-        except Exception:
-            pass
-    try:
-        vix = cache_load("^VIX")
-    except Exception:
-        vix = None
-    return (md or None), vix
 
 
 def _ref_run(cur, bt_run_id):
@@ -198,61 +159,6 @@ def _fetch(conn, bt_run_id=None):
     return sigs, exp, ref, needs_review
 
 
-def _replay(df, entry_idx, entry_price, stop, target, is_short, max_hold, mode,
-            apply_stop, apply_target, apply_stop_s, apply_target_s,
-            *, engine=None, ticker=None, market_dfs=None, vix_df=None):
-    """Walk forward from entry_idx. Returns (exit_price, reason, exit_idx) or
-    (None, 'pending', None).
-
-    Mirrors the single-name backtester's held-position path bar for bar:
-      1. a pending engine-exit fills at THIS bar's open (T+1 of the exit signal);
-      2. same-bar stop-before-target (pessimistic), inclusive comparisons;
-      3. max-hold via the shared ``core.exits.max_hold_exit_due`` (mode included);
-      4. when an ``engine`` is supplied, the exit chain (regime-flip / momentum-fade /
-         mean-rev) runs at the close and, if it fires, defers the fill to the next bar.
-    Without an engine it degrades to the bare stop/target/time-stop replay (the old
-    behaviour, still used by the unit test)."""
-    from core.exits import max_hold_exit_due
-    side = "short" if is_short else "long"
-    n = len(df)
-    pending_exit = False
-    for k in range(entry_idx, n):
-        bar = df.iloc[k]
-        lo, hi, op, cl = float(bar["low"]), float(bar["high"]), float(bar["open"]), float(bar["close"])
-        # 1. pending engine-exit fills at this bar's open (frees the slot before checks)
-        if pending_exit:
-            return op, "engine_exit", k
-        held = k - entry_idx
-        # 2. same-bar stop (checked first) then target
-        if is_short:
-            if hi >= stop:
-                return apply_stop_s(stop, op), "stop", k
-            if lo <= target:
-                return apply_target_s(target, op), "target", k
-        else:
-            if lo <= stop:
-                return apply_stop(stop, op), "stop", k
-            if hi >= target:
-                return apply_target(target, op), "target", k
-        # 3. max-hold time-stop at this close
-        if max_hold_exit_due(bars_held=held, current_close=cl, entry_price=entry_price,
-                             side=side, max_hold_days=max_hold, mode=mode):
-            return cl, "time_stop", k
-        # 4. engine exit chain at this close → defer the fill to the next bar's open
-        if engine is not None:
-            from backtest.backtester import call_engine_slice
-            bar_ts = df.index[k]
-            market_t = ({sym: mdf.loc[:bar_ts] for sym, mdf in market_dfs.items()}
-                        if market_dfs else None)
-            vix_t = vix_df.loc[:bar_ts] if vix_df is not None else None
-            sig = call_engine_slice(
-                engine, ticker, df.iloc[: k + 1], bar_ts.date(), market_t, vix_t,
-                [], held_long=(not is_short), held_short=is_short)
-            if sig.passed and sig.direction in ("exit_long", "exit_short"):
-                pending_exit = True
-    return None, "pending", None
-
-
 def _select_traded(resolved, cap):
     """Reduce resolved fires to the book a disciplined trader / the backtester would
     actually hold: one position per ticker at a time + at most ``cap`` concurrent
@@ -301,16 +207,19 @@ def main() -> None:
     from persistence.cache import load as cache_load
     from core.indicators.indicators import attach_indicators
     from core.filter_engine import FilterEngine
-    from backtest.backtester import (apply_stop_fill, apply_target_fill,
-                                      apply_stop_fill_short, apply_target_fill_short,
-                                      adjust_target_for_slippage)
+    from backtest.counterfactual import (load_market_context,
+                                         make_engine_exit_probe,
+                                         replay_config, replay_counterfactual)
 
-    cfg = _cfg()
+    # Shared with the opportunity tracker: the exact exit ladder, friction and
+    # market context the portfolio backtester used to journal the reference run.
+    cfg = replay_config(_ROOT)
     max_hold = args.max_hold_days if args.max_hold_days is not None else cfg["max_hold_days"]
     max_hold_mode = (args.max_hold_mode or cfg["max_hold_mode"]).replace("-", "_")
     cap = 0 if args.every_alert else _max_open_risk()
     engine = None if args.every_alert else FilterEngine.from_dict(cfg["raw"])
-    market_dfs, vix_df = (None, None) if args.every_alert else _load_market_context()
+    market_dfs, vix_df = (None, None) if args.every_alert else load_market_context(_ROOT)
+    slice_cache: dict = {}  # engine-slice memo shared across every replayed fire
 
     try:
         conn = connect()
@@ -338,7 +247,7 @@ def main() -> None:
     book = "EVERY-ALERT (naive)" if args.every_alert else f"tradeable book (1/ticker · {cap}R budget)"
     print(f"\n  Live reconciliation  ·  {len(sigs)} fired entry signals  ·  "
           f"{min(dates):%Y-%m-%d} → {max(dates):%Y-%m-%d}  ·  cap {max_hold}d {max_hold_mode}{excl}")
-    print(f"  Scoring: {book}  ·  exits: stop/target/time-stop"
+    print(f"  Scoring: {book}  ·  exits: stop/target/time-stop/breakeven"
           f"{'' if args.every_alert else '/engine-exit'}")
     print(f"  Expectancy reference: backtest_runs id={ref['id']} "
           f"({ref['start_date']}→{ref['end_date'] or 'latest'}, {ref['trades_count']} trades, "
@@ -364,12 +273,14 @@ def main() -> None:
         if entry_idx >= len(df):
             pending += 1
             continue
-        entry = float(df.iloc[entry_idx]["open"])
         is_short = s["signal_kind"] == "entry_short"
-        close_d = float(s["close"]) if s["close"] is not None else entry
+        close_d = (float(s["close"]) if s["close"] is not None
+                   else float(df.iloc[entry_idx]["open"]))
         atr = float(s["atr"]) if s["atr"] is not None else 0.0
 
-        # exact geometry when stored; else reconstruct from close+atr+config (mode A)
+        # exact geometry when stored; else reconstruct from close+atr+config (mode A).
+        # Reconstruction uses the JOURNALED close, so it is passed to the replay
+        # explicitly rather than rebuilt from the frame's bar-T close.
         if s["stop_price"] is not None and s["target_price"] is not None:
             stop, target = float(s["stop_price"]), float(s["target_price"])
         else:
@@ -381,36 +292,42 @@ def main() -> None:
                 stop = close_d - atr * cfg["atr_mult"]
                 target = close_d + (close_d - stop) * cfg["min_rr"]
 
-        # Entry slippage — match the portfolio backtester (which produced the
-        # reference run): the fill is worse than the T+1 open by entry_slippage_pct,
-        # and the target is re-anchored to the slipped entry so the configured R:R
-        # holds. Without it the live meter reads optimistically vs backtest (M6).
-        slip = cfg["entry_slippage_pct"]
-        if slip:
-            entry *= (1.0 - slip) if is_short else (1.0 + slip)
-            target = adjust_target_for_slippage(
-                entry, stop, target, cfg["min_rr"],
-                direction="short" if is_short else "long")
-
-        risk = (stop - entry) if is_short else (entry - stop)
-        if risk <= 0:
+        # Replay through the shared exit ladder — the same code the opportunity
+        # tracker uses and a faithful mirror of the portfolio backtester's held
+        # path: entry slippage + target re-anchor, stop/target, max-hold, the
+        # breakeven ratchet (execution.breakeven_trigger_r), exit slippage on
+        # market fills, commission, and the engine exit chain via the probe. R is
+        # computed on the initial stop, so this is directly comparable to the
+        # backtest_trades reference.
+        probe = (make_engine_exit_probe(engine, tk, df, market_dfs, vix_df,
+                                        is_short=is_short, slice_cache=slice_cache)
+                 if engine is not None else None)
+        cf = replay_counterfactual(
+            df, signal_idx=entry_idx - 1, ticker=tk,
+            direction="short" if is_short else "long",
+            stop_price=stop, target_price=target, min_rr=cfg["min_rr"],
+            max_hold_days=max_hold, max_hold_mode=max_hold_mode,
+            breakeven_trigger_r=cfg["breakeven_trigger_r"],
+            breakeven_buffer_atr=cfg["breakeven_buffer_atr"],
+            commission_r=cfg["commission_r"],
+            entry_slippage_pct=cfg["entry_slippage_pct"],
+            exit_slippage_pct=cfg["exit_slippage_pct"],
+            exit_probe=probe)
+        if cf is None or cf.gapped_through:
+            # None = degenerate signal bar (warmup); gapped_through = risk <= 0 at
+            # the fill. Both were skipped as errors by the pre-migration guard.
             errors += 1
             continue
-
-        exit_price, reason, exit_idx = _replay(
-            df, entry_idx, entry, stop, target, is_short, max_hold, max_hold_mode,
-            apply_stop_fill, apply_target_fill, apply_stop_fill_short, apply_target_fill_short,
-            engine=engine, ticker=tk, market_dfs=market_dfs, vix_df=vix_df)
-        if exit_price is None:
+        if not cf.matured:
+            # Ran off the end of the data — not enough forward bars to resolve yet.
             pending += 1
             continue
-        r = ((entry - exit_price) / risk) if is_short else ((exit_price - entry) / risk)
-        r -= cfg["commission_r"]
         st = s["signal_type"] or "momentum"
         fires.append({
-            "regime": s["market_regime"], "signal_type": st, "r": r, "reason": reason,
-            "ticker": tk, "entry_date": df.index[entry_idx].date(),
-            "exit_date": df.index[exit_idx].date(),
+            "regime": s["market_regime"], "signal_type": st, "r": cf.r_multiple,
+            "reason": cf.exit_reason, "ticker": tk, "mfe_r": cf.mfe_r,
+            "entry_date": df.index[cf.entry_idx].date(),
+            "exit_date": df.index[cf.exit_idx].date(),
         })
 
     # Reduce the raw fire stream to the tradeable book (one position per ticker +
@@ -455,12 +372,21 @@ def main() -> None:
     drift_all = live_all - bt_all
     print(f"  {'ALL':<24} {len(allr):>6} {live_all:>+9.3f} {bt_all:>+8.3f} {drift_all:>+7.3f}"
           f"{'  ⚠ DRIFT' if abs(drift_all) > args.drift else '  ok'}")
-    # win rate + exit mix
+    # win rate + exit mix + excursion capture (MFE/MAE now come from the shared
+    # ladder — the reconciler could not measure these before the migration).
     wr = 100 * sum(1 for r in allr if r > 0) / len(allr)
     mix = defaultdict(int)
     for f in resolved:
         mix[f["reason"]] += 1
     print(f"  live WR {wr:.0f}%   exits: " + ", ".join(f"{k}={v}" for k, v in sorted(mix.items())))
+    mfes = [f["mfe_r"] for f in resolved if f.get("mfe_r") is not None]
+    if mfes:
+        import statistics
+        gave_back = [f["r"] / f["mfe_r"] for f in resolved
+                     if f.get("mfe_r") and f["mfe_r"] > 0]
+        capture = (f"{statistics.median(gave_back):.0%} median capture"
+                   if gave_back else "n/a")
+        print(f"  avg MFE {sum(mfes) / len(mfes):+.2f}R   exit vs MFE: {capture}")
     print("=" * 78)
     if abs(drift_all) > args.drift:
         print(f"\n  ⚠ Live is drifting {drift_all:+.3f} R/trade from backtest expectancy "
