@@ -381,7 +381,11 @@ def make_engine_exit_probe(engine, ticker: str, df: pd.DataFrame,
             engine, ticker, df.iloc[: k + 1], bar_ts.date(), market_t, vix_t,
             [], held_long=(not is_short), held_short=is_short,
         )
-        if blocked is not None and not sig.passed and getattr(sig, "reason", ""):
+        # Cap the sample: this fires per bar per observation, so an engine that
+        # blocks everywhere would otherwise grow an unbounded list. A handful is
+        # enough to diagnose; the caller reports the count it has.
+        if (blocked is not None and len(blocked) < 20
+                and not sig.passed and getattr(sig, "reason", "")):
             reason = str(sig.reason)
             if reason.startswith(("engine raised:", "insufficient data:")):
                 blocked.append(f"{ticker} @ {bar_ts.date()}: {reason}")

@@ -499,7 +499,7 @@ def _dedupe_by_ticker_month(observations: list[dict]) -> list[dict]:
 
     A name blocked by two gates in one month yields two rows against a single
     price move; the ALL rollup must not count that twice. Returns the input
-    unchanged when rows carry no ticker/scan_date (unit tests pass bare stats).
+    unchanged when rows carry no ticker/signal_date (unit tests pass bare stats).
     """
     seen: set[tuple] = set()
     out: list[dict] = []
@@ -1014,11 +1014,15 @@ def main() -> None:
     for s in bad_samples:
         print(f"    · {s}")
 
+    # --min-n counts whichever population is the headline: R-space rows when the
+    # ladder ran, raw rows otherwise. Filtering on the raw count while showing R
+    # would display all-n/a rows for gates whose replays never matured.
+    n_key = "n_r" if replay is not None else "n"
     gate_keys = [g for g in agg if g != "__ALL__"]
-    gate_keys.sort(key=lambda g: (-agg[g]["n"], g))
+    gate_keys.sort(key=lambda g: (-agg[g][n_key], g))
     allr = agg["__ALL__"]
-    hidden = sum(1 for g in gate_keys if agg[g]["n"] < args.min_n)
-    shown = [g for g in gate_keys if agg[g]["n"] >= args.min_n]
+    hidden = sum(1 for g in gate_keys if agg[g][n_key] < args.min_n)
+    shown = [g for g in gate_keys if agg[g][n_key] >= args.min_n]
 
     if replay is not None:
         # R-space is the headline: what the real exit ladder would have paid.
@@ -1088,8 +1092,9 @@ def main() -> None:
               f"{fmt(ex_tail)}")
     if engine_blocked:
         # call_engine_slice never raises, so a context bug would otherwise show up
-        # only as "the engine never exits" with no error at all.
-        print(f"    ⚠ {len(engine_blocked)} engine call(s) returned blocked: "
+        # only as "the engine never exits" with no error at all. The list is
+        # capped, so this is a sample rather than a total.
+        print(f"    ⚠ engine exit chain returned blocked results — sample: "
               f"{engine_blocked[0]}")
 
     call, blockers = verdict(lo, hi, n_clusters=n_clusters, tail=tail)
