@@ -86,6 +86,7 @@ def main() -> None:
     from backtest.multiple_testing import (
         align_monthly_matrix,
         deflated_sharpe_ratio,
+        probability_of_backtest_overfitting,
         whites_reality_check,
     )
     from backtest.benchmark_metrics import benchmark_by_months, month_end_returns
@@ -101,6 +102,9 @@ def main() -> None:
     ap.add_argument("--mean-block", type=float, default=6.0,
                     help="Stationary-bootstrap mean block length in months (default 6)")
     ap.add_argument("--seed", type=int, default=42, help="Bootstrap RNG seed")
+    ap.add_argument("--pbo-splits", type=int, default=16, metavar="S",
+                    help="CSCV time-groups for the Probability of Backtest "
+                         "Overfitting (even; default 16 → C(16,8)=12870 splits)")
     ap.add_argument("--max-hold-days", type=int, default=25)
     ap.add_argument("--max-hold-mode", default="if_not_profit")
     ap.add_argument("--max-open-risk", type=float, default=5.0)
@@ -265,6 +269,9 @@ def main() -> None:
     rc = whites_reality_check(matrix, n_bootstrap=args.bootstrap,
                               mean_block=args.mean_block, seed=args.seed)
 
+    # ── Probability of Backtest Overfitting (CSCV, same matrix) ────────────────
+    pbo = probability_of_backtest_overfitting(matrix, n_splits=args.pbo_splits)
+
     # ── verdict ───────────────────────────────────────────────────────────────
     bl_stats = report.baseline.stats
     sr_m = dsr_headline.sr_hat
@@ -307,20 +314,50 @@ def main() -> None:
     print(f"    Best config : {kept_labels[rc.best_config_idx]}  (V={rc.observed_stat:.3f})")
     print(f"    p-value     : {rc.p_value:.4f}   "
           f"[{_verdict(rc.p_value < 0.05)}  (<0.05)]")
+    print()
+    pbo_ok = np.isfinite(pbo.pbo) and pbo.pbo < 0.50
+    print("  Probability of Backtest Overfitting (CSCV, Bailey et al. 2015)")
+    if np.isfinite(pbo.pbo):
+        print(f"    PBO         : {pbo.pbo:.3f}   "
+              f"[{_verdict(pbo_ok)}  (<0.50; target <0.10)]")
+        print(f"    detail      : S={pbo.n_splits} groups, {pbo.n_combinations} "
+              f"symmetric splits, med.logit {pbo.median_logit:+.2f}")
+        print(f"    reads       : the IS-best config lands below the OOS median in "
+              f"{pbo.pbo:.0%} of splits")
+    else:
+        print(f"    PBO         : n/a  (need T≥{pbo.n_splits} months and ≥2 configs)")
     print("  " + "-" * 70)
-    # White's RC is the PRIMARY snooping test (does the best of N beat cash?,
-    # preserving cross-config correlation). The headline DSR is a SECONDARY
-    # diagnostic — the confidence that the SHIPPED config's Sharpe beats the
-    # chance-maximum over the (narrow, correlated OFAT) trial set; see the caveat
-    # below on why that DSR reads optimistic. Read them together.
+    # Three complementary gates, read together:
+    #   RC  (primary) — does the best of N beat cash? (correlation-preserving)
+    #   PBO           — does SELECTING the IS-best generalise OOS, or is the
+    #                   search itself overfit? (RC can pass while PBO fails: the
+    #                   best config beats cash, yet you cannot reliably pick it.)
+    #   DSR (secondary) — confidence the SHIPPED config's Sharpe beats the
+    #                   N-trial chance-max; reads optimistic (see caveat).
     rc_pass = rc.p_value < 0.05
-    if rc_pass and dsr_headline.dsr > 0.95:
-        verdict = "edge SURVIVES the haircut — best config beats cash (RC) AND headline clears the chance-max (DSR)"
+    dsr_pass = dsr_headline.dsr > 0.95
+    pbo_known = np.isfinite(pbo.pbo)
+    gates = [f"RC {_verdict(rc_pass)}"]
+    if pbo_known:
+        gates.append(f"PBO {_verdict(pbo_ok)}")
+    gates.append("DSR " + ("PASS" if dsr_pass else "MARGINAL"))
+
+    if pbo_known and not pbo_ok:
+        verdict = (f"OVERFIT RISK — the IS-best config falls below the OOS median in "
+                   f"{pbo.pbo:.0%} of splits, so the SEARCH does not generalise even "
+                   f"if the best config beats cash (RC p={rc.p_value:.3f})")
+    elif rc_pass and pbo_ok and dsr_pass:
+        verdict = ("edge SURVIVES — best beats cash (RC), selection generalises (PBO), "
+                   "headline clears the chance-max (DSR)")
+    elif rc_pass and pbo_ok:
+        verdict = (f"edge survives the two robust gates (RC p<0.05, PBO {pbo.pbo:.0%}); "
+                   f"headline DSR={dsr_headline.dsr:.2f} MARGINAL (<0.95)")
     elif rc_pass:
-        verdict = (f"best config's edge SURVIVES White's RC (p<0.05); headline DSR={dsr_headline.dsr:.2f} "
-                   f"→ {dsr_headline.dsr:.0%} confidence its Sharpe beats the N-trial chance-max (MARGINAL if <0.95)")
+        verdict = (f"best config SURVIVES White's RC (p<0.05); DSR={dsr_headline.dsr:.2f} "
+                   f"MARGINAL — read alongside PBO")
     else:
         verdict = "edge does NOT clearly survive the snooping correction (RC p≥0.05)"
+    print(f"  Gates    : {' · '.join(gates)}")
     print(f"  Verdict  : {verdict}")
     print("  Caveat   : the DSR/RC inputs are THIS OFAT sweep — a narrow, highly")
     print("             correlated slice of the actual multi-parameter search that")

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from backtest.multiple_testing import (
+    PBOResult,
     PSRResult,
     DSRResult,
     RealityCheckResult,
@@ -27,6 +28,7 @@ from backtest.multiple_testing import (
     norm_cdf,
     norm_ppf,
     probabilistic_sharpe_ratio,
+    probability_of_backtest_overfitting,
     whites_reality_check,
 )
 
@@ -258,3 +260,72 @@ def test_stationary_bootstrap_preserves_block_structure():
     idx = _stationary_bootstrap_indices(n, 1000.0, size, rng)
     contiguous = sum(1 for t in range(1, size) if idx[t] == (idx[t - 1] + 1) % n)
     assert contiguous / (size - 1) > 0.8   # iid would be ≈ 1/n = 0.02
+
+
+# ── Probability of Backtest Overfitting (CSCV) ──────────────────────────────────
+
+def test_pbo_dominant_config_generalises_to_zero():
+    # One column is strictly better every period → IS-best is always OOS-best →
+    # it is never below the OOS median → PBO = 0.
+    rng = np.random.default_rng(1)
+    noise = rng.normal(0, 1.0, size=(120, 9))
+    signal = rng.normal(0.5, 1.0, size=(120, 1)) + 3.0   # dominant column
+    mat = np.hstack([noise, signal])
+    res = probability_of_backtest_overfitting(mat, n_splits=8)
+    assert isinstance(res, PBOResult)
+    assert res.pbo == pytest.approx(0.0)
+    assert res.median_logit > 0            # IS-best beats the OOS median
+
+
+def test_pbo_pure_noise_is_near_one_half():
+    # All columns iid noise → IS rank carries no OOS information → PBO ≈ 0.5.
+    rng = np.random.default_rng(7)
+    mat = rng.normal(0.0, 1.0, size=(160, 20))
+    res = probability_of_backtest_overfitting(mat, n_splits=10)
+    assert 0.35 < res.pbo < 0.65           # indistinguishable from overfit noise
+
+
+def test_pbo_constructed_overfit_is_high():
+    # Antisymmetric construction: each config is engineered to win one time-half
+    # and lose the other, so whichever looks best IS is worst OOS → PBO → 1.
+    T, K = 40, 6
+    mat = np.zeros((T, K))
+    half = T // 2
+    for j in range(K):
+        mat[:half, j] = (j + 1)                    # distinct positive means IS(first half)
+        mat[half:, j] = -(j + 1)                   # inverted OOS(second half)
+    # add tiny noise so std > 0
+    mat += np.random.default_rng(3).normal(0, 1e-6, size=(T, K))
+    res = probability_of_backtest_overfitting(mat, n_splits=4, embargo=0)
+    assert res.pbo > 0.9
+
+
+def test_pbo_is_deterministic():
+    rng = np.random.default_rng(11)
+    mat = rng.normal(0, 1, size=(96, 12))
+    a = probability_of_backtest_overfitting(mat, n_splits=8)
+    b = probability_of_backtest_overfitting(mat, n_splits=8)
+    assert a.pbo == b.pbo and a.median_logit == b.median_logit
+
+
+def test_pbo_forces_even_split_count():
+    rng = np.random.default_rng(5)
+    mat = rng.normal(0, 1, size=(90, 8))
+    res = probability_of_backtest_overfitting(mat, n_splits=9)   # → 8
+    assert res.n_splits == 8
+
+
+def test_pbo_degenerate_returns_nan():
+    # Fewer rows than splits, and single-column matrix, both → NaN.
+    assert math.isnan(probability_of_backtest_overfitting(
+        np.ones((4, 5)), n_splits=8).pbo)
+    assert math.isnan(probability_of_backtest_overfitting(
+        np.random.default_rng(0).normal(0, 1, (100, 1)), n_splits=8).pbo)
+
+
+def test_pbo_combination_count_matches_choose():
+    # S=8 → C(8,4) = 70 symmetric splits evaluated.
+    rng = np.random.default_rng(2)
+    mat = rng.normal(0, 1, size=(80, 6))
+    res = probability_of_backtest_overfitting(mat, n_splits=8, embargo=0)
+    assert res.n_combinations == math.comb(8, 4)
