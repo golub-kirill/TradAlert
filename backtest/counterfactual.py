@@ -63,6 +63,66 @@ from core.exits import max_hold_exit_due
 ExitProbe = Callable[[int], bool]
 
 
+def replay_config(root) -> dict:
+    """Geometry, exit-ladder and friction settings read from config/filters.yaml.
+
+    ``raw`` is the full dict for ``FilterEngine.from_dict``. Defaults match the
+    shipped config so a missing key degrades to the live behaviour rather than
+    to a frictionless fantasy.
+    """
+    import yaml
+    from pathlib import Path
+    with open(Path(root) / "config" / "filters.yaml", encoding="utf-8") as f:
+        c = yaml.safe_load(f) or {}
+    sl = (c.get("signals", {}) or {}).get("stop_loss", {}) or {}
+    ex = c.get("execution", {}) or {}
+    return {
+        "raw": c,
+        "atr_mult": float(sl.get("atr_multiplier", 2.5)),
+        "min_rr": float(sl.get("min_rr", 2.5)),
+        "commission_r": float(ex.get("commission_r", 0.005)),
+        "entry_slippage_pct": float(ex.get("entry_slippage_pct", 0.0)),
+        "exit_slippage_pct": float(ex.get("exit_slippage_pct", 0.0)),
+        "max_hold_days": int(ex.get("max_hold_days", 25)),
+        "max_hold_mode": str(ex.get("max_hold_mode", "if_not_profit")).replace("-", "_"),
+        "breakeven_trigger_r": ex.get("breakeven_trigger_r"),
+        "breakeven_buffer_atr": ex.get("breakeven_buffer_atr"),
+    }
+
+
+def load_market_context(root):
+    """``(market_dfs, vix_df)`` for the engine exit chain — raw OHLCV from the
+    price cache, as the backtester feeds the regime classifier.
+
+    Reads the cache, never the network: this is a historical postmortem, so a
+    live-freshness fetch would be both wrong and unavailable for past bars.
+    Fails open to whatever loads, since a missing index degrades the exit chain
+    rather than invalidating the replay.
+    """
+    import yaml
+    from pathlib import Path
+    from persistence.cache import load as cache_load
+
+    try:
+        with open(Path(root) / "config" / "filters.yaml", encoding="utf-8") as f:
+            idx = ((yaml.safe_load(f) or {}).get("regime") or {}).get("index_symbols")
+        symbols = [str(s) for s in idx] if idx else ["SPY", "QQQ"]
+    except Exception:
+        symbols = ["SPY", "QQQ"]
+
+    md = {}
+    for sym in symbols:
+        try:
+            md[sym] = cache_load(sym)
+        except Exception:
+            pass
+    try:
+        vix = cache_load("^VIX")
+    except Exception:
+        vix = None
+    return (md or None), vix
+
+
 @dataclass(frozen=True)
 class CounterfactualResult:
     """Outcome of one replayed hypothetical entry.

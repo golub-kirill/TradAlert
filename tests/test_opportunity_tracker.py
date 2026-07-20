@@ -590,6 +590,85 @@ def test_build_observations_scores_and_classifies():
     assert obs[0]["cls"] == "missed_winner"
 
 
+class _FakeCF:
+    """Stand-in for backtest.counterfactual.CounterfactualResult — the replay is
+    injected, so the tracker's wiring is testable without the exit ladder."""
+
+    def __init__(self, r=1.5, mfe=2.0, mae=-0.4, reason="target",
+                 bars=7, matured=True):
+        self.r_multiple, self.mfe_r, self.mae_r = r, mfe, mae
+        self.exit_reason, self.bars_held, self.matured = reason, bars, matured
+
+
+def test_build_observations_attaches_replay_results():
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=lambda df, t_sig, tk: _FakeCF())
+    assert obs[0]["r_multiple"] == pytest.approx(1.5)
+    assert obs[0]["mfe_r"] == pytest.approx(2.0)
+    assert obs[0]["exit_reason"] == "target"
+
+
+def test_build_observations_replay_receives_the_signal_bar():
+    seen = {}
+
+    def _spy(df, t_sig, tk):
+        seen["t_sig"] = t_sig
+        return _FakeCF()
+
+    ot.build_observations([_row("TEST.1", "2026-01-05", "g")],
+                          lambda t: _frame(), _bench_for(), replay=_spy)
+    # Mon 2026-01-05 is index 2 of the business-day frame — the SIGNAL bar, not
+    # the entry bar. The replay owns the T -> T+1 step itself.
+    assert seen["t_sig"] == 2
+
+
+def test_build_observations_unmatured_replay_is_not_an_outcome():
+    # An open_eod force-close at the last bar is truncation, not a result, so it
+    # must not enter the R statistics.
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=lambda df, t_sig, tk: _FakeCF(matured=False, reason="open_eod"))
+    assert np.isnan(obs[0]["r_multiple"])
+    assert obs[0]["exit_reason"] == "unmatured"
+
+
+def test_build_observations_replay_failure_is_counted_not_raised():
+    def _boom(df, t_sig, tk):
+        raise ValueError("bad frame")
+
+    obs, stats = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=_boom)
+    assert stats["bad"] == 1
+    assert np.isnan(obs[0]["r_multiple"])       # row survives, R is absent
+
+
+def test_aggregate_reports_r_space_and_exit_mix():
+    obs = [
+        {"gate": "g", "fwd21": 0.01, "r_multiple": 2.5, "mfe_r": 2.6,
+         "mae_r": -0.2, "exit_reason": "target", "cls": "neutral"},
+        {"gate": "g", "fwd21": -0.01, "r_multiple": -1.0, "mfe_r": 0.3,
+         "mae_r": -1.0, "exit_reason": "stop", "cls": "neutral"},
+        {"gate": "g", "fwd21": 0.0, "r_multiple": float("nan"), "mfe_r": float("nan"),
+         "mae_r": float("nan"), "exit_reason": "unmatured", "cls": "neutral"},
+    ]
+    g = ot.aggregate(obs)["g"]
+    assert g["n"] == 3                          # raw-% stats keep all three
+    assert g["n_r"] == 2                        # R stats drop the unmatured row
+    assert g["median_r"] == pytest.approx(0.75)
+    assert g["median_mfe_r"] == pytest.approx(1.45)
+    assert dict(g["exit_mix"]) == {"target": 1, "stop": 1}
+
+
+def test_aggregate_r_space_absent_when_no_replay_ran():
+    obs = [{"gate": "g", "fwd21": 0.01, "cls": "neutral"}]
+    g = ot.aggregate(obs)["g"]
+    assert g["n_r"] == 0
+    assert np.isnan(g["median_r"])
+    assert g["n"] == 1                          # raw-% side still reports
+
+
 def test_build_observations_short_gate_flips_classification():
     dates = pd.date_range("2026-01-01", periods=60, freq="B")
     close = np.full(60, 100.0)
