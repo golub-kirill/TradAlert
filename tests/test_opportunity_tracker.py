@@ -165,11 +165,11 @@ def test_aggregate_all_dedupes_ticker_month_across_gates():
     # ALL rollup must count it once while each gate still sees its own row.
     day = pd.Timestamp("2026-03-04").date()
     obs = [
-        {"ticker": "TEST.1", "gate": "a", "scan_date": day,
+        {"ticker": "TEST.1", "gate": "a", "signal_date": day,
          "fwd5": 0.0, "fwd21": 0.20, "mdd21": -0.01, "cls": "missed_winner"},
-        {"ticker": "TEST.1", "gate": "b", "scan_date": day,
+        {"ticker": "TEST.1", "gate": "b", "signal_date": day,
          "fwd5": 0.0, "fwd21": 0.20, "mdd21": -0.01, "cls": "missed_winner"},
-        {"ticker": "TEST.2", "gate": "a", "scan_date": day,
+        {"ticker": "TEST.2", "gate": "a", "signal_date": day,
          "fwd5": 0.0, "fwd21": -0.10, "mdd21": -0.12, "cls": "avoided_loser"},
     ]
     out = ot.aggregate(obs)
@@ -302,6 +302,193 @@ def test_classify_short_side_inverts_sign():
     assert ot.classify(0.08, side="short") == "avoided_loser"
 
 
+# ── tail statistics ─────────────────────────────────────────────────────────
+
+def test_mean_ex_tail_flips_the_sign_on_a_tail_carried_sample():
+    # The live shape in miniature: a net-negative body plus one big winner. The
+    # plain mean reads positive; removing the top 5% flips it. When these
+    # disagree the headline is a tail artifact, not a population property.
+    sample = [-1.0] * 19 + [30.0]
+    assert np.mean(sample) > 0
+    assert ot.mean_ex_tail(sample, 0.05) == pytest.approx(-1.0)
+
+
+def test_tail_share_above_one_means_the_body_is_negative():
+    sample = [-1.0] * 19 + [30.0]          # total = 11, top 1 = 30
+    assert ot.tail_share(sample, 0.05) == pytest.approx(30.0 / 11.0)
+    assert ot.tail_share(sample, 0.05) > 1.0
+
+
+def test_tail_share_is_nan_when_the_total_is_not_positive():
+    assert np.isnan(ot.tail_share([-1.0, -2.0, -3.0]))
+
+
+def test_tail_share_is_one_for_a_single_positive_contributor():
+    assert ot.tail_share([0.0, 0.0, 0.0, 5.0], 0.25) == pytest.approx(1.0)
+
+
+def test_trimmed_mean_drops_both_ends():
+    # 10% off each end of 10 sorted values removes one per side.
+    sample = [-100.0] + [1.0] * 8 + [100.0]
+    assert ot.trimmed_mean(sample, 0.10) == pytest.approx(1.0)
+
+
+def test_winsorized_mean_clamps_rather_than_drops():
+    sample = [1.0] * 19 + [1000.0]
+    w = ot.winsorized_mean(sample, 0.05)
+    assert w < np.mean(sample)             # outlier's leverage capped
+    assert w >= 1.0                        # but still counted, not discarded
+
+
+def test_percentiles_and_empty_sample_are_nan_safe():
+    p = ot.percentiles([1.0, 2.0, 3.0, 4.0, 5.0], qs=(50,))
+    assert p[50] == pytest.approx(3.0)
+    assert all(np.isnan(v) for v in ot.percentiles([], qs=(5, 50, 95)).values())
+
+
+def test_tail_helpers_ignore_non_finite_values():
+    sample = [1.0, float("nan"), 2.0, float("inf"), 3.0]
+    assert ot.trimmed_mean(sample, 0.0) == pytest.approx(2.0)
+    assert ot.percentiles(sample, qs=(50,))[50] == pytest.approx(2.0)
+
+
+# ── cluster bootstrap / power gate ──────────────────────────────────────────
+
+def test_cluster_bootstrap_ci_is_deterministic_under_a_seed():
+    vals = list(np.linspace(-1.0, 1.0, 40))
+    keys = [f"TEST.{i % 8}" for i in range(40)]
+    a = ot.cluster_bootstrap_ci(vals, keys, n=200, seed=7)
+    b = ot.cluster_bootstrap_ci(vals, keys, n=200, seed=7)
+    assert a == b
+
+
+def test_cluster_bootstrap_ci_brackets_the_estimate():
+    vals = [1.0] * 20 + [3.0] * 20
+    keys = [f"TEST.{i % 10}" for i in range(40)]
+    est, lo, hi = ot.cluster_bootstrap_ci(vals, keys, n=500, seed=1)
+    assert est == pytest.approx(2.0)
+    assert lo <= est <= hi
+
+
+def test_cluster_bootstrap_ci_is_wider_than_iid_when_clusters_are_correlated():
+    # Every observation inside a cluster is identical, so the cluster carries no
+    # more information than one point. An IID bootstrap would not see that.
+    rng = np.random.default_rng(0)
+    per_cluster = rng.normal(size=12)
+    vals, keys = [], []
+    for i, v in enumerate(per_cluster):
+        vals.extend([float(v)] * 10)       # 10 duplicates per cluster
+        keys.extend([f"TEST.{i}"] * 10)
+    _, c_lo, c_hi = ot.cluster_bootstrap_ci(vals, keys, n=2000, seed=3)
+    _, i_lo, i_hi = ot.cluster_bootstrap_ci(vals, list(range(len(vals))),
+                                            n=2000, seed=3)
+    assert (c_hi - c_lo) > (i_hi - i_lo)
+
+
+def test_cluster_bootstrap_ci_needs_two_clusters():
+    est, lo, hi = ot.cluster_bootstrap_ci([1.0, 2.0], ["TEST.1", "TEST.1"], n=10)
+    assert all(np.isnan(v) for v in (est, lo, hi))
+
+
+def test_min_detectable_effect_shrinks_with_more_clusters():
+    vals = list(np.linspace(-1.0, 1.0, 100))
+    assert ot.min_detectable_effect(vals, n_eff=25) > ot.min_detectable_effect(vals, n_eff=100)
+
+
+def test_verdict_blocks_when_the_interval_straddles_zero():
+    call, blockers = ot.verdict(-0.02, 0.03, n_clusters=100, tail=0.1)
+    assert call == "NO CONCLUSION"
+    assert any("straddles zero" in b for b in blockers)
+
+
+def test_verdict_blocks_on_too_few_clusters():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=5, tail=0.1)
+    assert call == "NO CONCLUSION"
+    assert any("clusters" in b for b in blockers)
+
+
+def test_verdict_blocks_when_the_tail_carries_the_result():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=100, tail=0.80)
+    assert call == "NO CONCLUSION"
+    assert any("tail" in b for b in blockers)
+
+
+def test_verdict_supported_only_when_every_gate_passes():
+    call, blockers = ot.verdict(0.01, 0.03, n_clusters=100, tail=0.20)
+    assert call == "SUPPORTED"
+    assert blockers == []
+
+
+# ── anchor_indices ──────────────────────────────────────────────────────────
+
+def test_anchor_indices_on_a_trading_day():
+    # freq="B" from Thu 2026-01-01 → Jan 1, 2, 5, 6, ...  Mon Jan 5 is index 2.
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp("2026-01-05"))
+    assert (t_sig, i_entry) == (2, 3)
+
+
+def test_anchor_indices_non_trading_day_resolves_backwards():
+    # Sun 2026-01-04 has no bar. t_sig must be the PRIOR bar (Fri Jan 2), not the
+    # next one — the old searchsorted(side="left") returned Monday's bar here and
+    # Monday's bar for Monday too, conflating the signal bar with the entry bar.
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp("2026-01-04"))
+    assert (t_sig, i_entry) == (1, 2)
+    assert dates[t_sig] == pd.Timestamp("2026-01-02")
+
+
+def test_anchor_indices_before_series_start_is_negative():
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    t_sig, _ = ot.anchor_indices(dates, pd.Timestamp("2025-12-01"))
+    assert t_sig == -1
+
+
+def test_anchor_entry_is_the_bar_after_the_signal_bar():
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    for d in ("2026-01-05", "2026-01-04", "2026-01-08"):
+        t_sig, i_entry = ot.anchor_indices(dates, pd.Timestamp(d))
+        assert i_entry == t_sig + 1
+
+
+# ── benchmark routing ───────────────────────────────────────────────────────
+
+def test_bench_map_routes_tsx_and_nyse():
+    assert ot._BENCH_BY_EXCHANGE["TSX"] == "XIU.TO"
+    assert ot._BENCH_BY_EXCHANGE["NYSE"] == "SPY"
+
+
+def test_benchmark_choice_changes_the_adjusted_return():
+    # A .TO name adjusted against a RISING TSX proxy must not read the same as
+    # against a flat SPY — routing has to actually reach the arithmetic.
+    n = 40
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    close = np.full(n, 100.0)
+    close[2 + 21] = 110.0                            # +10% ticker move
+    flat = _series(np.full(n, 400.0), dates)
+    rising = np.full(n, 400.0)
+    rising[2 + 21] = 416.0                           # +4% benchmark over the span
+    out_flat = ot.forward_returns(close, dates, flat, 2, horizons=(21,))
+    out_rise = ot.forward_returns(close, dates, _series(rising, dates), 2, horizons=(21,))
+    assert out_flat["fwd21"] == pytest.approx(0.10)
+    assert out_rise["fwd21"] == pytest.approx(0.10 - 0.04)
+
+
+def test_build_observations_records_the_benchmark_label():
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(),
+        _bench_for(label="XIU.TO"))
+    assert obs[0]["bench"] == "XIU.TO"
+
+
+def test_build_observations_drops_rows_with_no_benchmark():
+    obs, stats = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(),
+        lambda t: (None, "MISSING"))
+    assert obs == []
+    assert stats["bad"] == 1
+
+
 # ── build_observations (dedupe + maturity accounting) ───────────────────────
 
 def _frame(n=60, start="2026-01-01", price=100.0):
@@ -309,13 +496,19 @@ def _frame(n=60, start="2026-01-01", price=100.0):
     return pd.DataFrame({"close": np.full(n, price)}, index=dates)
 
 
-def _flat_spy(n=60, start="2026-01-01"):
+def _flat_bench(n=60, start="2026-01-01"):
     dates = pd.date_range(start, periods=n, freq="B")
     return pd.Series(np.full(n, 400.0), index=dates)
 
 
+def _bench_for(series=None, label="SPY"):
+    """build_observations' benchmark resolver: ticker -> (series, label)."""
+    s = _flat_bench() if series is None else series
+    return lambda t: (s, label)
+
+
 def _row(ticker, date, gate):
-    return {"ticker": ticker, "scan_date": date, "gate": gate}
+    return {"ticker": ticker, "signal_date": date, "gate": gate}
 
 
 def test_build_observations_dedupes_to_earliest_per_gate_month():
@@ -324,9 +517,9 @@ def test_build_observations_dedupes_to_earliest_per_gate_month():
         _row("TEST.1", "2026-01-12", "g"),      # same ticker/gate/month → dropped
         _row("TEST.1", "2026-01-19", "g"),      # same again → dropped
     ]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert len(obs) == 1
-    assert obs[0]["scan_date"] == pd.Timestamp("2026-01-05").date()
+    assert obs[0]["signal_date"] == pd.Timestamp("2026-01-05").date()
     assert stats["deduped"] == 1
 
 
@@ -337,7 +530,7 @@ def test_build_observations_keeps_distinct_gates_and_months():
         _row("TEST.1", "2026-02-03", "g"),      # different month → kept
         _row("TEST.2", "2026-01-05", "g"),      # different ticker → kept
     ]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert stats["deduped"] == 4
     assert len(obs) == 4
 
@@ -348,7 +541,7 @@ def test_build_observations_counters_are_per_observation_not_per_row():
     # retried each row and reported an inflated "not matured" headline.
     rows = [_row("TEST.1", f"2026-01-{d:02d}", "g") for d in (5, 6, 7, 8, 9)]
     short = _frame(n=10)                        # no +21d window exists
-    obs, stats = ot.build_observations(rows, lambda t: short, _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: short, _bench_for())
     assert obs == []
     assert stats["deduped"] == 1
     assert stats["not_matured"] == 1
@@ -363,7 +556,7 @@ def test_build_observations_accounting_balances():
         _row("TEST.3", "2026-01-05", "g"),      # too recent
     ]
     frames = {"TEST.1": _frame(), "TEST.2": None, "TEST.3": _frame(n=10)}
-    obs, stats = ot.build_observations(rows, frames.get, _flat_spy())
+    obs, stats = ot.build_observations(rows, frames.get, _bench_for())
     assert stats["deduped"] == 3
     assert (len(obs) + stats["not_matured"]
             + len(stats["missing_price"]) + stats["bad"]) == stats["deduped"]
@@ -371,14 +564,14 @@ def test_build_observations_accounting_balances():
 
 def test_build_observations_missing_price_recorded_not_counted_as_matured():
     rows = [_row("TEST.9", "2026-01-05", "g")]
-    obs, stats = ot.build_observations(rows, lambda t: None, _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: None, _bench_for())
     assert obs == []
     assert stats["missing_price"] == {"TEST.9"}
 
 
-def test_build_observations_bad_scan_date_is_sampled():
+def test_build_observations_bad_signal_date_is_sampled():
     rows = [_row("TEST.1", "not-a-date", "g")]
-    obs, stats = ot.build_observations(rows, lambda t: _frame(), _flat_spy())
+    obs, stats = ot.build_observations(rows, lambda t: _frame(), _bench_for())
     assert obs == []
     assert stats["bad"] == 1
     assert stats["bad_samples"] and "TEST.1" in stats["bad_samples"][0]
@@ -391,10 +584,89 @@ def test_build_observations_scores_and_classifies():
     close[i0 + 21] = 120.0                       # +20% over flat SPY
     df = pd.DataFrame({"close": close}, index=dates)
     obs, _ = ot.build_observations(
-        [_row("TEST.1", "2026-01-05", "g")], lambda t: df, _flat_spy())
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: df, _bench_for())
     assert len(obs) == 1
     assert obs[0]["fwd21"] == pytest.approx(0.20)
     assert obs[0]["cls"] == "missed_winner"
+
+
+class _FakeCF:
+    """Stand-in for backtest.counterfactual.CounterfactualResult — the replay is
+    injected, so the tracker's wiring is testable without the exit ladder."""
+
+    def __init__(self, r=1.5, mfe=2.0, mae=-0.4, reason="target",
+                 bars=7, matured=True):
+        self.r_multiple, self.mfe_r, self.mae_r = r, mfe, mae
+        self.exit_reason, self.bars_held, self.matured = reason, bars, matured
+
+
+def test_build_observations_attaches_replay_results():
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=lambda df, t_sig, tk: _FakeCF())
+    assert obs[0]["r_multiple"] == pytest.approx(1.5)
+    assert obs[0]["mfe_r"] == pytest.approx(2.0)
+    assert obs[0]["exit_reason"] == "target"
+
+
+def test_build_observations_replay_receives_the_signal_bar():
+    seen = {}
+
+    def _spy(df, t_sig, tk):
+        seen["t_sig"] = t_sig
+        return _FakeCF()
+
+    ot.build_observations([_row("TEST.1", "2026-01-05", "g")],
+                          lambda t: _frame(), _bench_for(), replay=_spy)
+    # Mon 2026-01-05 is index 2 of the business-day frame — the SIGNAL bar, not
+    # the entry bar. The replay owns the T -> T+1 step itself.
+    assert seen["t_sig"] == 2
+
+
+def test_build_observations_unmatured_replay_is_not_an_outcome():
+    # An open_eod force-close at the last bar is truncation, not a result, so it
+    # must not enter the R statistics.
+    obs, _ = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=lambda df, t_sig, tk: _FakeCF(matured=False, reason="open_eod"))
+    assert np.isnan(obs[0]["r_multiple"])
+    assert obs[0]["exit_reason"] == "unmatured"
+
+
+def test_build_observations_replay_failure_is_counted_not_raised():
+    def _boom(df, t_sig, tk):
+        raise ValueError("bad frame")
+
+    obs, stats = ot.build_observations(
+        [_row("TEST.1", "2026-01-05", "g")], lambda t: _frame(), _bench_for(),
+        replay=_boom)
+    assert stats["bad"] == 1
+    assert np.isnan(obs[0]["r_multiple"])       # row survives, R is absent
+
+
+def test_aggregate_reports_r_space_and_exit_mix():
+    obs = [
+        {"gate": "g", "fwd21": 0.01, "r_multiple": 2.5, "mfe_r": 2.6,
+         "mae_r": -0.2, "exit_reason": "target", "cls": "neutral"},
+        {"gate": "g", "fwd21": -0.01, "r_multiple": -1.0, "mfe_r": 0.3,
+         "mae_r": -1.0, "exit_reason": "stop", "cls": "neutral"},
+        {"gate": "g", "fwd21": 0.0, "r_multiple": float("nan"), "mfe_r": float("nan"),
+         "mae_r": float("nan"), "exit_reason": "unmatured", "cls": "neutral"},
+    ]
+    g = ot.aggregate(obs)["g"]
+    assert g["n"] == 3                          # raw-% stats keep all three
+    assert g["n_r"] == 2                        # R stats drop the unmatured row
+    assert g["median_r"] == pytest.approx(0.75)
+    assert g["median_mfe_r"] == pytest.approx(1.45)
+    assert dict(g["exit_mix"]) == {"target": 1, "stop": 1}
+
+
+def test_aggregate_r_space_absent_when_no_replay_ran():
+    obs = [{"gate": "g", "fwd21": 0.01, "cls": "neutral"}]
+    g = ot.aggregate(obs)["g"]
+    assert g["n_r"] == 0
+    assert np.isnan(g["median_r"])
+    assert g["n"] == 1                          # raw-% side still reports
 
 
 def test_build_observations_short_gate_flips_classification():
@@ -404,5 +676,5 @@ def test_build_observations_short_gate_flips_classification():
     df = pd.DataFrame({"close": close}, index=dates)
     obs, _ = ot.build_observations(
         [_row("TEST.1", "2026-01-05", "hard-to-borrow (short blocked)")],
-        lambda t: df, _flat_spy())
+        lambda t: df, _bench_for())
     assert obs[0]["cls"] == "missed_winner"

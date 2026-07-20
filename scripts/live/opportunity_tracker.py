@@ -30,8 +30,21 @@ scan-*pass* snapshot ("UPTREND | vol×1.2 | RSI 55 | MACD↑"). No gate rejected
 those names, so they bucket as `(no gate recorded)` instead of being reported as
 a gate that cost you.
 
-For each (ticker, scan_date, gate) the forward return from the bar on/after
-scan_date is market-adjusted vs SPY over the identical span (same `.asof`
+Bar anchor: a run's signal bar is the last exchange session COMPLETED as of its
+wall-clock `created_at`, via `core.freshness.last_completed_session` — NOT
+`DATE(created_at)`. A scan that runs before the close is reading the previous
+session's bar. Measured on this journal, the naive date put the signal bar one
+bar early on ~47% of rows and correct on ~43% — a coin flip; the session-aware
+anchor lands on the right bar 82% of the time. It also handles the NYSE/TSX
+holiday divergence, which no fixed offset can.
+
+Benchmark: per listing exchange (`_BENCH_BY_EXCHANGE`) — SPY for NYSE names,
+XIU.TO for `.TO` names. 40% of the journalled universe is Canadian, and
+adjusting a CAD-priced name against SPY in USD measures the currency and the
+wrong market.
+
+For each (ticker, signal_date, gate) the forward return from the signal bar is
+market-adjusted vs that ticker's benchmark over the identical span (same `.asof`
 approach as `core.pead.car_event`), then classified per gate:
   • > +win  → missed_winner   (the gate cost you)
   • < -lose → avoided_loser   (the gate saved you)
@@ -39,16 +52,47 @@ approach as `core.pead.car_event`), then classified per gate:
 
 Overlap control: the same name is often blocked on many consecutive days, so the
 forward windows overlap heavily. Per-gate stats dedupe to one observation per
-(ticker, gate, year-month) — the earliest scan_date that month. The ALL rollup
+(ticker, gate, year-month) — the earliest signal_date that month. The ALL rollup
 dedupes further, to one per (ticker, year-month), so a name blocked by two gates
 in the same month is not counted twice against a single price move.
+
+Headline is R, not raw return. A name held blindly for 21 bars is not the
+strategy: `backtest.counterfactual.replay_counterfactual` replays each passed-on
+name through the real exit ladder — ATR stop, R-target, max-hold, breakeven
+ratchet and the engine's own exit chain — and reports the R-multiple with MFE/MAE.
+The raw market-adjusted block is kept below it for reference. The two routinely
+disagree, which is the point: a buy-and-hold return credits losses the stop would
+never allow and runs the trade would have been stopped out of.
+
+Statistics. The mean is demoted. On this journal the top 5% of observations can
+supply more than the entire total, so a mean flips sign on a handful of names —
+and the documented edge is right-tail, exactly the shape a mean cannot carry.
+Percentiles, a trimmed mean and the tail share are reported instead, with a
+cluster bootstrap (by ticker) for the interval. The verdict is GATED: it reads
+`NO CONCLUSION` whenever the interval straddles zero, there are too few clusters,
+or the tail carries most of the total.
+
+Known limitations, all of them load-bearing:
+  • The counterfactual is a FORCED entry. No signal fired on these names —
+    "no entry conditions met" is the largest attributable bucket — so R answers
+    "what would the standard geometry have paid here", NOT "what did this gate
+    cost you".
+  • Geometry is rebuilt from the price frame, not from the live engine, so any
+    live re-anchoring (PEAD, slippage) is not reproduced. Journaled prices are
+    never mixed in: they are as-of-then while the cache is split-adjusted.
+  • The exit chain runs with `earnings_history=[]` — correct, since the earnings
+    buffer only gates entries, but it is a choice.
+  • Trailing stops are off (no config key exists); breakeven only.
+  • Sector-neutral adjustment is unavailable — `config/sector_map.yaml` is empty.
+  • Era stratification is meaningless while the journal spans one year.
 
     python scripts/live/opportunity_tracker.py
     python scripts/live/opportunity_tracker.py --days-back 90 --win 0.05 --lose 0.05
     python scripts/live/opportunity_tracker.py --min-n 5 --csv docs/backtest_out/opp.csv
+    python scripts/live/opportunity_tracker.py --no-counterfactual   # raw-% only, fast
 
 Requires DB_* in config/secrets.env (same as the live scanner) and the price cache.
-Read-only: never touches the engine/backtester/signal code and never writes the DB.
+Read-only: never modifies the engine/backtester/signal code and never writes the DB.
 """
 
 from __future__ import annotations
@@ -56,7 +100,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -86,23 +130,33 @@ UNATTRIBUTED = "(no gate recorded)"
 # Owner pressed 🚫 Skip on a fired entry — not a gate rejection.
 DECLINED = "declined (owner skip)"
 
+# Market benchmark per listing exchange (``core.freshness.exchange_for``). 40% of
+# the journalled universe is ``.TO``; adjusting a CAD-priced TSX name against
+# SPY in USD measures the currency and the wrong market. XIU = TSX 60, which
+# matches a liquidity-gated scanner universe — XIC (broad composite) is the
+# alternative and is a one-line change here.
+_BENCH_BY_EXCHANGE = {"TSX": "XIU.TO", "NYSE": "SPY"}
+
 
 # ── pure helpers (import-safe; unit-tested; no DB / no network) ──────────────
 
-def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
+def forward_returns(close: np.ndarray, dates, bench_close, i0: int,
                     horizons=(5, 21)) -> dict:
-    """Market-adjusted forward returns from index ``i0`` (the bar on/after scan_date).
+    """Market-adjusted forward returns from index ``i0`` (the signal bar).
 
     For each horizon ``h``::
 
         mkt_adj_h = (close[i0+h]/close[i0] - 1)
-                    - (spy.asof(dates[i0+h])/spy.asof(dates[i0]) - 1)
+                    - (bench.asof(dates[i0+h])/bench.asof(dates[i0]) - 1)
+
+    ``bench_close`` is the benchmark resolved for this ticker's listing exchange
+    (see ``_BENCH_BY_EXCHANGE``), not SPY unconditionally.
 
     NaN when ``i0+h`` is past the end of the series or any of the four prices is
     non-finite or <= 0 (mirrors ``core.pead.car_event``'s finiteness guards and
-    ``.asof`` usage). A scan_date predating the SPY series makes ``spy.asof``
-    NaN, which correctly NaNs every horizon rather than reporting an unadjusted
-    raw return as if it were market-adjusted.
+    ``.asof`` usage). A signal date predating the benchmark series makes
+    ``.asof`` NaN, which correctly NaNs every horizon rather than reporting an
+    unadjusted raw return as if it were market-adjusted.
 
     Also returns ``mdd21`` — the worst close-to-close drawdown over the 21-bar
     window from ``i0`` (the avoided downside), as a non-positive fraction; NaN
@@ -116,9 +170,9 @@ def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
 
     in_range = 0 <= i0 < n
     c0 = float(close[i0]) if in_range else float("nan")
-    spy0 = float(spy_close.asof(dates[i0])) if in_range else float("nan")
+    b0 = float(bench_close.asof(dates[i0])) if in_range else float("nan")
     base_ok = (in_range and np.isfinite(c0) and c0 > 0
-               and np.isfinite(spy0) and spy0 > 0)
+               and np.isfinite(b0) and b0 > 0)
 
     for h in horizons:
         j = i0 + h
@@ -126,11 +180,11 @@ def forward_returns(close: np.ndarray, dates, spy_close, i0: int,
             out[f"fwd{h}"] = float("nan")
             continue
         c_h = float(close[j])
-        spy_h = float(spy_close.asof(dates[j]))
-        if not (np.isfinite(c_h) and c_h > 0 and np.isfinite(spy_h) and spy_h > 0):
+        b_h = float(bench_close.asof(dates[j]))
+        if not (np.isfinite(c_h) and c_h > 0 and np.isfinite(b_h) and b_h > 0):
             out[f"fwd{h}"] = float("nan")
             continue
-        out[f"fwd{h}"] = (c_h / c0 - 1.0) - (spy_h / spy0 - 1.0)
+        out[f"fwd{h}"] = (c_h / c0 - 1.0) - (b_h / b0 - 1.0)
 
     # Worst close-to-close drawdown over the 21-bar window (i0 .. i0+21).
     out["mdd21"] = _max_drawdown(close, i0, HORIZON)
@@ -272,17 +326,185 @@ def classify(mkt_adj_fwd21: float, *, win: float = 0.05, lose: float = 0.05,
     return "neutral"
 
 
+# ── tail statistics and power (pure; numpy only) ────────────────────────────
+#
+# The mean is the wrong headline for this distribution. On the live sample the
+# top 5% of observations supply more than the whole total — the body is
+# net-negative — so the mean flips sign on a handful of names and reports a
+# verdict the sample cannot support. These give the shape instead, and the
+# verdict gate below refuses to speak when the evidence is not there.
+
+def _finite_array(values) -> np.ndarray:
+    a = np.asarray(list(values), dtype=float)
+    return a[np.isfinite(a)]
+
+
+def trimmed_mean(values, trim: float = 0.10) -> float:
+    """Mean after dropping ``trim`` of the sample from EACH end. NaN when the
+    trim would empty it."""
+    a = np.sort(_finite_array(values))
+    n = a.size
+    if n == 0:
+        return float("nan")
+    k = int(n * trim)
+    core = a[k:n - k] if n - 2 * k > 0 else a
+    return float(np.mean(core)) if core.size else float("nan")
+
+
+def winsorized_mean(values, limit: float = 0.05) -> float:
+    """Mean with the extreme ``limit`` of each tail clamped to the surviving
+    percentile rather than dropped — keeps the observation, caps its leverage."""
+    a = _finite_array(values)
+    if a.size == 0:
+        return float("nan")
+    lo, hi = np.percentile(a, [100 * limit, 100 * (1 - limit)])
+    return float(np.mean(np.clip(a, lo, hi)))
+
+
+def tail_share(values, frac: float = 0.05) -> float:
+    """Share of the total contributed by the top ``frac`` of observations.
+
+    NaN when the total is <= 0 (the ratio has no meaning there). A value above
+    1.0 is the diagnostic that matters: it means the rest of the sample is
+    net-negative and the headline is carried entirely by the tail.
+    """
+    a = np.sort(_finite_array(values))
+    total = float(np.sum(a))
+    if a.size == 0 or total <= 0:
+        return float("nan")
+    k = max(1, int(a.size * frac))
+    return float(np.sum(a[-k:]) / total)
+
+
+def mean_ex_tail(values, frac: float = 0.05) -> float:
+    """Mean after removing the top ``frac`` of observations — the flip
+    diagnostic. When this has the opposite sign to the plain mean, the headline
+    is a tail artifact and not a property of the population."""
+    a = np.sort(_finite_array(values))
+    if a.size == 0:
+        return float("nan")
+    k = max(1, int(a.size * frac))
+    core = a[:-k]
+    return float(np.mean(core)) if core.size else float("nan")
+
+
+def percentiles(values, qs=(5, 25, 50, 75, 95)) -> dict:
+    """``{q: value}`` for each requested percentile; all NaN on an empty sample."""
+    a = _finite_array(values)
+    if a.size == 0:
+        return {q: float("nan") for q in qs}
+    return {q: float(np.percentile(a, q)) for q in qs}
+
+
+def cluster_bootstrap_ci(values, cluster_keys, stat=None, n: int = 10_000,
+                         ci: float = 0.95, seed: int = 42) -> tuple:
+    """``(estimate, lo, hi)`` resampling whole CLUSTERS with replacement.
+
+    Observations here are clustered, not a time-ordered series: several names
+    share a (ticker, month) window and every name in a month shares residual
+    market and sector beta the benchmark adjustment does not remove. An IID
+    bootstrap would treat those as independent and report a CI far too narrow.
+    Resampling whole ``cluster_keys`` groups is the matching estimator.
+
+    (``backtest.multiple_testing._stationary_bootstrap_indices`` is the
+    alternative, but Politis-Romano assumes serial structure in a time-ordered
+    series — the wrong shape for a single-year cluster sample.)
+
+    Returns all-NaN with fewer than two non-empty clusters.
+    """
+    stat = stat or (lambda a: float(np.mean(a)))
+    groups: dict = defaultdict(list)
+    for v, k in zip(values, cluster_keys):
+        if np.isfinite(v):
+            groups[k].append(float(v))
+    arrs = [np.asarray(g, dtype=float) for g in groups.values() if g]
+    if len(arrs) < 2:
+        return (float("nan"), float("nan"), float("nan"))
+
+    est = stat(np.concatenate(arrs))
+    rng = np.random.default_rng(seed)
+    m = len(arrs)
+    draws = np.empty(n, dtype=float)
+    for i in range(n):
+        idx = rng.integers(0, m, m)
+        draws[i] = stat(np.concatenate([arrs[j] for j in idx]))
+    half = (1.0 - ci) / 2.0
+    return (float(est),
+            float(np.percentile(draws, 100 * half)),
+            float(np.percentile(draws, 100 * (1 - half))))
+
+
+def min_detectable_effect(values, n_eff: int | None = None,
+                          ci: float = 0.95) -> float:
+    """Smallest mean effect this sample could distinguish from zero.
+
+    ``z * sd / sqrt(n_eff)``. Pass ``n_eff`` as the CLUSTER count, not the
+    observation count — overlapping windows mean the nominal n overstates the
+    information available. NaN below two observations.
+    """
+    from backtest.multiple_testing import norm_ppf
+    a = _finite_array(values)
+    if a.size < 2:
+        return float("nan")
+    n = int(n_eff) if n_eff else a.size
+    if n < 1:
+        return float("nan")
+    z = norm_ppf(1.0 - (1.0 - ci) / 2.0)
+    return float(z * np.std(a, ddof=1) / np.sqrt(n))
+
+
+def verdict(lo: float, hi: float, *, n_clusters: int, tail: float,
+            min_clusters: int = 20, max_tail_share: float = 0.5) -> tuple:
+    """``(verdict, blockers)`` for the headline read.
+
+    Returns ``"NO CONCLUSION"`` whenever the confidence interval straddles zero,
+    the cluster count is below ``min_clusters``, or the top-5% tail carries more
+    than ``max_tail_share`` of the total. Any one of those makes a directional
+    claim unsupportable, and the previous unconditional "gates net-COST you"
+    printed off a tail-driven mean is exactly the failure this prevents.
+    """
+    blockers = []
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        blockers.append("no usable confidence interval")
+    elif lo <= 0.0 <= hi:
+        blockers.append("the confidence interval straddles zero")
+    if n_clusters < min_clusters:
+        blockers.append(f"{n_clusters} clusters < {min_clusters} required")
+    if np.isfinite(tail) and tail > max_tail_share:
+        blockers.append(f"top-5% tail carries {tail:.0%} of the total")
+    return ("NO CONCLUSION" if blockers else "SUPPORTED"), blockers
+
+
+def anchor_indices(dates, signal_date) -> tuple[int, int]:
+    """``(t_sig, i_entry)`` for a signal session date.
+
+    ``t_sig`` is the last bar on/before ``signal_date`` — the bar whose close sets
+    the entry geometry (``core.filter_engine`` builds stop/target off bar T's
+    close). ``i_entry`` is the next bar, where the fill lands (the backtester
+    enters at T+1's open).
+
+    ``t_sig`` is ``-1`` when no bar exists on/before the date.
+
+    Using ``side="right") - 1`` keeps one meaning for one expression. The former
+    ``searchsorted(D, side="left")`` returned the signal bar on a trading day but
+    the *entry* bar on a weekend/holiday — two different anchors from one call.
+    """
+    import pandas as pd
+    t_sig = int(dates.searchsorted(pd.Timestamp(signal_date), side="right")) - 1
+    return t_sig, t_sig + 1
+
+
 def _dedupe_by_ticker_month(observations: list[dict]) -> list[dict]:
     """One observation per (ticker, year-month), keeping the first seen.
 
     A name blocked by two gates in one month yields two rows against a single
     price move; the ALL rollup must not count that twice. Returns the input
-    unchanged when rows carry no ticker/scan_date (unit tests pass bare stats).
+    unchanged when rows carry no ticker/signal_date (unit tests pass bare stats).
     """
     seen: set[tuple] = set()
     out: list[dict] = []
     for o in observations:
-        ticker, date = o.get("ticker"), o.get("scan_date")
+        ticker, date = o.get("ticker"), o.get("signal_date")
         if ticker is None or date is None:
             return list(observations)
         key = (ticker, date.year, date.month)
@@ -327,6 +549,10 @@ def aggregate(observations: list[dict]) -> dict:
         fwd = [r["fwd21"] for r in valid]
         miss = sum(1 for r in valid if r.get("cls") == "missed_winner")
         avoid = sum(1 for r in valid if r.get("cls") == "avoided_loser")
+        # R-space: only rows whose counterfactual replay matured. Absent when the
+        # replay was not run, so the raw-% columns stay meaningful on their own.
+        r_rows = [r for r in rows if np.isfinite(r.get("r_multiple", float("nan")))]
+        rs = [r["r_multiple"] for r in r_rows]
         return {
             "n": n,
             "dropped": len(rows) - n,
@@ -336,6 +562,12 @@ def aggregate(observations: list[dict]) -> dict:
             "median_mdd21": _med(_finite(valid, "mdd21")),
             "pct_missed_winner": (100.0 * miss / n) if n else 0.0,
             "pct_avoided_loser": (100.0 * avoid / n) if n else 0.0,
+            "n_r": len(rs),
+            "median_r": _med(rs),
+            "mean_r": float(np.mean(rs)) if rs else float("nan"),
+            "median_mfe_r": _med(_finite(r_rows, "mfe_r")),
+            "median_mae_r": _med(_finite(r_rows, "mae_r")),
+            "exit_mix": Counter(r.get("exit_reason") for r in r_rows),
         }
 
     result = {gate: _roll(rows) for gate, rows in by_gate.items()}
@@ -346,9 +578,20 @@ def aggregate(observations: list[dict]) -> dict:
 # ── DB + price I/O (main; not import-safe) ──────────────────────────────────
 
 def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
-    """Passed-on rows: (ticker, scan_date, gate). See module docstring for the
-    definition. Ordered by scan_date, ticker so the monthly dedupe keeps the
-    earliest scan_date deterministically."""
+    """Passed-on rows: (ticker, signal_date, gate). See module docstring for the
+    definition. Ordered by created_at, ticker so the monthly dedupe keeps the
+    earliest run deterministically.
+
+    ``signal_date`` is the last exchange session COMPLETED as of the run's
+    wall-clock ``created_at`` — not ``DATE(created_at)``. A scan that runs before
+    the close is looking at the previous session's bar, so the naive date
+    mis-anchors it by one bar. Measured on this journal: runs at 20:00-23:00 UTC
+    (after the 16:00 ET close) anchor to the same-day bar, runs at 00:00-16:00 to
+    the prior bar — overall a coin flip. ``last_completed_session`` also handles
+    the NYSE/TSX holiday divergence, which a fixed offset would not.
+    """
+    from core.freshness import exchange_for, last_completed_session
+
     cur = conn.cursor(dictionary=True)
     where_days = ""
     params: tuple = ()
@@ -358,18 +601,21 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
     # SQL only narrows to the candidate set; the row-level definition stays in
     # is_passed_on() so the two cannot drift apart.
     cur.execute(
-        "SELECT sr.ticker, DATE(r.created_at) AS scan_date, sr.reason AS reason, "
+        "SELECT sr.ticker, r.created_at AS scan_ts, sr.reason AS reason, "
         "       sr.passed AS passed, sr.signal_kind AS signal_kind, "
         "       sr.declined AS declined "
         "FROM scan_results sr JOIN scan_runs r ON r.id = sr.run_id "
         "WHERE (sr.passed = 0 OR sr.signal_kind IS NULL "
         "       OR sr.signal_kind = 'none' OR sr.declined = 1) "
         + where_days +
-        "ORDER BY scan_date, sr.ticker",
+        "ORDER BY r.created_at, sr.ticker",
         params,
     )
     rows = cur.fetchall()
     cur.close()
+
+    # ~113 runs x 2 exchanges, so memoising collapses 20k calendar lookups to ~226.
+    session: dict[tuple, object] = {}
 
     out = []
     for row in rows:
@@ -379,9 +625,13 @@ def _fetch_passed_on(conn, days_back: int | None) -> list[dict]:
                             declined=declined,
                             reason=row.get("reason")):
             continue
+        ticker = row["ticker"]
+        key = (row["scan_ts"], exchange_for(ticker))
+        if key not in session:
+            session[key] = last_completed_session(row["scan_ts"], key[1])
         out.append({
-            "ticker": row["ticker"],
-            "scan_date": row["scan_date"],
+            "ticker": ticker,
+            "signal_date": session[key],
             "gate": normalize_gate(row.get("reason"), declined=declined),
         })
     return out
@@ -403,13 +653,22 @@ def _naive_index(pd, index):
     return idx.tz_localize(None) if getattr(idx, "tz", None) is not None else idx
 
 
-def build_observations(passed_on: list[dict], load_prices, spy_close, *,
-                       win: float = 0.05, lose: float = 0.05) -> tuple[list[dict], dict]:
+def build_observations(passed_on: list[dict], load_prices, bench_for, *,
+                       win: float = 0.05, lose: float = 0.05,
+                       replay=None) -> tuple[list[dict], dict]:
     """Score passed-on rows into matured, deduped observations.
 
     ``load_prices`` maps a ticker to its price DataFrame (or None when the cache
-    has no usable file). Returns ``(observations, stats)`` where stats carries
-    ``deduped`` / ``not_matured`` / ``missing_price`` / ``bad`` / ``bad_samples``.
+    has no usable file). ``bench_for`` maps a ticker to its
+    ``(benchmark_close_series, benchmark_label)`` — see ``_BENCH_BY_EXCHANGE``;
+    a ``.TO`` name is adjusted against the TSX, not against SPY in USD.
+    ``replay(df, t_sig, ticker)`` optionally returns a
+    ``backtest.counterfactual.CounterfactualResult`` — what the real exit ladder
+    would have paid on a forced entry there. When supplied, each observation
+    also carries ``r_multiple`` / ``mfe_r`` / ``mae_r`` / ``exit_reason``.
+
+    Returns ``(observations, stats)`` where stats carries ``deduped`` /
+    ``not_matured`` / ``missing_price`` / ``bad`` / ``bad_samples``.
 
     The (ticker, gate, year-month) key is claimed on the first ATTEMPT rather
     than on success, so a later date in the same month can never silently
@@ -431,12 +690,12 @@ def build_observations(passed_on: list[dict], load_prices, spy_close, *,
     for rec in passed_on:
         ticker, gate = rec["ticker"], rec["gate"]
         try:
-            d = pd.Timestamp(rec["scan_date"]).normalize()
+            d = pd.Timestamp(rec["signal_date"]).normalize()
         except (ValueError, TypeError) as exc:
-            _note(f"{ticker}: bad scan_date ({exc})")
+            _note(f"{ticker}: bad signal_date ({exc})")
             continue
 
-        # Rows arrive scan_date-ascending, so the first key seen is the earliest.
+        # Rows arrive created_at-ascending, so the first key seen is the earliest.
         key = (ticker, gate, d.year, d.month)
         if key in seen_keys:
             continue
@@ -446,54 +705,105 @@ def build_observations(passed_on: list[dict], load_prices, spy_close, *,
         if df is None:
             stats["missing_price"].add(ticker)
             continue
+        bench_close, bench_label = bench_for(ticker)
+        if bench_close is None:
+            _note(f"{ticker}: no benchmark series")
+            continue
         try:
             dates = df.index
             close = df["close"].to_numpy(dtype=float)
-            # First bar on/after scan_date (the shadow "entry" reference bar).
-            i0 = int(dates.searchsorted(d, side="left"))
-            # Require the full +21d window to exist, else it has not matured.
-            if i0 + HORIZON >= len(close):
+            # t_sig = signal bar (its close sets the geometry); i_entry = fill bar.
+            t_sig, i_entry = anchor_indices(dates, d)
+            if t_sig < 0:
+                _note(f"{ticker}: no bar on/before {d.date()}")
+                continue
+            # The window is measured from the fill bar, so maturity keys off
+            # i_entry — one bar stricter than anchoring on the signal bar.
+            if i_entry + HORIZON >= len(close):
                 stats["not_matured"] += 1
                 continue
-            fr = forward_returns(close, dates, spy_close, i0, horizons=(5, HORIZON))
+            fr = forward_returns(close, dates, bench_close, t_sig, horizons=(5, HORIZON))
         except (KeyError, ValueError, TypeError) as exc:
             _note(f"{ticker} @ {d.date()}: {exc}")
             continue
 
-        observations.append({
+        obs = {
             "ticker": ticker,
             "gate": gate,
-            "scan_date": d.date(),
+            "signal_date": d.date(),
+            "bench": bench_label,
+            "t_sig": t_sig,
+            "i_entry": i_entry,
             "fwd5": fr["fwd5"],
             "fwd21": fr["fwd21"],
             "mdd21": fr["mdd21"],
             "cls": classify(fr["fwd21"], win=win, lose=lose, side=gate_side(gate)),
-        })
+        }
+        if replay is not None:
+            try:
+                cf = replay(df, t_sig, ticker)
+            except (KeyError, ValueError, TypeError) as exc:
+                cf = None
+                _note(f"{ticker} @ {d.date()}: replay failed ({exc})")
+            # Only a MATURED replay is an outcome — an open_eod force-close at
+            # the last bar is a truncation, not a result.
+            if cf is not None and cf.matured:
+                obs.update({
+                    "r_multiple": cf.r_multiple,
+                    "mfe_r": cf.mfe_r,
+                    "mae_r": cf.mae_r,
+                    "exit_reason": cf.exit_reason,
+                    "bars_held": cf.bars_held,
+                })
+            else:
+                obs.update({
+                    "r_multiple": float("nan"), "mfe_r": float("nan"),
+                    "mae_r": float("nan"),
+                    "exit_reason": "unmatured" if cf is not None else "none",
+                    "bars_held": 0,
+                })
+        observations.append(obs)
 
     stats["deduped"] = len(seen_keys)
     return observations, stats
 
 
-def _fmt_row(label: str, a: dict) -> str:
+def _num(v: float, w: int, dp: int = 2) -> str:
+    """Fixed-width signed number, or 'n/a' — never 'nan', which reads as data."""
+    return f"{v:>+{w}.{dp}f}" if np.isfinite(v) else f"{'n/a':>{w}}"
+
+
+def _pct(v: float, w: int) -> str:
+    return f"{v:>+{w}.2%}" if np.isfinite(v) else f"{'n/a':>{w}}"
+
+
+def _exit_mix(a: dict) -> str:
+    """Compact exit-reason mix — the diagnostic that shows whether the ladder
+    engaged at all, and which rung did the work."""
+    mix = a.get("exit_mix") or {}
+    total = sum(mix.values())
+    if not total:
+        return "—"
+    short = {"stop": "stop", "target": "tgt", "time_stop": "time",
+             "engine_exit": "eng", "breakeven_stop": "be", "trail_stop": "trail"}
+    parts = [f"{short.get(k, k)} {100 * v // total}%"
+             for k, v in mix.most_common(3)]
+    return " ".join(parts)
+
+
+def _fmt_row(label: str, a: dict, *, r_space: bool) -> str:
     """One fixed-width table row. Non-finite stats render as 'n/a' rather than
     'nan%' so an empty gate cannot be misread as a real number."""
-    def pct(v: float, w: int) -> str:
-        return f"{v:>+{w}.2%}" if np.isfinite(v) else f"{'n/a':>{w}}"
-
-    mean = a["mean_fwd21"]
-    if not np.isfinite(mean):
-        read = ""
-    elif mean < 0:
-        read = "avoided losers"
-    elif mean > 0:
-        read = "cost you"
-    else:
-        read = "flat"
-    name = label if len(label) <= 32 else label[:29] + "..."
-    return (f"{name:<32} {a['n']:>4} {pct(a['median_fwd5'], 9)} "
-            f"{pct(a['median_fwd21'], 10)} {pct(mean, 11)} "
+    name = label if len(label) <= 30 else label[:27] + "..."
+    if r_space:
+        return (f"{name:<30} {a['n_r']:>4} {_num(a['median_r'], 7)} "
+                f"{_num(a['mean_r'], 8)} {_num(a['median_mfe_r'], 8)} "
+                f"{_num(a['median_mae_r'], 8)}  {_exit_mix(a):<22} "
+                f"{_pct(a['median_fwd21'], 10)}")
+    return (f"{name:<30} {a['n']:>4} {_pct(a['median_fwd5'], 9)} "
+            f"{_pct(a['median_fwd21'], 10)} {_pct(a['mean_fwd21'], 11)} "
             f"{a['pct_missed_winner']:>7.0f}% {a['pct_avoided_loser']:>8.0f}% "
-            f"{pct(a['median_mdd21'], 8)}  {read}")
+            f"{_pct(a['median_mdd21'], 8)}")
 
 
 def main() -> None:
@@ -519,6 +829,19 @@ def main() -> None:
     ap.add_argument("--csv", default=None,
                     help="Write the per-observation rows to this CSV "
                          "(manual run results belong under docs/backtest_out/).")
+    ap.add_argument("--bootstrap", type=int, default=10_000,
+                    help="Cluster-bootstrap draws for the confidence interval. "
+                         "Default 10000.")
+    ap.add_argument("--no-counterfactual", action="store_true",
+                    help="Skip the R-space exit-ladder replay and report only the "
+                         "raw market-adjusted returns (much faster).")
+    ap.add_argument("--no-engine-exits", action="store_true",
+                    help="Replay stop/target/max-hold/breakeven but NOT the engine's "
+                         "signal-layer exit chain (regime-flip, momentum-fade, "
+                         "mean-rev). Biases holds long; useful for isolating cost.")
+    ap.add_argument("--frictionless", action="store_true",
+                    help="Zero commission and slippage, reproducing the bare "
+                         "backtester walk instead of the live execution config.")
     args = ap.parse_args()
 
     if args.win < 0 or args.lose < 0:
@@ -549,18 +872,68 @@ def main() -> None:
               "(python main.py).")
         return
 
-    # SPY market benchmark — loaded once, as a close Series for .asof lookups.
-    spy_path = prices_dir / "SPY.parquet"
-    if not spy_path.exists():
-        print(f"  ✗ SPY benchmark missing at {spy_path} — cannot market-adjust. "
-              f"Populate the price cache first.")
-        return
-    spy_df = pd.read_parquet(spy_path)
-    spy_df.index = _naive_index(pd, spy_df.index)
-    spy_close = spy_df["close"].sort_index()
+    # Market benchmarks — one per listing exchange, each loaded once as a close
+    # Series for .asof lookups. Hard-fail on a missing one: silently falling back
+    # to SPY for a .TO name is the CAD-vs-USD bug this routing exists to remove.
+    from core.freshness import exchange_for
+
+    bench_close: dict[str, "pd.Series"] = {}
+    for sym in sorted(set(_BENCH_BY_EXCHANGE.values())):
+        b_path = prices_dir / f"{sym}.parquet"
+        if not b_path.exists():
+            print(f"  ✗ benchmark {sym} missing at {b_path} — cannot market-adjust. "
+                  f"Populate the price cache first.")
+            return
+        b_df = pd.read_parquet(b_path)
+        b_df.index = _naive_index(pd, b_df.index)
+        bench_close[sym] = b_df["close"].sort_index()
+
+    def _bench_for(ticker: str):
+        sym = _BENCH_BY_EXCHANGE[exchange_for(ticker)]
+        return bench_close.get(sym), sym
+
+    # ── counterfactual context, hoisted once ────────────────────────────────
+    # One FilterEngine for the whole run: call_engine_slice saves and restores
+    # engine._today, so a single instance is safe across tickers and bars.
+    replay = None
+    cf_cfg = None
+    engine_blocked: list = []
+    if not args.no_counterfactual:
+        from backtest.counterfactual import (load_market_context,
+                                             make_engine_exit_probe,
+                                             replay_config, replay_counterfactual)
+        from core.filter_engine import FilterEngine
+
+        cf_cfg = replay_config(_ROOT)
+        market_dfs, vix_df = load_market_context(_ROOT)
+        engine = None if args.no_engine_exits else FilterEngine.from_dict(cf_cfg["raw"])
+        friction = dict(commission_r=0.0, entry_slippage_pct=0.0, exit_slippage_pct=0.0)
+        if not args.frictionless:
+            friction = {k: cf_cfg[k] for k in friction}
+        slice_cache: dict = {}
+
+        def _replay_one(df, t_sig, ticker):
+            probe = (None if engine is None else make_engine_exit_probe(
+                engine, ticker, df, market_dfs, vix_df,
+                slice_cache=slice_cache, blocked=engine_blocked))
+            return replay_counterfactual(
+                df, signal_idx=t_sig, ticker=ticker,
+                atr_mult=cf_cfg["atr_mult"], min_rr=cf_cfg["min_rr"],
+                max_hold_days=cf_cfg["max_hold_days"],
+                max_hold_mode=cf_cfg["max_hold_mode"],
+                breakeven_trigger_r=cf_cfg["breakeven_trigger_r"],
+                breakeven_buffer_atr=cf_cfg["breakeven_buffer_atr"],
+                exit_probe=probe, **friction)
+
+        replay = _replay_one
 
     # Per-ticker price cache so each parquet is read once across many scan dates.
+    # With the replay on, frames carry the engine's indicator columns (the ATR the
+    # geometry needs, and everything the exit chain reads) — attached once per
+    # ticker over the FULL frame exactly as the backtester does before _walk, then
+    # sliced per bar, so this is not a look-ahead.
     price_cache: dict[str, "pd.DataFrame | None"] = {}
+    want_indicators = replay is not None
 
     def _load_prices(ticker: str):
         if ticker not in price_cache:
@@ -574,14 +947,19 @@ def main() -> None:
                 try:
                     d = pd.read_parquet(p)
                     d.index = _naive_index(pd, d.index)
-                    price_cache[ticker] = d.sort_index()
+                    d = d.sort_index()
+                    if want_indicators:
+                        from core.indicators.indicators import attach_indicators
+                        d = attach_indicators(d)
+                    price_cache[ticker] = d
                 except Exception as exc:
                     print(f"  · price cache unreadable for {ticker}: {exc}")
         return price_cache[ticker]
 
     raw_count = len(passed_on)
     observations, stats = build_observations(
-        passed_on, _load_prices, spy_close, win=args.win, lose=args.lose)
+        passed_on, _load_prices, _bench_for, win=args.win, lose=args.lose,
+        replay=replay)
     deduped = stats["deduped"]
     not_matured = stats["not_matured"]
     missing_price = stats["missing_price"]
@@ -614,15 +992,21 @@ def main() -> None:
         pd.DataFrame(observations).to_csv(csv_path, index=False)
         print(f"  → {len(observations)} observation(s) written to {csv_path}")
 
-    dates_seen = [o["scan_date"] for o in observations]
+    dates_seen = [o["signal_date"] for o in observations]
     print(f"\n  Opportunity-cost shadow tracker  ·  passed-on rows {raw_count}  ·  "
           f"deduped {deduped}  ·  matured {len(observations)}  ·  "
           f"{min(dates_seen)} → {max(dates_seen)}  ·  win>+{args.win:.0%} lose<-{args.lose:.0%}")
+    bench_split = Counter(o["bench"] for o in observations)
+    print("  benchmarks: " + " · ".join(
+        f"{sym} ({n} obs)" for sym, n in sorted(bench_split.items())))
     extra = []
     if not_matured:
         extra.append(f"{not_matured} not matured")
     if missing_price:
-        extra.append(f"{len(missing_price)} missing price")
+        # Delisted names have no parquet and drop out here. They are
+        # disproportionately the losers, so this count is a survivorship read,
+        # not a footnote.
+        extra.append(f"{len(missing_price)} missing price (delisted/uncached)")
     if bad:
         extra.append(f"{bad} bad/skipped")
     if extra:
@@ -630,43 +1014,113 @@ def main() -> None:
     for s in bad_samples:
         print(f"    · {s}")
 
-    print("\n" + "=" * 104)
-    print(f"  {'Gate':<32} {'n':>4} {'med fwd5':>9} {'med fwd21':>10} "
-          f"{'mean fwd21':>11} {'%missed':>8} {'%avoided':>9} {'med mdd':>8}  read")
-    print("  " + "-" * 100)
-
-    hidden = 0
+    # --min-n counts whichever population is the headline: R-space rows when the
+    # ladder ran, raw rows otherwise. Filtering on the raw count while showing R
+    # would display all-n/a rows for gates whose replays never matured.
+    n_key = "n_r" if replay is not None else "n"
     gate_keys = [g for g in agg if g != "__ALL__"]
-    gate_keys.sort(key=lambda g: (-agg[g]["n"], g))
-    for g in gate_keys:
-        if agg[g]["n"] < args.min_n:
-            hidden += 1
-            continue
-        print("  " + _fmt_row(g, agg[g]))
-
-    print("  " + "-" * 100)
+    gate_keys.sort(key=lambda g: (-agg[g][n_key], g))
     allr = agg["__ALL__"]
-    print("  " + _fmt_row("ALL (dedup ticker-month)", allr))
-    print("=" * 104)
+    hidden = sum(1 for g in gate_keys if agg[g][n_key] < args.min_n)
+    shown = [g for g in gate_keys if agg[g][n_key] >= args.min_n]
 
-    mean = allr["mean_fwd21"]
-    if not np.isfinite(mean):
-        verdict = "—"
-    elif mean < 0:
-        verdict = (f"gates net-AVOIDED losers ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book underperformed SPY")
-    elif mean > 0:
-        verdict = (f"gates net-COST you ({mean:+.2%} mean mkt-adj fwd21) — "
-                   f"the passed-on book beat SPY")
-    else:
-        verdict = "gates net-flat vs SPY"
+    if replay is not None:
+        # R-space is the headline: what the real exit ladder would have paid.
+        print("\n" + "=" * 104)
+        print(f"  {'Gate':<30} {'n':>4} {'med R':>7} {'mean R':>8} {'med MFE':>8} "
+              f"{'med MAE':>8}  {'exits':<22} {'med fwd21':>10}")
+        print("  " + "-" * 100)
+        for g in shown:
+            print("  " + _fmt_row(g, agg[g], r_space=True))
+        print("  " + "-" * 100)
+        print("  " + _fmt_row("ALL (dedup ticker-month)", allr, r_space=True))
+        print("=" * 104)
+
+    # Raw market-adjusted block — kept, but demoted below R-space: a buy-and-hold
+    # return is not what the strategy would have realised.
+    print("\n" + "=" * 104)
+    print(f"  {'Gate (raw mkt-adj)':<30} {'n':>4} {'med fwd5':>9} {'med fwd21':>10} "
+          f"{'mean fwd21':>11} {'%missed':>8} {'%avoided':>9} {'med mdd':>8}")
+    print("  " + "-" * 100)
+    for g in shown:
+        print("  " + _fmt_row(g, agg[g], r_space=False))
+    print("  " + "-" * 100)
+    print("  " + _fmt_row("ALL (dedup ticker-month)", allr, r_space=False))
+    print("=" * 104)
 
     if hidden:
         print(f"\n  ({hidden} gate(s) hidden below --min-n {args.min_n}.)")
-    print(f"\n  Two-sided read: {verdict}.\n"
-          f"  (negative mean ⇒ the gate avoided losers; positive ⇒ it cost you a winner.)\n"
+
+    # ── power: what this sample can and cannot support ──────────────────────
+    # Cluster by TICKER. The ALL rollup has already deduped to one row per
+    # (ticker, month), so clustering on that key would give singleton clusters
+    # and silently degrade to an IID bootstrap. Ticker is the real repeated
+    # measurement. Same-month cross-sectional dependence (residual sector beta
+    # the benchmark does not remove) is NOT modelled, so the interval below is a
+    # lower bound on the true width — clustering on month instead would be
+    # stricter but leaves ~2 clusters on a two-month journal.
+    all_rows = _dedupe_by_ticker_month(observations)
+    # Score whatever is the headline: R when the ladder was replayed, else the
+    # raw market-adjusted return. Gating the raw number while reporting R would
+    # certify a statistic nobody is reading.
+    if replay is not None:
+        vals = [o.get("r_multiple", float("nan")) for o in all_rows]
+        unit, fmt = "R", (lambda v: f"{v:+.2f}R")
+    else:
+        vals = [o["fwd21"] for o in all_rows]
+        unit, fmt = "mkt-adj fwd21", (lambda v: f"{v:+.2%}")
+    clusters = [o["ticker"] for o in all_rows]
+    n_clusters = len({c for c, v in zip(clusters, vals) if np.isfinite(v)})
+    est, lo, hi = cluster_bootstrap_ci(vals, clusters, n=args.bootstrap)
+    tail = tail_share(vals, 0.05)
+    ex_tail = mean_ex_tail(vals, 0.05)
+    mde = min_detectable_effect(vals, n_eff=n_clusters)
+    unattr = sum(1 for o in observations if o["gate"] == UNATTRIBUTED)
+    n_scored = int(np.sum(np.isfinite(np.asarray(vals, dtype=float))))
+
+    print("\n  POWER")
+    print(f"    {n_scored} scored obs ({unit}) across {n_clusters} ticker "
+          f"clusters; {100.0 * unattr / max(1, len(observations)):.0f}% carry no "
+          f"attributable gate.")
+    if np.isfinite(mde):
+        print(f"    smallest detectable mean effect at 95%: ±{fmt(mde).lstrip('+')}")
+    if np.isfinite(est) and np.isfinite(lo):
+        print(f"    ALL mean {fmt(est)}  95% CI [{fmt(lo)}, {fmt(hi)}]  "
+              f"(cluster bootstrap, {args.bootstrap} draws)")
+    if np.isfinite(tail):
+        print(f"    top 5% carries {tail:.0%} of the total; mean excluding it "
+              f"{fmt(ex_tail)}")
+    if engine_blocked:
+        # call_engine_slice never raises, so a context bug would otherwise show up
+        # only as "the engine never exits" with no error at all. The list is
+        # capped, so this is a sample rather than a total.
+        print(f"    ⚠ engine exit chain returned blocked results — sample: "
+              f"{engine_blocked[0]}")
+
+    call, blockers = verdict(lo, hi, n_clusters=n_clusters, tail=tail)
+    if blockers:
+        print(f"\n  => {call}: " + "; ".join(blockers) + ".")
+        print("     This sample cannot tell a positive edge from a negative one. "
+              "No directional\n     claim about any gate is supportable yet.")
+    else:
+        direction = ("net-AVOIDED losers — the passed-on book would have lost "
+                     "money") if est < 0 else (
+                    "net-COST you — the passed-on book would have paid")
+        print(f"\n  => {call}: gates {direction} ({fmt(est)} mean {unit}).")
+
+    print(f"\n  (negative ⇒ the gate avoided losers; positive ⇒ it cost you a winner.)\n"
           f"  '{UNATTRIBUTED}' = the journal kept no signal-stage reason for those rows,\n"
-          f"  so no gate is attributable — they are not evidence about any gate.\n")
+          f"  so no gate is attributable — they are not evidence about any gate.")
+    if replay is not None:
+        fr = "frictionless" if args.frictionless else (
+            f"commission {cf_cfg['commission_r']}R, slippage "
+            f"{cf_cfg['entry_slippage_pct']:.2%}/{cf_cfg['exit_slippage_pct']:.2%}")
+        eng = "OFF (mechanical exits only)" if args.no_engine_exits else "ON"
+        print(f"\n  R is a FORCED entry — no signal fired on these names, so it answers\n"
+              f"  'what would the standard geometry have paid here', not 'what did this\n"
+              f"  gate cost you'.  engine exit chain: {eng}  ·  {fr}\n")
+    else:
+        print()
 
 
 if __name__ == "__main__":
