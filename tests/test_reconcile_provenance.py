@@ -4,7 +4,8 @@ Covers:
   * backtest.db.reference_run    — prefer the latest scoring-OFF run
   * backtest.db.trade_r_column   — aggregate effective_r when present, else r_multiple
   * backtest.db._run_use_scoring — parse _meta.use_scoring from a config snapshot
-  * reconcile_live._replay       — max-hold mode parity with the backtester
+  * replay_counterfactual        — max-hold mode parity (the reconciler now delegates
+                                   here; the full ladder is covered in test_counterfactual)
 No DB: the cursor is a tiny in-memory fake.
 """
 
@@ -105,32 +106,30 @@ def test_reference_run_skips_windowed_experiment():
     assert reference_run(_FakeCursor(runs=runs))["id"] == 2
 
 
-# ── reconcile_live._replay max-hold parity ────────────────────────────────────
+# ── max-hold parity via the shared replay the reconciler delegates to ─────────
 
 def test_replay_max_hold_mode_parity():
-    from scripts.live.reconcile_live import _replay
-    from backtest.backtester import (apply_stop_fill, apply_target_fill,
-                                      apply_stop_fill_short, apply_target_fill_short)
+    from backtest.counterfactual import replay_counterfactual
 
     idx = pd.date_range("2024-01-01", periods=8, freq="B")
     close = [100, 101, 102, 103, 104, 105, 106, 107]   # rising → long is in profit
     df = pd.DataFrame(
         {"open": close, "high": [c + 0.5 for c in close],
-         "low": [c - 0.5 for c in close], "close": close},
+         "low": [c - 0.5 for c in close], "close": close, "atr": [1.0] * 8},
         index=idx,
     )
-    # entry T+1 at idx 1; stop/target placed so neither is ever touched.
-    args = (df, 1, 100.0, 90.0, 200.0, False, 3)
-    fills = (apply_stop_fill, apply_target_fill, apply_stop_fill_short, apply_target_fill_short)
+    # signal bar 0 → entry T+1 at idx 1; stop/target placed so neither is touched.
+    kw = dict(signal_idx=0, ticker="TEST.1", stop_price=90.0, target_price=200.0,
+              max_hold_days=3, breakeven_trigger_r=None)
 
-    # hard: force-close at the cap regardless of P&L. (engine=None → bare stop/target/
-    # time-stop replay; returns (price, reason, exit_idx).)
-    _px, reason_hard, _k = _replay(*args, "hard", *fills)
-    assert reason_hard == "time_stop"
+    # hard: force-close at the cap regardless of P&L.
+    hard = replay_counterfactual(df, max_hold_mode="hard", **kw)
+    assert hard.exit_reason == "time_stop"
 
-    # if_not_profit: in profit at the cap → do NOT exit (parity with the backtester).
-    px_inp, reason_inp, _ = _replay(*args, "if_not_profit", *fills)
-    assert px_inp is None and reason_inp == "pending"
+    # if_not_profit: in profit at the cap → do NOT exit → runs off the end, which
+    # the reconciler treats as pending (not matured). Parity with the backtester.
+    inp = replay_counterfactual(df, max_hold_mode="if_not_profit", **kw)
+    assert inp.exit_reason == "open_eod" and inp.matured is False
 
 
 if __name__ == "__main__":
