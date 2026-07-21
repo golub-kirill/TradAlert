@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["fetch_ticker_news", "search_ticker_news", "fetch_macro_headlines",
            "fetch_finnhub_news", "fetch_alphavantage_news", "fetch_google_news",
-           "gather_ticker_news", "fetch_sec_filings"]
+           "gather_ticker_news", "fetch_sec_filings", "filter_headlines",
+           "MIN_RELEVANT"]
 
 # SEC EDGAR — free, no key, requires a declared User-Agent. 8-K = material events.
 _SEC_UA = {"User-Agent": "TradAlert/1.0 research (admin@tradealert.local)"}
@@ -430,13 +431,32 @@ def gather_ticker_news(
 
     relevant = _dedupe_relevant(collected, syms, names)
     # Backstops only when the primaries came up thin — saves keyless calls.
-    if len(relevant) < 2:
+    if len(relevant) < MIN_RELEVANT:
         collected += _yahoo_ticker_news(ticker, limit, session)
         if brave_key:
             collected += search_ticker_news(ticker, brave_key=brave_key,
                                             session=session, limit=limit)
-        relevant = _dedupe_relevant(collected, syms, names)
 
+    return filter_headlines(collected, ticker, company_name, limit=limit)
+
+
+# Below this many relevant headlines a result is "thin": the gather engages its
+# keyed backstops, and a cache hit is refetched rather than served.
+MIN_RELEVANT = 2
+
+
+def filter_headlines(items: list[dict], ticker: str, company_name: str = "",
+                     *, limit: int = 5) -> list[dict]:
+    """Relevance/noise filter + dedupe + catalyst-first ordering + cap.
+
+    The single quality gate for headlines reaching the advisor, wherever they
+    came from. ``gather_ticker_news`` applies it to a fresh multi-source pull;
+    the service applies the SAME function to cache hits, so a cached ticker and
+    a freshly-fetched one are graded identically instead of the cache silently
+    serving raw, wrong-company, duplicated headlines.
+    """
+    syms, names = company_aliases(ticker, company_name)
+    relevant = _dedupe_relevant(items, syms, names)
     # Catalysts first, price-recaps last, then cap — orthogonal news survives.
     relevant.sort(key=lambda h: is_price_recap(str(h.get("headline") or "")))
     return relevant[:limit]
