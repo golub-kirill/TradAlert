@@ -110,7 +110,7 @@ def save_state(state: dict) -> None:
 # ── main (IO) ──────────────────────────────────────────────────────────────────
 
 def _market_open_now() -> bool:
-    """Rough RTH gate — NYSE weekday 09:30–16:00 ET (fail-open True on tz error)."""
+    """Rough RTH gate — NYSE weekday 07:00–16:00 ET (fail-open True on tz error)."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("America/New_York"))
@@ -119,7 +119,7 @@ def _market_open_now() -> bool:
     if now.weekday() >= 5:
         return False
     m = now.hour * 60 + now.minute
-    return 9 * 60 + 30 <= m <= 16 * 60
+    return 7 * 60 <= m <= 16 * 60
 
 
 def main(argv=None) -> int:
