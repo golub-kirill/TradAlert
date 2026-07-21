@@ -72,11 +72,15 @@ import core.advisor.service as svc  # noqa: E402
 from core.advisor.news_fetcher import filter_headlines  # noqa: E402
 from core.advisor.service import AdvisorContext, _resolve_headlines  # noqa: E402
 
+# Two wrong-company items (dropped), one price-recap (kept, ordered last) and
+# two catalysts — enough real news to clear MIN_CATALYSTS so the cache is served
+# rather than refetched.
 _MIXED = [
     {"headline": "ASML Q2 Earnings Loom: Buy, Sell or Hold?", "source": "Yahoo"},
     {"headline": "Analysts Raised AMD Price Target Again", "source": "Yahoo"},
     {"headline": "Why Applied Materials (AMAT) Stock Is Trading Up Today", "source": "Yahoo"},
     {"headline": "Applied Materials wins $2B order from TSMC", "source": "Reuters"},
+    {"headline": "Applied Materials raises full-year guidance", "source": "Reuters"},
 ]
 
 
@@ -95,7 +99,7 @@ def _point_cache_at(monkeypatch, tmp_path):
 
 
 def test_cache_hit_drops_wrong_company_and_dedupes(monkeypatch, tmp_path):
-    # Same payload in two sections → load_fresh_news returns 8 raw items.
+    # Same payload in two sections → load_fresh_news returns 10 raw items.
     news_cache.save_news("AMAT", "finnhub", _MIXED, cache_dir=tmp_path)
     news_cache.save_news("AMAT", "gathered", _MIXED, cache_dir=tmp_path)
     _point_cache_at(monkeypatch, tmp_path)
@@ -103,7 +107,7 @@ def test_cache_hit_drops_wrong_company_and_dedupes(monkeypatch, tmp_path):
     out = _resolve_headlines("AMAT", _ctx(), "Applied Materials")
     heads = [h["headline"] for h in out]
 
-    assert len(heads) == 2                       # was 8 raw / 6 unfiltered
+    assert len(heads) == 3                       # was 10 raw / 6 unfiltered
     assert not any("ASML" in h or "AMD" in h for h in heads)   # wrong company
     assert len(heads) == len(set(heads))         # cross-section duplicates gone
 
@@ -112,7 +116,9 @@ def test_cache_hit_puts_catalysts_before_price_recaps(monkeypatch, tmp_path):
     news_cache.save_news("AMAT", "finnhub", _MIXED, cache_dir=tmp_path)
     _point_cache_at(monkeypatch, tmp_path)
     out = _resolve_headlines("AMAT", _ctx(), "Applied Materials")
-    assert "TSMC" in out[0]["headline"]          # catalyst first, recap after
+    heads = [h["headline"] for h in out]
+    assert "Trading Up Today" in heads[-1]       # the price-recap sinks to last
+    assert all("Trading Up Today" not in h for h in heads[:-1])
 
 
 def test_cache_hit_respects_the_headline_cap(monkeypatch, tmp_path):
@@ -125,8 +131,8 @@ def test_cache_hit_respects_the_headline_cap(monkeypatch, tmp_path):
 
 
 def test_thin_cache_falls_through_to_a_fresh_gather(monkeypatch, tmp_path):
-    # Only ONE relevant headline survives → below MIN_RELEVANT → refetch (which
-    # also engages the keyed backstops) instead of serving a stub.
+    # Only ONE catalyst survives → below MIN_CATALYSTS → refetch (which also
+    # engages the keyed backstops) instead of serving a stub.
     news_cache.save_news("AMAT", "finnhub", [
         {"headline": "ASML Q2 Earnings Loom", "source": "Yahoo"},
         {"headline": "Applied Materials wins $2B order from TSMC", "source": "Reuters"},
@@ -148,6 +154,28 @@ def test_thin_cache_falls_through_to_a_fresh_gather(monkeypatch, tmp_path):
 def test_filter_headlines_is_the_shared_gate():
     kept = filter_headlines(_MIXED, "AMAT", "Applied Materials", limit=5)
     heads = [h["headline"] for h in kept]
-    assert len(heads) == 2 and "TSMC" in heads[0]
+    assert len(heads) == 3 and "Trading Up Today" in heads[-1]
     # Same call with a tight cap truncates after the catalyst-first sort.
     assert len(filter_headlines(_MIXED, "AMAT", "Applied Materials", limit=1)) == 1
+
+
+def test_cache_of_only_price_recaps_is_refetched(monkeypatch, tmp_path):
+    # Relevant but information-free: two price-recaps cleared the old count-based
+    # gate and were served. They carry no catalyst, so the cache must be refetched.
+    news_cache.save_news("AMAT", "finnhub", [
+        {"headline": "Why Applied Materials (AMAT) Stock Is Trading Up Today", "source": "Yahoo"},
+        {"headline": "Applied Materials stock moves higher Monday", "source": "Yahoo"},
+    ], cache_dir=tmp_path)
+    _point_cache_at(monkeypatch, tmp_path)
+
+    called = {}
+
+    def _fake_gather(ticker, company_name="", **kw):
+        called["hit"] = True
+        return [{"headline": "Applied Materials wins $2B TSMC order", "source": "Reuters"}]
+
+    monkeypatch.setattr(svc, "gather_ticker_news", _fake_gather)
+    monkeypatch.setattr(svc, "save_news", lambda *a, **k: None)
+    out = _resolve_headlines("AMAT", _ctx(), "Applied Materials")
+    assert called.get("hit") is True
+    assert "TSMC" in out[0]["headline"]

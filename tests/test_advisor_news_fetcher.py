@@ -124,3 +124,77 @@ def test_macro_headlines_parsed():
 def test_macro_headlines_failure_returns_empty():
     s = _Router({"finance.yahoo.com/news/rssindex": requests.exceptions.ConnectionError()})
     assert news_fetcher.fetch_macro_headlines(session=s) == []
+
+
+# ── backstop engagement: catalysts, not raw relevance ────────────────────────
+# Regression: the gate was `len(relevant) < 2`, which (a) counted price-recaps
+# as if they were news, so two "why X moved today" pieces suppressed the keyed
+# backstops entirely, and (b) left the 2..limit range unreachable, so Yahoo and
+# Brave almost never ran and the model got short sets.
+
+def _heads(*titles, source="Reuters"):
+    return [{"headline": t, "source": source} for t in titles]
+
+
+def _stub_sources(monkeypatch, primary):
+    """Primaries return `primary`; record whether each backstop was reached."""
+    hit = {"yahoo": False, "brave": False}
+    monkeypatch.setattr(news_fetcher, "fetch_google_news",
+                        lambda *a, **k: list(primary))
+    monkeypatch.setattr(news_fetcher, "fetch_finnhub_news", lambda *a, **k: [])
+    monkeypatch.setattr(news_fetcher, "fetch_alphavantage_news", lambda *a, **k: [])
+
+    def _yahoo(ticker, limit, session):
+        hit["yahoo"] = True
+        return _heads("Apple signs supply agreement with Corning")
+
+    def _brave(ticker, **k):
+        hit["brave"] = True
+        return _heads("Apple opens new R&D centre")
+
+    monkeypatch.setattr(news_fetcher, "_yahoo_ticker_news", _yahoo)
+    monkeypatch.setattr(news_fetcher, "search_ticker_news", _brave)
+    return hit
+
+
+def test_price_recaps_do_not_satisfy_the_backstop_gate(monkeypatch):
+    # Two RELEVANT headlines, but both are price-recaps → no real news → the
+    # backstops must still engage (old gate saw len==2 and stopped).
+    recaps = _heads("Why Apple (AAPL) Stock Is Trading Up Today",
+                    "Apple stock moves higher in Monday trading")
+    hit = _stub_sources(monkeypatch, recaps)
+    news_fetcher.gather_ticker_news("AAPL", "Apple Inc.", brave_key="k", limit=5)
+    assert hit["yahoo"] and hit["brave"]
+
+
+def test_backstops_engage_below_the_cap_not_just_below_two(monkeypatch):
+    # Three genuine catalysts — above the old `< 2` gate but below the cap of 5,
+    # the range where the keyed fallbacks were previously unreachable.
+    hit = _stub_sources(monkeypatch, _heads(
+        "Apple raises dividend", "Apple wins EU appeal", "Apple buys AI startup"))
+    news_fetcher.gather_ticker_news("AAPL", "Apple Inc.", brave_key="k", limit=5)
+    assert hit["yahoo"] and hit["brave"]
+
+
+def test_backstops_skipped_once_catalysts_fill_the_cap(monkeypatch):
+    hit = _stub_sources(monkeypatch, _heads(
+        "Apple raises dividend", "Apple wins EU appeal", "Apple buys AI startup",
+        "Apple names new CFO", "Apple expands India production"))
+    out = news_fetcher.gather_ticker_news("AAPL", "Apple Inc.", brave_key="k", limit=5)
+    assert not hit["yahoo"] and not hit["brave"]   # no needless keyed calls
+    assert len(out) == 5
+
+
+def test_brave_skipped_without_a_key_but_yahoo_still_runs(monkeypatch):
+    hit = _stub_sources(monkeypatch, _heads("Apple raises dividend"))
+    news_fetcher.gather_ticker_news("AAPL", "Apple Inc.", brave_key=None, limit=5)
+    assert hit["yahoo"] and not hit["brave"]
+
+
+# ── catalyst_count ──────────────────────────────────────────────────────────
+
+def test_catalyst_count_excludes_price_recaps():
+    items = _heads("Apple wins $2B order from TSMC",
+                   "Why Apple (AAPL) Stock Is Trading Up Today")
+    assert news_fetcher.catalyst_count(items) == 1
+    assert news_fetcher.catalyst_count([]) == 0

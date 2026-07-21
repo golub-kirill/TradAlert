@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -38,7 +37,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["fetch_ticker_news", "search_ticker_news", "fetch_macro_headlines",
            "fetch_finnhub_news", "fetch_alphavantage_news", "fetch_google_news",
            "gather_ticker_news", "fetch_sec_filings", "filter_headlines",
-           "MIN_RELEVANT"]
+           "catalyst_count", "MIN_CATALYSTS"]
 
 # SEC EDGAR — free, no key, requires a declared User-Agent. 8-K = material events.
 _SEC_UA = {"User-Agent": "TradAlert/1.0 research (admin@tradealert.local)"}
@@ -430,8 +429,15 @@ def gather_ticker_news(
         collected += fetch_alphavantage_news(root, alphavantage_key, session=session, limit=limit)
 
     relevant = _dedupe_relevant(collected, syms, names)
-    # Backstops only when the primaries came up thin — saves keyless calls.
-    if len(relevant) < MIN_RELEVANT:
+    # Keep engaging the backstops until CATALYSTS fill the configured cap.
+    # The previous `len(relevant) < 2` was wrong twice over: it counted
+    # price-recaps as if they were news (two "why X moved today" pieces
+    # satisfied it, so a ticker could reach the model carrying nothing
+    # actionable), and it left the 2..limit range unreachable, so the keyed
+    # fallbacks almost never ran and the model was served short sets while the
+    # Brave quota sat unused. Tying the target to `limit` closes that gap by
+    # construction.
+    if catalyst_count(relevant) < limit:
         collected += _yahoo_ticker_news(ticker, limit, session)
         if brave_key:
             collected += search_ticker_news(ticker, brave_key=brave_key,
@@ -440,9 +446,21 @@ def gather_ticker_news(
     return filter_headlines(collected, ticker, company_name, limit=limit)
 
 
-# Below this many relevant headlines a result is "thin": the gather engages its
-# keyed backstops, and a cache hit is refetched rather than served.
-MIN_RELEVANT = 2
+# Minimum CATALYST headlines for a set to be worth serving. A cache hit below
+# this is refetched rather than handed over; the gather aims higher (the full
+# `limit`) because it is already paying for the round-trip.
+MIN_CATALYSTS = 2
+
+
+def catalyst_count(items: list[dict]) -> int:
+    """Non-price-recap headlines — the ones that can actually move a view.
+
+    "Apple wins $2B order" counts; "Why Apple stock is trading up today" does
+    not. Thresholds are expressed in catalysts so a set of pure price-recaps is
+    correctly treated as thin.
+    """
+    return sum(1 for h in items
+               if not is_price_recap(str(h.get("headline") or h.get("title") or "")))
 
 
 def filter_headlines(items: list[dict], ticker: str, company_name: str = "",

@@ -21,8 +21,9 @@ from core.advisor.base_rates import lookup as _lookup_base_rate
 from core.advisor.ollama_client import DEFAULT_ENDPOINT, DEFAULT_MODEL, classify_news
 from core.advisor.macro_context import build_market_context
 from core.advisor.news_cache import load_fresh_news, save_news
-from core.advisor.news_fetcher import (MIN_RELEVANT, fetch_sec_filings,
-                                       filter_headlines, gather_ticker_news)
+from core.advisor.news_fetcher import (MIN_CATALYSTS, catalyst_count,
+                                       fetch_sec_filings, filter_headlines,
+                                       gather_ticker_news)
 from core.advisor.news_query import build_queries, generate_queries, split_headlines
 from core.advisor.rubric import apply_news, score_rubric
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict, NewsRead
@@ -170,10 +171,12 @@ def _resolve_headlines(ticker: str, ctx: AdvisorContext, company_name: str = "")
         # load_fresh_news merges the raw per-source sections verbatim, so a cache
         # hit must go through the SAME gate as a fresh gather — otherwise it
         # serves wrong-company leakage, cross-section duplicates and an uncapped
-        # list straight to the model. Too thin after filtering → refetch below
-        # (which also engages the keyed backstops) rather than serve a stub.
+        # list straight to the model. Fewer than MIN_CATALYSTS real (non-recap)
+        # headlines → refetch below (which engages the keyed backstops) rather
+        # than serve a stub. Same-ticker cache hits inside the TTL are rare
+        # (news is gathered per fired entry), so the refetch cost is small.
         kept = filter_headlines(cached, ticker, company_name, limit=ctx.max_headlines)
-        if len(kept) >= MIN_RELEVANT:
+        if catalyst_count(kept) >= MIN_CATALYSTS:
             return kept
     heads = gather_ticker_news(
         ticker, company_name,
