@@ -221,11 +221,33 @@ def test_sfloat_safe():
 # ── headline resolution chain ────────────────────────────────────────────────
 
 def test_resolve_headlines_prefers_cache(monkeypatch):
-    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: [{"headline": "cached"}])
+    # A cache hit is served WITHOUT refetching — but only once it clears the same
+    # relevance gate as a fresh gather, so the fixture must be real AAPL news
+    # (a placeholder headline naming no company is now correctly discarded; see
+    # test_resolve_headlines_refetches_when_cache_is_irrelevant).
+    cached = [{"headline": "Apple unveils new M5 chip lineup", "source": "Reuters"},
+              {"headline": "Apple (AAPL) wins appeal in EU tax case", "source": "Reuters"}]
+    monkeypatch.setattr(service, "load_fresh_news", lambda *a, **k: list(cached))
     monkeypatch.setattr(service, "gather_ticker_news",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fetch")))
     ctx = service.AdvisorContext(enabled=True)
-    assert service._resolve_headlines("AAPL", ctx) == [{"headline": "cached"}]
+    assert service._resolve_headlines("AAPL", ctx, "Apple Inc.") == cached
+
+
+def test_resolve_headlines_refetches_when_cache_is_irrelevant(monkeypatch):
+    # The old contract returned ANY cached blob verbatim. A cache full of
+    # wrong-company headlines must now be discarded and refetched instead of
+    # being handed to the model.
+    monkeypatch.setattr(service, "load_fresh_news",
+                        lambda *a, **k: [{"headline": "Nvidia beats on earnings",
+                                          "source": "Yahoo"}])
+    monkeypatch.setattr(service, "gather_ticker_news",
+                        lambda *a, **k: [{"headline": "Apple raises dividend",
+                                          "source": "Reuters"}])
+    monkeypatch.setattr(service, "save_news", lambda *a, **k: None)
+    ctx = service.AdvisorContext(enabled=True)
+    out = service._resolve_headlines("AAPL", ctx, "Apple Inc.")
+    assert out == [{"headline": "Apple raises dividend", "source": "Reuters"}]
 
 
 def test_resolve_headlines_gathers_and_caches(monkeypatch):
