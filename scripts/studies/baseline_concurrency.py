@@ -131,6 +131,27 @@ def main() -> None:
         bar = "#" * max(1, int(60 * hist[n] / len(active)))
         print(f"    {n:>2} open : {hist[n]:>5} days  {hist[n] / len(active):5.1%}  {bar}")
 
+    # ── the pool top_k actually chooses from ─────────────────────────────────
+    # Open-position count is NOT the quantity that decides whether top_k binds.
+    # top_k filters the candidates QUEUED ON A BAR; if that queue is usually
+    # shorter than K, selection never fires and an A/B measures a no-op.
+    ch = res.candidate_hist
+    tot_bars = sum(ch.values())
+    tot_cands = sum(n * c for n, c in ch.items())
+    print("\n  candidates queued per bar (the pool top_k selects from)")
+    if tot_bars:
+        for n in sorted(ch):
+            share = ch[n] / tot_bars
+            bar = "#" * max(1, int(50 * share))
+            print(f"    {n:>2} queued : {ch[n]:>5} bars  {share:5.1%}  {bar}")
+        mean_c = tot_cands / tot_bars
+        print(f"  bars with >=1 candidate : {tot_bars}")
+        print(f"  mean queue length       : {mean_c:.2f}")
+        for probe in (2, 3, 4, 5):
+            binds = sum(c for n, c in ch.items() if n > probe)
+            print(f"  bars where K={probe} would bind : {binds:>5}  "
+                  f"({binds / tot_bars:5.1%} of candidate bars)")
+
     print("\n  " + "-" * 70)
     print(f"  >>> K = {k}   (round of mean active concurrency {mean_active:.3f})")
     if k < MIN_VIABLE_K:

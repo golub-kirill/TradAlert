@@ -214,6 +214,11 @@ class PortfolioResult:
     # "lost on risk budget" are different findings: the first is the treatment
     # working, the second is the book being full.
     rank_dropped: int = 0
+    # Histogram {candidates_queued: bars} measured BEFORE any rank or budget
+    # filtering, over bars where at least one entry was queued. This is the pool
+    # top_k actually chooses from — a different quantity from the open-position
+    # count, and the one that decides whether a given K can ever bind.
+    candidate_hist: dict = field(default_factory=dict)
     # Positions still open when resolve_tail_bars ran out (force-closed at
     # open_eod). Non-zero means the tail cap bound and some trades are still
     # truncated — the residual of the very effect the tail removes.
@@ -612,6 +617,9 @@ class PortfolioBacktester:
                     )
             else:
                 fillable = [tk for tk in pending_entries if D in date_sets[tk]]
+                if fillable:
+                    n_c = len(fillable)
+                    result.candidate_hist[n_c] = result.candidate_hist.get(n_c, 0) + 1
                 if self._cfg.top_k is not None:
                     fillable, dropped = self._rank_select(fillable, D)
                     for tk in dropped:
