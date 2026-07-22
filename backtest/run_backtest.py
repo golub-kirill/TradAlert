@@ -335,6 +335,7 @@ def main() -> None:
                 joint_samples=args.wf_joint,
                 joint_knobs=args.wf_joint_knobs,
                 joint_seed=args.wf_seed,
+                embargo_bars=args.wf_embargo_bars,
             )
             wf_report = wfe.run(progress=_progress)
 
@@ -529,6 +530,12 @@ def _parse_args() -> argparse.Namespace:
                         "is printed in the report tag — re-running with several "
                         "seeds and quoting the prettiest degradation reintroduces "
                         "the selection bias this mode exists to measure.")
+    p.add_argument("--wf-embargo-bars", type=int, default=0, metavar="B",
+                   help="With --walk-forward: trading bars to skip between the IS "
+                        "window and the OOS window, so a config is not scored on a "
+                        "market state contiguous with the one it was tuned on. "
+                        "Default 0 (adjacent sessions). Pre-registered setting is "
+                        "25 = max_hold_days, the label-horizon bound.")
     p.add_argument("--wf-no-retune", action="store_true",
                    help="With --walk-forward: skip the per-window re-tune sweep and "
                         "run the FIXED current config on each IS/OOS window "

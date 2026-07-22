@@ -237,6 +237,14 @@ class SweepPoint:
     elapsed_s: float = 0.0
     trades: list[Trade] = field(default_factory=list)
 
+    # Walk-forward hygiene counters, carried up from PortfolioResult so they are
+    # readable per sweep point instead of dying with the run. `purged_trades`
+    # preferentially removes long-held (under "if_not_profit", winning) trades,
+    # so an IS point that purged a lot is one whose statistics lost right tail —
+    # it has to be readable next to the E[R] it produced.
+    purged_trades: int = 0
+    tail_truncated: int = 0
+
     # Full {dotted: value} mutation set behind this point. OFAT points carry
     # their single knob; joint points carry every mutated knob — the
     # walk-forward OOS leg replays exactly this dict.
@@ -805,6 +813,8 @@ class SweepEngine:
         return _collect_point(
             result.trades, run_id, param_name, param_value, param_label,
             group, is_baseline, len(self._universe.prepped), t0,
+            purged_trades=result.purged_trades,
+            tail_truncated=result.tail_truncated,
         )
 
 
@@ -814,6 +824,7 @@ _PORT_FIELDS = frozenset({
     "max_open_risk", "start_date", "end_date", "earnings_aware",
     "close_open_at_eod", "entry_slippage_pct", "exit_slippage_pct", "commission_r",
     "max_hold_days", "max_hold_mode",
+    "resolve_tail_bars", "purge_exit_from",
     "trail_atr_mult", "trail_activate_r",
     "breakeven_trigger_r", "breakeven_buffer_atr",
     "correlation_cap", "correlation_lookback_days",
@@ -890,7 +901,8 @@ def _build_port_config(port_params: dict, run_id: str):
 
 
 def _collect_point(trades, run_id, param_name, param_value, param_label,
-                   group, is_baseline, n_tickers, t0) -> SweepPoint:
+                   group, is_baseline, n_tickers, t0,
+                   purged_trades: int = 0, tail_truncated: int = 0) -> SweepPoint:
     """Compute stats + group breakdowns and assemble the SweepPoint for one job."""
     stats = compute_stats(trades)
     elapsed = time.time() - t0
@@ -915,6 +927,8 @@ def _collect_point(trades, run_id, param_name, param_value, param_label,
         n_tickers=n_tickers,
         elapsed_s=elapsed,
         trades=trades,
+        purged_trades=purged_trades,
+        tail_truncated=tail_truncated,
     )
 
 

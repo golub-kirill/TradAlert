@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable
@@ -77,10 +78,16 @@ class WFWindow:
     is_end: date
     oos_start: date
     oos_end: date
+    # Trading bars skipped between is_end and oos_start (0 = adjacent sessions).
+    # Recorded per window so a report can state the embargo actually applied
+    # rather than the one requested — they differ at the end of the data.
+    embargo_bars: int = 0
 
     @property
     def label(self) -> str:
-        return f"W{self.index:02d}  IS={self.is_start}→{self.is_end}  OOS={self.oos_start}→{self.oos_end}"
+        gap = f"  embargo={self.embargo_bars}b" if self.embargo_bars else ""
+        return (f"W{self.index:02d}  IS={self.is_start}→{self.is_end}  "
+                f"OOS={self.oos_start}→{self.oos_end}{gap}")
 
     @property
     def is_years(self) -> float:
@@ -296,6 +303,7 @@ class WalkForwardEngine:
             joint_samples: int = 0,
             joint_knobs: int = 3,
             joint_seed: int = 1337,
+            embargo_bars: int = 0,
     ) -> None:
         self._universe = universe
         self._base_cfg = base_cfg
@@ -314,6 +322,14 @@ class WalkForwardEngine:
         # Parallel workers for the per-window re-tune sweep. 0/1 = sequential.
         # The baseline (re_tune=False) path runs single _run_one calls, no pool.
         self._n_workers = n_workers
+        # Embargo in TRADING bars between is_end and oos_start. 0 (default) =
+        # adjacent sessions, the historical behaviour. The pre-registered setting
+        # is max_hold_days (25) — the hard bound on the label horizon, hence the
+        # shortest gap that fully decorrelates the seam under max_hold_mode
+        # "hard". Under "if_not_profit" a winner may still outrun it; those
+        # trades are removed by the purge instead, and counted.
+        self._embargo_bars = max(0, int(embargo_bars))
+        self._calendar: list[date] | None = None
 
         # In-memory sweep cache keyed by (is_start, is_end)
         self._sweep_cache: dict[tuple[date, date], SweepPoint] = {}
@@ -328,6 +344,19 @@ class WalkForwardEngine:
 
     # ── public ────────────────────────────────────────────────────────────────
 
+    def _trading_days(self) -> list[date]:
+        """Union session calendar across the universe, ascending. Cached.
+
+        The embargo is specified in TRADING bars (it mirrors a label horizon
+        measured in bars), so it has to be applied on sessions — a calendar-day
+        offset would silently vary with weekends and holidays.
+        """
+        if self._calendar is None:
+            days = {ts.date() for prep in self._universe.prepped.values()
+                    for ts in prep.df.index}
+            self._calendar = sorted(days)
+        return self._calendar
+
     def windows(self) -> list[WFWindow]:
         """Generate all IS/OOS window descriptors."""
         first = self._universe.date_range.first
@@ -335,6 +364,8 @@ class WalkForwardEngine:
 
         is_delta = timedelta(days=int(self._is_years * 365.25))
         oos_delta = timedelta(days=int(self._oos_years * 365.25))
+        cal = self._trading_days()
+        embargo = max(0, int(self._embargo_bars))
 
         windows: list[WFWindow] = []
         idx = 0
@@ -343,7 +374,16 @@ class WalkForwardEngine:
         while True:
             is_start = cursor
             is_end = is_start + is_delta
-            oos_start = is_end + timedelta(days=1)
+
+            # OOS opens on the first session after is_end, pushed out by the
+            # embargo. The gap absorbs trades still resolving at the seam, so a
+            # config is not scored on a market state contiguous with the one it
+            # was tuned on.
+            seam = bisect_right(cal, is_end)
+            oos_i = seam + embargo
+            if oos_i >= len(cal):
+                break
+            oos_start = cal[oos_i]
             oos_end = oos_start + oos_delta
 
             if oos_end > last:
@@ -355,6 +395,7 @@ class WalkForwardEngine:
                 is_end=is_end,
                 oos_start=oos_start,
                 oos_end=oos_end,
+                embargo_bars=oos_i - seam,
             ))
             idx += 1
 
@@ -390,7 +431,7 @@ class WalkForwardEngine:
             if self._re_tune:
                 is_pt, oos_pt, tuned = self._run_window_with_tuning(win, progress)
             else:
-                is_pt = self._run_window(win.is_start, win.is_end, win)
+                is_pt = self._run_window(win.is_start, win.is_end, win, purge=True)
                 oos_pt = self._run_window(win.oos_start, win.oos_end, win)
                 tuned = {}
 
@@ -424,11 +465,21 @@ class WalkForwardEngine:
             start: date,
             end: date,
             window: WFWindow,
+            *,
+            purge: bool = False,
     ) -> SweepPoint:
-        """Run baseline with date window and return a SweepPoint."""
+        """Run baseline with date window and return a SweepPoint.
+
+        ``purge`` is set for the IS leg only: an in-sample trade whose exit lands
+        on/after ``window.oos_start`` overlaps the test block and is dropped. The
+        OOS leg is never purged — there is no later training inside the window for
+        it to leak into, and trimming it would discard genuine results.
+        """
         port_params = dict(self._base_port_cfg)
         port_params["start_date"] = start
         port_params["end_date"] = end
+        if purge:
+            port_params["purge_exit_from"] = window.oos_start
 
         return self._engine._run_one(
             cfg=copy.deepcopy(self._base_cfg),
@@ -475,6 +526,11 @@ class WalkForwardEngine:
             sweep_engine._base_port = dict(original_port)
             sweep_engine._base_port["start_date"] = window.is_start
             sweep_engine._base_port["end_date"] = window.is_end
+            # Purge EVERY candidate, not just the winner: the sweep picks the
+            # best config by in-sample E[R], so leaving OOS-overlapping trades in
+            # would let the selection itself be made on contaminated statistics —
+            # the leak this whole change exists to close.
+            sweep_engine._base_port["purge_exit_from"] = window.oos_start
 
             if self._joint_samples > 0:
                 sweep_report = sweep_engine.run_random_joint(
