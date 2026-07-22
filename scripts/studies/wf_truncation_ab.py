@@ -50,7 +50,23 @@ def main() -> None:
     ap.add_argument("--snapshot", default="data/snapshot_2026-06-10")
     ap.add_argument("--embargo-bars", type=int, default=25)
     ap.add_argument("--start", default="2000-01-01")
+    ap.add_argument("--re-tune", action="store_true",
+                    help="Sweep each IS window and carry the winner to OOS. This is "
+                         "where the purge bites hardest — it filters EVERY candidate, "
+                         "so config selection itself changes. ~60x the work per window: "
+                         "budget hours, not minutes, and use --workers.")
+    ap.add_argument("--joint", type=int, default=0, metavar="N",
+                    help="With --re-tune: N random multi-knob configs per window "
+                         "instead of the ~60-config OFAT sweep. The cheap way to cover "
+                         "the re-tune path (N=20 is ~3x faster than OFAT).")
+    ap.add_argument("--workers", type=int, default=0, metavar="W",
+                    help="Parallel workers for the per-window sweep (--re-tune only; "
+                         "the no-retune path is sequential by construction).")
+    ap.add_argument("--legs", default="legacy,fixed,embargo",
+                    help="Comma-separated subset of legs to run. Each leg is a full "
+                         "walk-forward pass, so drop 'embargo' to halve a --re-tune run.")
     args = ap.parse_args()
+    want = {s.strip() for s in args.legs.split(",") if s.strip()}
 
     snap = _ROOT / args.snapshot
     base_cfg = yaml.safe_load((_ROOT / "config" / "filters.yaml").read_text(encoding="utf-8"))
@@ -90,10 +106,12 @@ def main() -> None:
         t0 = time.time()
         wfe = WalkForwardEngine(
             universe=uni, base_cfg=base_cfg, base_port_cfg=port,
-            is_years=3, oos_years=1, step_months=6, re_tune=False,
-            embargo_bars=embargo,
+            is_years=3, oos_years=1, step_months=6, re_tune=args.re_tune,
+            embargo_bars=embargo, n_workers=args.workers,
+            joint_samples=args.joint,
         )
-        rep = wfe.run()
+        rep = wfe.run(progress=(lambda m: print(f"    · {m}", flush=True))
+                      if args.re_tune else None)
         rows = rep.results
         is_er = [r.is_point.stats.expectancy_r for r in rows]
         oos_er = [r.oos_point.stats.expectancy_r for r in rows]
@@ -117,26 +135,41 @@ def main() -> None:
         return dict(label=label, n_is=n_is, n_oos=n_oos, is_er=mis, oos_er=moos,
                     deg=mis - moos, purged=purged, rows=rows)
 
+    mode = ("re-tune ON ("
+            + (f"joint {args.joint}/window" if args.joint else "OFAT")
+            + f", workers={args.workers})") if args.re_tune else "re-tune OFF"
     print("\n" + "=" * 74)
-    print("  Walk-forward truncation A/B — 3yr IS / 1yr OOS / 6mo step, re-tune OFF")
+    print(f"  Walk-forward truncation A/B — 3yr IS / 1yr OOS / 6mo step, {mode}")
     print("=" * 74)
 
-    legacy = leg("legacy  (truncate at edge)", tail_bars=0, embargo=0)
-    fixed = leg("fixed   (tail + purge)", tail_bars=252, embargo=0)
-    embar = leg(f"embargo (tail + purge + {args.embargo_bars}b)",
-                tail_bars=252, embargo=args.embargo_bars)
+    specs = [("legacy", "legacy  (truncate at edge)", 0, 0),
+             ("fixed", "fixed   (tail + purge)", 252, 0),
+             ("embargo", f"embargo (tail + purge + {args.embargo_bars}b)",
+              252, args.embargo_bars)]
+    done = {}
+    for key, label, tail_bars, embargo in specs:
+        if key in want:
+            done[key] = leg(label, tail_bars=tail_bars, embargo=embargo)
 
     print("\n" + "=" * 74)
     print("  EFFECT OF THE FIX")
     print("  " + "-" * 70)
     print(f"  {'leg':<30} {'IS E[R]':>9} {'OOS E[R]':>9} {'degradation':>12}")
-    for r in (legacy, fixed, embar):
+    for r in done.values():
         print(f"  {r['label']:<30} {r['is_er']:>+9.4f} {r['oos_er']:>+9.4f} {r['deg']:>+12.4f}")
     print("  " + "-" * 70)
-    print(f"  truncation fix moved degradation by {fixed['deg'] - legacy['deg']:+.4f} "
-          f"({_pct(legacy['deg'], fixed['deg'])})")
-    print(f"  embargo moved it a further            {embar['deg'] - fixed['deg']:+.4f}")
-    print(f"  IS trades purged (fixed / embargo)   : {fixed['purged']} / {embar['purged']}")
+    legacy, fixed, embar = done.get("legacy"), done.get("fixed"), done.get("embargo")
+    if legacy and fixed:
+        print(f"  truncation fix moved degradation by {fixed['deg'] - legacy['deg']:+.4f} "
+              f"({_pct(legacy['deg'], fixed['deg'])})")
+    if fixed and embar:
+        print(f"  embargo moved it a further            {embar['deg'] - fixed['deg']:+.4f}")
+    purged = "  ".join(f"{k}={r['purged']}" for k, r in done.items() if r['purged'])
+    print(f"  IS trades purged                     : {purged or '0 (legacy leg only)'}")
+    if args.re_tune:
+        print("\n  Re-tune leg: the purge filtered every IS sweep candidate, so any")
+        print("  change here is a change in which CONFIG each window selected — not")
+        print("  just in how the same config scored.")
     print("\n  Read: degradation is the walk-forward verdict. A leg that truncates its")
     print("  1-year OOS window harder than its 3-year IS window reports a degradation")
     print("  that is an artifact of the window edge, not of the strategy.")
