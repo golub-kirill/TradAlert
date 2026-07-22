@@ -158,6 +158,26 @@ class PortfolioConfig:
     # nothing survives past end_date, so there is nothing to purge. The two are one
     # change — letting trades resolve is what creates the overlap the purge removes.
     purge_exit_from: Optional[date] = None
+    # Cross-sectional top-K selection. None → OFF (baseline bit-identical): every
+    # candidate that clears its own gates competes for the budget in scan order.
+    # When set, only the K highest-ranked candidates on a bar may fill, turning
+    # selection from ABSOLUTE (each name clears its own gates) into RELATIVE
+    # (names compete against each other). The pre-registered structural lever —
+    # see docs/backtest_out/xsec_topk_prereg.md.
+    #
+    # K is fixed to the baseline's mean concurrency so the treatment deploys the
+    # same average risk: any other K changes average exposure, and exposure in
+    # R-space is Sharpe-neutral by construction, so a K-driven result would be a
+    # leverage artifact rather than a selection effect.
+    top_k: Optional[int] = None
+    # (dates x tickers) percentile ranks from build_rp_rank_matrix. Required for
+    # top_k; without it top_k is inert rather than an error, so a misconfigured
+    # sweep degrades to baseline instead of silently ranking on nothing.
+    rank_matrix: Optional[object] = None
+    # Minimum names carrying a rank on a bar before top_k engages. The factor
+    # needs ~12 months of history, so the early cross-section is thin; ranking a
+    # handful of warmed-up names is noise, not selection.
+    rank_min_names: int = 50
     # Exit-side slippage. 0.0 → OFF (baseline bit-identical): exits fill at the
     # modeled price exactly, which is a KNOWN optimism (measured on the pinned
     # snapshot 2026-07-11: symmetric 0.002 costs −58.7R / −0.29 Sharpe). When set,
@@ -189,6 +209,11 @@ class PortfolioResult:
     # under max_hold_mode="if_not_profit" long holds are the winners, so a window
     # purging a large share is one whose in-sample statistics lost right tail.
     purged_trades: int = 0
+    # Candidates dropped by top_k rank selection (they also appear in
+    # capped_signals). Separated from budget caps because "lost on rank" and
+    # "lost on risk budget" are different findings: the first is the treatment
+    # working, the second is the book being full.
+    rank_dropped: int = 0
     # Positions still open when resolve_tail_bars ran out (force-closed at
     # open_eod). Non-zero means the tail cap bound and some trades are still
     # truncated — the residual of the very effect the tail removes.
@@ -358,6 +383,53 @@ class PortfolioBacktester:
         except (TypeError, ValueError):
             return 0.0
 
+    # ── cross-sectional selection helper ──────────────────────────────────
+
+    def _rank_select(self, fillable, D):
+        """Split this bar's fillable queue into (kept, dropped) by ``rank_matrix``.
+
+        Keeps the ``top_k`` highest-ranked candidates and returns the rest as
+        dropped. Ties and missing ranks fall back to the original queue order, so
+        the baseline's insertion-order tie-break still decides among equals rather
+        than something arbitrary like alphabetical ticker.
+
+        Point-in-time: the rank row read is the last one STRICTLY BEFORE ``D``.
+        These signals fired at the previous bar's close and fill at this bar's
+        open, so using row < D is the same information the engine had — reading
+        row D would be look-ahead.
+
+        Inert (returns everything) when the cross-section on that row is thinner
+        than ``rank_min_names``: ranking 5 warmed-up names in 2000 is noise, not
+        selection, and the pre-registration fixes that floor rather than letting
+        the early years quietly become a different strategy.
+        """
+        if len(fillable) <= self._cfg.top_k:
+            return fillable, []
+        mat = self._cfg.rank_matrix
+        if mat is None:
+            return fillable, []
+        idx = mat.index
+        pos = int(idx.searchsorted(D)) - 1        # strictly before D
+        if pos < 0:
+            return fillable, []
+        row = mat.iloc[pos]
+        if int(row.notna().sum()) < int(self._cfg.rank_min_names):
+            return fillable, []
+
+        order = {tk: i for i, tk in enumerate(fillable)}
+        ranked, unranked = [], []
+        for tk in fillable:
+            val = row.get(tk)
+            (ranked if val is not None and val == val else unranked).append(tk)
+        # Highest rank first; original queue position breaks ties.
+        ranked.sort(key=lambda tk: (-float(row[tk]), order[tk]))
+        keep = ranked[: self._cfg.top_k]
+        drop = ranked[self._cfg.top_k:] + unranked
+        keep_set = set(keep)
+        # Restore queue order among the kept names so budget contention resolves
+        # exactly as the baseline would among those same candidates.
+        return [tk for tk in fillable if tk in keep_set], drop
+
     # ── correlation-aware open-risk helper ────────────────────────────────
 
     def _effective_open_risk(self, open_trades, cand_ticker, cand_mult,
@@ -521,7 +593,10 @@ class PortfolioBacktester:
             # Pending entries at open, in queue (scan) order. The iteration
             # order is pending_entries insertion order — the order signals were
             # queued on the previous bar — which decides who wins the last
-            # budget slot on a contested bar. Do not re-sort.
+            # budget slot on a contested bar. Do not re-sort, EXCEPT under
+            # ``top_k``: cross-sectional selection re-orders this queue by rank
+            # on purpose, and that reordering is the treatment being tested. With
+            # top_k None (default) the original order is preserved exactly.
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
             if in_tail:
@@ -536,7 +611,14 @@ class PortfolioBacktester:
                         CappedSignal(D_date, ticker, pending_entries.pop(ticker))
                     )
             else:
-                for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
+                fillable = [tk for tk in pending_entries if D in date_sets[tk]]
+                if self._cfg.top_k is not None:
+                    fillable, dropped = self._rank_select(fillable, D)
+                    for tk in dropped:
+                        result.capped_signals.append(
+                            CappedSignal(D_date, tk, pending_entries.pop(tk)))
+                    result.rank_dropped += len(dropped)
+                for ticker in fillable:
                     if ticker in closed_this_bar:
                         pending_entries.pop(ticker, None)
                         continue
