@@ -206,3 +206,90 @@ def test_embargo_shortens_the_is_window_never_silently():
     quietly emit one with a smaller gap than requested."""
     for w in _wf_engine(25).windows():
         assert w.embargo_bars == 25
+
+
+# ── purge wiring: which legs get it ───────────────────────────────────────────
+
+def _captured_port_params(engine, monkeypatch):
+    """Record the port_params every _run_one call receives, without running a
+    backtest — the wiring is what is under test, not the walk."""
+    seen = []
+
+    def fake_run_one(*, cfg, port_params, param_name, param_value, param_label,
+                     group, is_baseline, mutations=None):
+        seen.append(dict(port_params))
+        return SimpleNamespace(
+            stats=SimpleNamespace(trades_count=0, expectancy_r=0.0, win_rate=0.0),
+            trades=[], purged_trades=0, tail_truncated=0,
+            is_baseline=is_baseline, mutations=mutations,
+            param_name=param_name, param_value=param_value,
+        )
+
+    monkeypatch.setattr(engine._engine, "_run_one", fake_run_one)
+    return seen
+
+
+def test_is_leg_purges_and_oos_leg_does_not(monkeypatch):
+    """The core invariant. IS must be purged at oos_start; OOS must not be
+    purged at all — dropping trades that resolve past oos_end would throw away
+    genuine out-of-sample results."""
+    eng = _wf_engine(0)
+    seen = _captured_port_params(eng, monkeypatch)
+    eng.run()
+
+    wins = eng.windows()
+    assert len(seen) == 2 * len(wins), "expected one IS and one OOS run per window"
+    for i, w in enumerate(wins):
+        is_params, oos_params = seen[2 * i], seen[2 * i + 1]
+        assert is_params["end_date"] == w.is_end
+        assert is_params["purge_exit_from"] == w.oos_start
+        assert oos_params["end_date"] == w.oos_end
+        assert oos_params["purge_exit_from"] is None
+
+
+def test_oos_leg_cannot_inherit_purge_from_base_port_cfg(monkeypatch):
+    """A caller putting purge_exit_from in base_port_cfg must not silently turn
+    the OOS purge on — 'OOS is unpurged' has to be an invariant of the engine,
+    not an accident of the caller."""
+    eng = _wf_engine(0)
+    eng._base_port_cfg = dict(eng._base_port_cfg, purge_exit_from=date(2011, 1, 1))
+    seen = _captured_port_params(eng, monkeypatch)
+    eng.run()
+
+    for oos_params in seen[1::2]:
+        assert oos_params["purge_exit_from"] is None
+
+
+def test_retune_purges_every_sweep_candidate(monkeypatch):
+    """The mechanism the PR turns on: the IS sweep picks the best config by
+    in-sample E[R], so EVERY candidate must be scored on purged trades. Leaving
+    the purge off here would reproduce the leak inside config selection, which
+    is worse than not purging at all — the leak would then be invisible."""
+    from backtest import walk_forward as wf_mod
+
+    eng = _wf_engine(0)
+    eng._re_tune = True
+    captured = []
+
+    class _FakeSweepEngine:
+        def __init__(self, universe, base_cfg, base_port_cfg, n_workers):
+            self._base_port = dict(base_port_cfg)
+
+        def run_ofat(self, grid, port_grid, progress=None):
+            captured.append(dict(self._base_port))
+            best = SimpleNamespace(
+                stats=SimpleNamespace(trades_count=99, expectancy_r=0.1, win_rate=0.5),
+                trades=[], purged_trades=0, tail_truncated=0,
+                is_baseline=False, mutations={}, param_name="p", param_value=1,
+            )
+            return SimpleNamespace(all_points=[best])
+
+    monkeypatch.setattr(wf_mod, "SweepEngine", _FakeSweepEngine)
+    _captured_port_params(eng, monkeypatch)
+    eng.run()
+
+    wins = eng.windows()
+    assert len(captured) == len(wins), "every IS window must run its own sweep"
+    for w, port in zip(wins, captured):
+        assert port["purge_exit_from"] == w.oos_start
+        assert port["end_date"] == w.is_end

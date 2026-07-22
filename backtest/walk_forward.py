@@ -478,8 +478,10 @@ class WalkForwardEngine:
         port_params = dict(self._base_port_cfg)
         port_params["start_date"] = start
         port_params["end_date"] = end
-        if purge:
-            port_params["purge_exit_from"] = window.oos_start
+        # Set explicitly on both branches: leaving the OOS leg to inherit
+        # whatever base_port_cfg happens to hold would make "OOS is unpurged" an
+        # accident of the caller rather than an invariant of this method.
+        port_params["purge_exit_from"] = window.oos_start if purge else None
 
         return self._engine._run_one(
             cfg=copy.deepcopy(self._base_cfg),
@@ -600,6 +602,12 @@ class WalkForwardEngine:
 
         port_params["start_date"] = start
         port_params["end_date"] = end
+        # The OOS leg is never purged: there is no later training inside the
+        # window for it to leak into, and dropping trades that resolve past
+        # oos_end would discard genuine results. Popped rather than merely left
+        # unset, so a caller that puts purge_exit_from in base_port_cfg cannot
+        # silently turn it on here.
+        port_params.pop("purge_exit_from", None)
 
         desc = ", ".join(f"{k}={v}" for k, v in mutations.items()) or "baseline"
 
