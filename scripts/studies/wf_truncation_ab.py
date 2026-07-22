@@ -130,16 +130,29 @@ def main() -> None:
         trunc_oos = sum(r.oos_point.tail_truncated for r in rows)
         eod_is = sum(1 for r in rows for t in r.is_point.trades if t.exit_reason == "open_eod")
         eod_oos = sum(1 for r in rows for t in r.oos_point.trades if t.exit_reason == "open_eod")
-        mis, moos = _mean(is_er), _mean(oos_er)
+        # Trade-weighted is the headline. An unweighted mean of per-window E[R]
+        # gives a 3-trade window the same vote as a 105-trade one, and windows
+        # that thin are common (a 1-year OOS block in a quiet regime). Measured
+        # 2026-07-22: the two disagreed by more than 2x on the degradation SHIFT
+        # (-6.8% unweighted vs -2.9% weighted). Both are printed; the gap between
+        # them is itself the read on window-size noise.
+        mis, moos = _weighted(rows, "is_point"), _weighted(rows, "oos_point")
+        umis, umoos = _mean(is_er), _mean(oos_er)
         # flush every line: a leg takes ~35 min and stdout is normally redirected
         # to a file, where block buffering would otherwise hide a completed leg's
         # numbers until the process exits.
         print(f"\n  {label}  ({len(rows)} windows, {time.time() - t0:.0f}s)", flush=True)
-        print(f"    IS  {n_is:>5}t  mean E[R] {mis:+.4f}   open_eod {eod_is:>4}  "
-              f"tail_trunc {trunc_is:>4}  purged {purged:>4}", flush=True)
-        print(f"    OOS {n_oos:>5}t  mean E[R] {moos:+.4f}   open_eod {eod_oos:>4}  "
-              f"tail_trunc {trunc_oos:>4}", flush=True)
-        print(f"    DEGRADATION (IS − OOS) : {mis - moos:+.4f}", flush=True)
+        print(f"    IS  {n_is:>5}t  E[R] {mis:+.4f} (unwtd {umis:+.4f})   "
+              f"open_eod {eod_is:>4}  tail_trunc {trunc_is:>4}  purged {purged:>4}",
+              flush=True)
+        print(f"    OOS {n_oos:>5}t  E[R] {moos:+.4f} (unwtd {umoos:+.4f})   "
+              f"open_eod {eod_oos:>4}  tail_trunc {trunc_oos:>4}", flush=True)
+        print(f"    DEGRADATION (IS − OOS) : {mis - moos:+.4f}  "
+              f"(unwtd {umis - umoos:+.4f})", flush=True)
+        thin = sum(1 for r in rows if r.oos_point.stats.trades_count < 20)
+        if thin:
+            print(f"    ! {thin}/{len(rows)} OOS windows hold <20 trades — "
+                  f"read the weighted figure", flush=True)
         return dict(label=label, n_is=n_is, n_oos=n_oos, is_er=mis, oos_er=moos,
                     deg=mis - moos, purged=purged, rows=rows)
 
@@ -183,6 +196,19 @@ def main() -> None:
     print("  1-year OOS window harder than its 3-year IS window reports a degradation")
     print("  that is an artifact of the window edge, not of the strategy.")
     print("=" * 74 + "\n")
+
+
+def _weighted(rows, leg: str) -> float:
+    """Trade-weighted mean E[R] across windows: Σ(n·E[R]) / Σn.
+
+    Equivalent to pooling every trade and taking one expectancy, so a window
+    contributes in proportion to the evidence it carries.
+    """
+    n = sum(getattr(r, leg).stats.trades_count for r in rows)
+    if not n:
+        return float("nan")
+    return sum(getattr(r, leg).stats.trades_count * getattr(r, leg).stats.expectancy_r
+               for r in rows) / n
 
 
 def _mean(xs):
