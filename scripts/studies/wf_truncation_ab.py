@@ -65,6 +65,13 @@ def main() -> None:
     ap.add_argument("--legs", default="legacy,fixed,embargo",
                     help="Comma-separated subset of legs to run. Each leg is a full "
                          "walk-forward pass, so drop 'embargo' to halve a --re-tune run.")
+    ap.add_argument("--step-months", type=int, default=6, metavar="M",
+                    help="Months between window starts (default 6, the production "
+                         "setting). Under --re-tune a fresh worker pool is spawned and "
+                         "the universe re-pickled PER WINDOW, so this dominates runtime: "
+                         "12 roughly halves both the window count and the wall clock. It "
+                         "also reduces IS/OOS overlap between adjacent windows, which "
+                         "makes the per-window selections more independent.")
     args = ap.parse_args()
     want = {s.strip() for s in args.legs.split(",") if s.strip()}
 
@@ -106,7 +113,8 @@ def main() -> None:
         t0 = time.time()
         wfe = WalkForwardEngine(
             universe=uni, base_cfg=base_cfg, base_port_cfg=port,
-            is_years=3, oos_years=1, step_months=6, re_tune=args.re_tune,
+            is_years=3, oos_years=1, step_months=args.step_months,
+            re_tune=args.re_tune,
             embargo_bars=embargo, n_workers=args.workers,
             joint_samples=args.joint,
         )
@@ -139,7 +147,8 @@ def main() -> None:
             + (f"joint {args.joint}/window" if args.joint else "OFAT")
             + f", workers={args.workers})") if args.re_tune else "re-tune OFF"
     print("\n" + "=" * 74)
-    print(f"  Walk-forward truncation A/B — 3yr IS / 1yr OOS / 6mo step, {mode}")
+    print(f"  Walk-forward truncation A/B — 3yr IS / 1yr OOS / "
+          f"{args.step_months}mo step, {mode}")
     print("=" * 74)
 
     specs = [("legacy", "legacy  (truncate at edge)", 0, 0),
