@@ -13,6 +13,7 @@ Public API
 ----------
 compute_rp_weighted_return(df) -> float
 build_rp_rank_table(universe_dfs, as_of) -> dict[str, float]
+build_rp_rank_matrix(universe_dfs) -> pd.DataFrame
 """
 
 from __future__ import annotations
@@ -104,3 +105,49 @@ def build_rp_rank_table(
         len(rank_table), as_of,
     )
     return rank_table
+
+
+def build_rp_rank_matrix(
+        universe_dfs: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """Percentile rank for EVERY ticker on EVERY date, as a (dates x tickers) frame.
+
+    Same factor and same ranking as ``build_rp_rank_table``, computed for the whole
+    history at once. That function re-slices and re-ranks per call, which is fine
+    for one live scan but unusable per-bar across a backtest (207 names x ~6600
+    bars); this is the vectorised form.
+
+    Each row is ranked independently across the tickers that have a value on that
+    date, so the cross-section grows as names warm up. Values are percentile ranks
+    in [0, 99]; NaN where the ticker lacks the ~12 months of history the factor
+    needs, and rows before any ticker warms up are all-NaN.
+
+    Point-in-time by construction: row ``t`` uses only closes up to and including
+    ``t``. A caller acting on the signal must still read the row STRICTLY BEFORE
+    the bar it trades on, exactly as the engine does.
+    """
+    weighted = {}
+    for ticker, df in universe_dfs.items():
+        if df is None or df.empty or "close" not in df:
+            continue
+        close = df["close"]
+        # Mirrors compute_rp_weighted_return: R_n = close_t / close_{t-n*21} - 1.
+        # shift() yields NaN for the warmup span, which is the vector equivalent of
+        # that function's "insufficient data -> NaN" guard.
+        total = None
+        for months, weight in _WEIGHTS.items():
+            ret = close / close.shift(months * _TRADING_DAYS_PER_MONTH) - 1.0
+            term = weight * ret
+            total = term if total is None else total + term
+        weighted[ticker] = total
+
+    if not weighted:
+        return pd.DataFrame()
+
+    frame = pd.DataFrame(weighted).sort_index()
+    ranks = frame.rank(axis=1, pct=True) * 99.0
+    logger.info(
+        "[rp_rank] built rank matrix: %d dates x %d tickers",
+        len(ranks), ranks.shape[1],
+    )
+    return ranks
