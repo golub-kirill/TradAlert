@@ -67,7 +67,10 @@ class PortfolioConfig:
                            watchlist size). Must be > 0. Budget B ≈ B full-size
                            positions.
     start_date           : Earliest entry date. None → warmup end.
-    end_date             : Latest entry date. None → end of data.
+    end_date             : Latest ENTRY date (no trade fills after it). None → end
+                           of data. Bars continue past it for ``resolve_tail_bars``
+                           so already-open positions exit on the real ladder — see
+                           that field.
     earnings_aware       : Reconstruct historical earnings for buffer gate.
     close_open_at_eod    : Force-close open trades at last bar.
     entry_slippage_pct   : Entry fill = bar_open × (1 + this). Default 0.
@@ -129,6 +132,32 @@ class PortfolioConfig:
     correlation_lookback_days: int = 60
     correlation_min_overlap: int = 40
     correlation_floor: float = 0.0
+    # Bars to keep walking PAST end_date so positions opened inside the window
+    # exit on the real ladder (stop/target/engine/time) instead of being force-
+    # closed at the edge. Only tickers holding a position are walked in the tail,
+    # and the walk stops as soon as the book is flat, so the cost is proportional
+    # to open positions rather than universe size.
+    #
+    # Truncating at end_date biases SHORT windows hardest — the force-closed count
+    # is ~the open-position count regardless of window length, so a 1-year window
+    # loses a ~3x larger share of its trades than a 3-year one. That asymmetry
+    # falls straight onto the walk-forward IS-vs-OOS degradation measure, which is
+    # the one quantity walk-forward exists to produce.
+    #
+    # 0 → legacy truncation (force-close at end_date). No effect when end_date is
+    # None: the walk already ends with the data, and close_open_at_eod there is the
+    # correct terminal behaviour rather than an artifact.
+    resolve_tail_bars: int = 252
+    # Purge (walk-forward): drop trades whose exit lands on/after this date from
+    # the RESULT, because their outcome overlaps the out-of-sample block and would
+    # otherwise leak into in-sample statistics and config selection. The walk
+    # itself stays causal — only the reported observations are filtered.
+    # None → no purge (default; the headline and every full-range run).
+    #
+    # Only meaningful together with resolve_tail_bars > 0: under legacy truncation
+    # nothing survives past end_date, so there is nothing to purge. The two are one
+    # change — letting trades resolve is what creates the overlap the purge removes.
+    purge_exit_from: Optional[date] = None
     # Exit-side slippage. 0.0 → OFF (baseline bit-identical): exits fill at the
     # modeled price exactly, which is a KNOWN optimism (measured on the pinned
     # snapshot 2026-07-11: symmetric 0.002 costs −58.7R / −0.29 Sharpe). When set,
@@ -155,6 +184,15 @@ class PortfolioResult:
     skipped: dict[str, str] = field(default_factory=dict)
     tickers_walked: int = 0
     bars_walked: int = 0
+    # Trades removed by PortfolioConfig.purge_exit_from. Reported rather than
+    # silently dropped: the purge preferentially removes LONG-held trades, and
+    # under max_hold_mode="if_not_profit" long holds are the winners, so a window
+    # purging a large share is one whose in-sample statistics lost right tail.
+    purged_trades: int = 0
+    # Positions still open when resolve_tail_bars ran out (force-closed at
+    # open_eod). Non-zero means the tail cap bound and some trades are still
+    # truncated — the residual of the very effect the tail removes.
+    tail_truncated: int = 0
 
 
 # ── drawdown circuit-breaker helper ──────────────────────────────────────────
@@ -392,8 +430,15 @@ class PortfolioBacktester:
         timeline = sorted({ts for prep in prepped.values() for ts in prep.df.index})
         if self._cfg.start_date:
             timeline = [t for t in timeline if t.date() >= self._cfg.start_date]
-        if self._cfg.end_date:
-            timeline = [t for t in timeline if t.date() <= self._cfg.end_date]
+        # end_date is the ENTRY cutoff, not the last bar. Bars past it form the
+        # resolution tail: exits still process, no entry ever fills. `tail_bars`
+        # caps it; whatever is still open at the cap force-closes at open_eod.
+        entry_cutoff = self._cfg.end_date
+        if entry_cutoff:
+            in_window = [t for t in timeline if t.date() <= entry_cutoff]
+            tail_n = max(0, int(self._cfg.resolve_tail_bars or 0))
+            tail = [t for t in timeline if t.date() > entry_cutoff][:tail_n]
+            timeline = in_window + tail
         if not timeline:
             return result
 
@@ -417,9 +462,17 @@ class PortfolioBacktester:
                 return float(price)
             return float(price) * ((1.0 + xslip) if direction == "short" else (1.0 - xslip))
 
-        for D in timeline:
+        for bar_i, D in enumerate(timeline):
             D_date = D.date()
+            # Resolution tail: past the entry cutoff. Exits only — and once the
+            # book is flat nothing further can happen, so stop rather than walk
+            # the remaining tail bars.
+            in_tail = entry_cutoff is not None and D_date > entry_cutoff
+            if in_tail and not open_trades:
+                break
             active = [tk for tk in prepped if D in date_sets[tk]]
+            if in_tail:
+                active = [tk for tk in active if tk in open_trades]
             if not active:
                 continue
 
@@ -471,7 +524,12 @@ class PortfolioBacktester:
             # budget slot on a contested bar. Do not re-sort.
             # Drawdown circuit breaker
             dd_gate.reset_for_new_bar()
-            if dd_gate.blocked:
+            if in_tail:
+                # Past the entry cutoff: anything still queued would fill with an
+                # entry_date beyond the window, so it is discarded rather than
+                # capped (it lost to the calendar, not to the risk budget).
+                pending_entries.clear()
+            elif dd_gate.blocked:
                 # Skip entry fills but still process exits
                 for ticker in [tk for tk in pending_entries if D in date_sets[tk]]:
                     result.capped_signals.append(
@@ -623,7 +681,16 @@ class PortfolioBacktester:
                         breakeven_buffer_atr=self._cfg.breakeven_buffer_atr,
                     )
 
-            # Engine signal at close
+            # Engine signal at close. A signal fires here and FILLS on the next
+            # bar, so it may only be queued while that next bar is still inside
+            # the entry window — otherwise the trade would carry an entry_date
+            # past the cutoff. Exits are never gated: a position opened in the
+            # window must be allowed to close.
+            can_queue_entry = not in_tail and (
+                entry_cutoff is None
+                or (bar_i + 1 < len(timeline)
+                    and timeline[bar_i + 1].date() <= entry_cutoff)
+            )
             for ticker in active:
                 if ticker in closed_this_bar:
                     continue
@@ -645,10 +712,17 @@ class PortfolioBacktester:
                     continue
                 if held and signal.direction in ("exit_long", "exit_short"):
                     pending_exits.add(ticker)
-                elif not held and signal.direction in ("long", "short"):
+                elif not held and can_queue_entry and signal.direction in ("long", "short"):
                     pending_entries[ticker] = signal
 
-        # Force-close remaining open trades
+        # Force-close remaining open trades. On a WINDOWED run these are the
+        # positions the resolution tail could not see out (tail cap reached, or
+        # the ticker ran out of bars) — the residual truncation, counted so it is
+        # visible instead of assumed immaterial. Only counted when an entry cutoff
+        # exists: at the true end of data a forced close is correct terminal
+        # behaviour, not an artifact, so a full-range run must report 0 here.
+        if open_trades and entry_cutoff is not None:
+            result.tail_truncated = len(open_trades)
         if self._cfg.close_open_at_eod and open_trades:
             last_D = timeline[-1]
             for ticker, trade in list(open_trades.items()):
@@ -666,6 +740,17 @@ class PortfolioBacktester:
                 result.trades.append(closed)
                 self._record_close(closed)
                 dd_gate.record(closed.effective_r)
+
+        # Purge: a trade whose outcome resolves inside the out-of-sample block is
+        # not an independent in-sample observation. Filtering the RESULT (not the
+        # walk) keeps the replay causal while removing the contaminated rows from
+        # every downstream statistic and from config selection.
+        if self._cfg.purge_exit_from is not None:
+            cutoff = self._cfg.purge_exit_from
+            kept = [t for t in result.trades
+                    if t.exit_date is None or t.exit_date < cutoff]
+            result.purged_trades = len(result.trades) - len(kept)
+            result.trades = kept
 
         result.bars_walked = bars_walked
         return result
