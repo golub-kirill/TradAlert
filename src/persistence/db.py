@@ -211,6 +211,42 @@ def latest_scan_run() -> dict | None:
             conn.close()
 
 
+_PREV_REGIME_ADVISORY_SQL = """
+                            SELECT ticker
+                            FROM scan_results
+                            WHERE run_id = (SELECT MAX(id) FROM scan_runs WHERE id < %(run_id)s)
+                              AND passed = 1
+                              AND signal_type = 'regime'
+                              AND signal_kind IN ('exit_long', 'exit_short') \
+                            """
+
+
+def prev_regime_advisory_set(run_id: int) -> set[str] | None:
+    """Tickers the PREVIOUS scan run flagged with the blanket regime-flip exit.
+
+    Read-only; lets the Telegram push tell "regime episode already advised" from
+    "episode just started" without a state file — the scan journal IS the memory.
+    An empty set means the previous run advised nothing (episode start, or the
+    regime was BULL): the caller should send.
+
+    FAIL-OPEN: any DB error returns None (distinct from the empty set), and the
+    caller sends — a broken journal must degrade to the old repeat-every-scan
+    behaviour, never to silence.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor()
+        cursor.execute(_PREV_REGIME_ADVISORY_SQL, {"run_id": run_id})
+        return {str(t).upper() for (t,) in cursor.fetchall()}
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("prev_regime_advisory_set read skipped — %s", exc)
+        return None
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def save_scan_results(
         run_id: int,
         results: list[TickerResult],

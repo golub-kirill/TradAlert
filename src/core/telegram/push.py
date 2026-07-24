@@ -63,6 +63,18 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
     # EXIT cards (position-specific exits stay in `selected` and fire normally).
     selected, regime_exits = _split_regime_exits(selected, cfg.regime_flip_exit_mode)
     caution = regime_exits if cfg.regime_flip_exit_mode == "advisory" else []
+    # The same regime episode re-fires the caution on every scan (2-3x/day for as
+    # long as the regime stays non-BULL). Suppress the repeat: send only when the
+    # previous run advised nothing (episode start) or a NEW position entered the
+    # advisory set. The scan journal is the memory — this run is already
+    # journaled by the time we push, so "previous" = the run before run_id.
+    if caution and run_id is not None:
+        prev = _prev_advisory_set(run_id)
+        cur = {tr.ticker.upper() for tr, _k in caution}
+        if _is_repeat_advisory(prev, cur):
+            logger.info("[telegram] regime caution suppressed — same episode, "
+                        "no new positions (%d held, already advised)", len(cur))
+            caution = []
     if not selected and not caution and not cfg.send_stand_down:
         return
 
@@ -153,11 +165,58 @@ def _split_regime_exits(selected, mode: str):
     return kept, pulled
 
 
+def _is_repeat_advisory(prev: set | None, cur: set) -> bool:
+    """True when the previous scan already advised every position in ``cur``.
+
+    ``prev`` is None on a DB error → False (fail-open: send, degrading to the
+    old repeat-every-scan behaviour rather than to silence). An empty ``prev``
+    is an episode start → send. A new name in ``cur`` → send (the reader needs
+    to know the advisory set grew); names LEAVING the set need no message.
+    """
+    return bool(prev) and cur <= prev
+
+
+def _prev_advisory_set(run_id):
+    """Previous run's regime-advisory tickers via the journal; None on any error."""
+    try:
+        from persistence.db import prev_regime_advisory_set
+        return prev_regime_advisory_set(run_id)
+    except Exception as exc:  # noqa: BLE001 — dedup must never break the push
+        logger.warning("[telegram] advisory dedup lookup failed — sending: %s", exc)
+        return None
+
+
+def _is_weakening(tr) -> bool:
+    """Is this held long's OWN chart deteriorating (vs merely regime-flagged)?
+
+    Weakening = the ticker's trend is no longer UPTREND, or its MACD histogram
+    has gone negative on the scan bar. The blanket regime exit flags every held
+    long identically; this is the per-position read that separates a broken
+    chart from an RSI-70 uptrend that only the INDEX vote turned against.
+    Missing fields count as healthy — an incomplete scan row must not shout.
+    """
+    s = getattr(tr, "signal", None)
+    trend = str(getattr(s, "ticker_trend", "") or "")
+    if trend and trend != "UPTREND":
+        return True
+    hist = getattr(getattr(tr, "scan", None), "macd_hist", None)
+    try:
+        return hist is not None and float(hist) < 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _caution_message(caution, regime_label):
-    """Render the consolidated caution, split by direction (longs vs short covers)."""
+    """Render the consolidated caution, split by direction (longs vs short covers).
+
+    Longs additionally split into weakening vs still-trending on their own chart.
+    """
     longs = [tr.ticker for tr, k in caution if k == "exit_long"]
     shorts = [tr.ticker for tr, k in caution if k == "exit_short"]
-    return fmt.format_regime_caution(longs, shorts, regime_label=regime_label)
+    weakening = [tr.ticker for tr, k in caution
+                 if k == "exit_long" and _is_weakening(tr)]
+    return fmt.format_regime_caution(longs, shorts, regime_label=regime_label,
+                                     weakening=weakening)
 
 
 # ── async send ───────────────────────────────────────────────────────────────────
