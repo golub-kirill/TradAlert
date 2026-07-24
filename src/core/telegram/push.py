@@ -64,16 +64,19 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
     selected, regime_exits = _split_regime_exits(selected, cfg.regime_flip_exit_mode)
     caution = regime_exits if cfg.regime_flip_exit_mode == "advisory" else []
     # The same regime episode re-fires the caution on every scan (2-3x/day for as
-    # long as the regime stays non-BULL). Suppress the repeat: send only when the
-    # previous run advised nothing (episode start) or a NEW position entered the
-    # advisory set. The scan journal is the memory — this run is already
-    # journaled by the time we push, so "previous" = the run before run_id.
+    # long as the regime stays non-BULL). Suppress the repeat — but keyed on what
+    # was DELIVERED, not on what fired: the scan journal can't tell a sent
+    # caution from a failed push, and suppressing an episode the reader never
+    # saw would silence it entirely. Send when no caution was ever delivered,
+    # when a BULL run since the last delivery started a new episode, or when a
+    # NEW position entered the advisory set; a failed send leaves no delivery
+    # record, so the next scan retries automatically.
+    cur_caution_set = {tr.ticker.upper() for tr, _k in caution} if caution else set()
     if caution and run_id is not None:
-        prev = _prev_advisory_set(run_id)
-        cur = {tr.ticker.upper() for tr, _k in caution}
-        if _is_repeat_advisory(prev, cur):
+        if _is_repeat_advisory(_caution_state(), cur_caution_set):
             logger.info("[telegram] regime caution suppressed — same episode, "
-                        "no new positions (%d held, already advised)", len(cur))
+                        "already delivered, no new positions (%d held)",
+                        len(cur_caution_set))
             caution = []
     if not selected and not caution and not cfg.send_stand_down:
         return
@@ -87,9 +90,15 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
     rejections = (stand_down or {}).get("rejection_gates") or None
 
     try:
-        asyncio.run(_send_all(token, chat_id, cfg, selected, len(results),
-                              risk_on, n_open, regime_label, rday, rejections, run_id,
-                              caution))
+        caution_sent = asyncio.run(
+            _send_all(token, chat_id, cfg, selected, len(results),
+                      risk_on, n_open, regime_label, rday, rejections, run_id,
+                      caution))
+        # Journal the DELIVERY only after the send returned — an exception above
+        # leaves no record, so the next scan re-sends rather than suppressing an
+        # episode the reader never saw (at-least-once, never at-most-zero).
+        if caution_sent and caution and run_id is not None:
+            _record_caution(run_id, cur_caution_set)
     except Exception as exc:  # broad on purpose — alerting must never break the scan
         logger.warning("[telegram] push failed (scan unaffected) — %s", exc)
 
@@ -165,25 +174,39 @@ def _split_regime_exits(selected, mode: str):
     return kept, pulled
 
 
-def _is_repeat_advisory(prev: set | None, cur: set) -> bool:
-    """True when the previous scan already advised every position in ``cur``.
+def _is_repeat_advisory(state: tuple[set, bool] | None, cur: set) -> bool:
+    """True when the last DELIVERED caution already covered every position in ``cur``.
 
-    ``prev`` is None on a DB error → False (fail-open: send, degrading to the
-    old repeat-every-scan behaviour rather than to silence). An empty ``prev``
-    is an episode start → send. A new name in ``cur`` → send (the reader needs
-    to know the advisory set grew); names LEAVING the set need no message.
+    ``state`` is ``(delivered_set, bull_run_since_delivery)`` from
+    ``last_caution_state``, or None when nothing was ever delivered / the DB is
+    unreachable / the table doesn't exist yet → False (fail-open: send; the old
+    repeat-every-scan behaviour, never silence). A BULL run after the delivery
+    means a NEW episode → send even for the same set. A new name in ``cur`` →
+    send (the reader needs to know the set grew); names LEAVING need no message.
     """
-    return bool(prev) and cur <= prev
+    if not state or not cur:
+        return False
+    delivered, bull_since = state
+    return not bull_since and bool(delivered) and cur <= delivered
 
 
-def _prev_advisory_set(run_id):
-    """Previous run's regime-advisory tickers via the journal; None on any error."""
+def _caution_state():
+    """Last delivered caution + episode-boundary flag; None on any error."""
     try:
-        from persistence.db import prev_regime_advisory_set
-        return prev_regime_advisory_set(run_id)
+        from persistence.db import last_caution_state
+        return last_caution_state()
     except Exception as exc:  # noqa: BLE001 — dedup must never break the push
-        logger.warning("[telegram] advisory dedup lookup failed — sending: %s", exc)
+        logger.warning("[telegram] caution-dedup lookup failed — sending: %s", exc)
         return None
+
+
+def _record_caution(run_id, tickers) -> None:
+    """Journal a delivered caution; failures only log (worst case: a re-send)."""
+    try:
+        from persistence.db import record_caution_sent
+        record_caution_sent(run_id, tickers)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telegram] caution delivery not recorded — %s", exc)
 
 
 def _is_weakening(tr) -> bool:
@@ -223,6 +246,9 @@ def _caution_message(caution, regime_label):
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
                     rejections=None, run_id=None, caution=None):
+    """Returns True iff the regime caution was actually sent — the caller records
+    the delivery only on True, so a failed push is retried next scan rather than
+    suppressed as already-seen."""
     from core.telegram.bot import TelegramNotifier
 
     caution = caution or []
@@ -232,11 +258,11 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
             if caution:
                 # Nothing else fired — send the regime caution on its own.
                 await nf.send_message(_caution_message(caution, regime_label))
-            else:
-                await nf.send_message(fmt.format_stand_down(
-                    rday, n_scanned=n_scanned, regime_label=regime_label,
-                    risk_on=risk_on, n_open=n_open, rejections=rejections))
-            return
+                return True
+            await nf.send_message(fmt.format_stand_down(
+                rday, n_scanned=n_scanned, regime_label=regime_label,
+                risk_on=risk_on, n_open=n_open, rejections=rejections))
+            return False
 
         n_long = sum(1 for _, k in selected if k == "long_entry")
         n_short = sum(1 for _, k in selected if k == "short_entry")
@@ -256,6 +282,8 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
         if caution:
             # One consolidated caution after the real cards, not N EXIT directives.
             await nf.send_message(_caution_message(caution, regime_label))
+            return True
+        return False
 
 
 # Telegram caps a photo CAPTION at 1024 chars (a plain message allows 4096).

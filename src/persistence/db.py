@@ -211,36 +211,83 @@ def latest_scan_run() -> dict | None:
             conn.close()
 
 
-_PREV_REGIME_ADVISORY_SQL = """
-                            SELECT ticker
-                            FROM scan_results
-                            WHERE run_id = (SELECT MAX(id) FROM scan_runs WHERE id < %(run_id)s)
-                              AND passed = 1
-                              AND signal_type = 'regime'
-                              AND signal_kind IN ('exit_long', 'exit_short') \
-                            """
+_INSERT_CAUTION_SQL = """
+                      INSERT INTO telegram_cautions (run_id, tickers)
+                      VALUES (%(run_id)s, %(tickers)s) \
+                      """
+
+_LAST_CAUTION_SQL = """
+                    SELECT run_id, tickers
+                    FROM telegram_cautions
+                    ORDER BY id DESC
+                    LIMIT 1 \
+                    """
+
+# Literal % in LIKE must be doubled under the %(name)s paramstyle.
+_BULL_SINCE_SQL = """
+                  SELECT 1
+                  FROM scan_runs
+                  WHERE id > %(run_id)s
+                    AND market_regime LIKE 'BULL%%'
+                  LIMIT 1 \
+                  """
 
 
-def prev_regime_advisory_set(run_id: int) -> set[str] | None:
-    """Tickers the PREVIOUS scan run flagged with the blanket regime-flip exit.
+def record_caution_sent(run_id: int, tickers) -> bool:
+    """Journal a regime caution as DELIVERED (call only after the send succeeded).
 
-    Read-only; lets the Telegram push tell "regime episode already advised" from
-    "episode just started" without a state file — the scan journal IS the memory.
-    An empty set means the previous run advised nothing (episode start, or the
-    regime was BULL): the caller should send.
+    The scan journal records that the advisory signal FIRED; this table records
+    that the reader actually received the message — the distinction the dedup
+    needs, or a failed episode-start push would suppress every later repeat and
+    the episode would never be seen.
 
-    FAIL-OPEN: any DB error returns None (distinct from the empty set), and the
-    caller sends — a broken journal must degrade to the old repeat-every-scan
-    behaviour, never to silence.
+    FAIL-OPEN: any DB error (including the table not existing yet — it is an
+    owner-applied migration) returns False; the worst case is a re-sent caution,
+    never a lost one.
     """
     conn = None
     try:
         conn = _connect()
         cursor = conn.cursor()
-        cursor.execute(_PREV_REGIME_ADVISORY_SQL, {"run_id": run_id})
-        return {str(t).upper() for (t,) in cursor.fetchall()}
+        cursor.execute(_INSERT_CAUTION_SQL, {
+            "run_id": run_id,
+            "tickers": ",".join(sorted(str(t).upper() for t in tickers)),
+        })
+        conn.commit()
+        return True
     except (MySQLError, ConfigError) as exc:
-        logger.warning("prev_regime_advisory_set read skipped — %s", exc)
+        logger.warning("record_caution_sent skipped — %s", exc)
+        return False
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def last_caution_state() -> tuple[set[str], bool] | None:
+    """(tickers of the last DELIVERED caution, did a BULL scan run happen since).
+
+    The pair is exactly what the dedup decision needs: a BULL run after the last
+    delivery means a new episode has started (send); otherwise a current set
+    covered by the delivered set is a same-episode repeat (suppress).
+
+    FAIL-OPEN: returns None on any DB error or when no caution was ever
+    delivered — the caller sends. A failed delivery leaves no row, so the next
+    scan retries the send instead of suppressing an unseen episode.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(_LAST_CAUTION_SQL)
+        row = cursor.fetchone()
+        if not row:
+            return None
+        delivered = {t for t in str(row["tickers"] or "").upper().split(",") if t}
+        cursor.execute(_BULL_SINCE_SQL, {"run_id": row["run_id"]})
+        bull_since = cursor.fetchone() is not None
+        return delivered, bull_since
+    except (MySQLError, ConfigError) as exc:
+        logger.warning("last_caution_state read skipped — %s", exc)
         return None
     finally:
         if conn and conn.is_connected():

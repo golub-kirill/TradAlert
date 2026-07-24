@@ -211,13 +211,70 @@ def _regime_exit_tr(ticker, ticker_trend="", macd_hist=None):
 
 
 def test_is_repeat_advisory_matrix():
-    # DB error (None) → send;  episode start (empty prev) → send;
-    # same/shrinking set → suppress;  NEW name → send.
+    # State = (delivered_set, bull_run_since_delivery) or None.
+    # Never delivered / DB error / table missing → send.
     assert push._is_repeat_advisory(None, {"KO"}) is False
-    assert push._is_repeat_advisory(set(), {"KO"}) is False
-    assert push._is_repeat_advisory({"KO", "BA"}, {"KO", "BA"}) is True
-    assert push._is_repeat_advisory({"KO", "BA"}, {"KO"}) is True
-    assert push._is_repeat_advisory({"KO"}, {"KO", "NVDA"}) is False
+    # Same episode, delivered superset → suppress (shrinking set too).
+    assert push._is_repeat_advisory(({"KO", "BA"}, False), {"KO", "BA"}) is True
+    assert push._is_repeat_advisory(({"KO", "BA"}, False), {"KO"}) is True
+    # NEW name entered the advisory set → send.
+    assert push._is_repeat_advisory(({"KO"}, False), {"KO", "NVDA"}) is False
+    # A BULL run since the delivery = new episode → send even for the same set.
+    assert push._is_repeat_advisory(({"KO", "BA"}, True), {"KO", "BA"}) is False
+    # Degenerate: empty delivered set / empty current set → send / no-op.
+    assert push._is_repeat_advisory((set(), False), {"KO"}) is False
+    assert push._is_repeat_advisory(({"KO"}, False), set()) is False
+
+
+def test_caution_delivery_recorded_only_on_successful_send(monkeypatch):
+    """A failed push must leave NO delivery record (so the next scan retries);
+    a successful one must record exactly the advised set."""
+    recorded = []
+    monkeypatch.setattr(push, "_record_caution",
+                        lambda run_id, tickers: recorded.append((run_id, set(tickers))))
+    monkeypatch.setattr(push, "_caution_state", lambda: None)   # never delivered → send
+    monkeypatch.setenv("TG_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TG_CHAT_ID", "12345")
+    from core import position_manager
+    monkeypatch.setattr(position_manager, "load_open_positions", lambda: {})
+
+    async def ok(*a, **k):
+        return True
+
+    monkeypatch.setattr(push, "_send_all", ok)
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=7)
+    assert recorded == [(7, {"ARX.TO"})]
+
+    recorded.clear()
+
+    async def boom(*a, **k):
+        raise RuntimeError("telegram outage")
+
+    monkeypatch.setattr(push, "_send_all", boom)
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=8)  # must not raise
+    assert recorded == []
+
+
+def test_suppressed_caution_is_not_recorded(monkeypatch):
+    """Suppression must not write a fresh delivery row — only real sends do."""
+    recorded = []
+    monkeypatch.setattr(push, "_record_caution",
+                        lambda run_id, tickers: recorded.append(run_id))
+    monkeypatch.setattr(push, "_caution_state", lambda: ({"ARX.TO"}, False))
+    monkeypatch.setenv("TG_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TG_CHAT_ID", "12345")
+    from core import position_manager
+    monkeypatch.setattr(position_manager, "load_open_positions", lambda: {})
+    sent = []
+
+    async def fake(*a, **k):
+        sent.append(1)
+        return True
+
+    monkeypatch.setattr(push, "_send_all", fake)
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=9)
+    assert recorded == []          # nothing recorded…
+    assert sent == []              # …because nothing needed sending at all
 
 
 def test_is_weakening_reads_own_trend_then_macd():
