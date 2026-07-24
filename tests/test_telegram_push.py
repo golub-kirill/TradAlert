@@ -197,3 +197,41 @@ def test_render_keeps_chart_within_caption_limit(monkeypatch):
     monkeypatch.setattr(push.fmt, "format_entry", lambda tr, **k: "short body")
     text, chart = push._render(_entry_tr(tier="LIVE"), "long_entry", risk_on=None, n_open=0)
     assert chart == "fake/chart.webp"
+
+
+# ── regime-caution dedup + weakening split ────────────────────────────────────
+
+
+def _regime_exit_tr(ticker, ticker_trend="", macd_hist=None):
+    s = SignalResult(passed=True, direction="exit_long", signal_type="regime",
+                     market_regime="CHOP_LOW", ticker_trend=ticker_trend,
+                     reason="regime flipped — exit held long")
+    return TickerResult(ticker, ScanResult(passed=True, close=50.0,
+                                           macd_hist=macd_hist), s)
+
+
+def test_is_repeat_advisory_matrix():
+    # DB error (None) → send;  episode start (empty prev) → send;
+    # same/shrinking set → suppress;  NEW name → send.
+    assert push._is_repeat_advisory(None, {"KO"}) is False
+    assert push._is_repeat_advisory(set(), {"KO"}) is False
+    assert push._is_repeat_advisory({"KO", "BA"}, {"KO", "BA"}) is True
+    assert push._is_repeat_advisory({"KO", "BA"}, {"KO"}) is True
+    assert push._is_repeat_advisory({"KO"}, {"KO", "NVDA"}) is False
+
+
+def test_is_weakening_reads_own_trend_then_macd():
+    assert push._is_weakening(_regime_exit_tr("BA", "CHOP")) is True         # trend broken
+    assert push._is_weakening(_regime_exit_tr("GS", "UPTREND", -0.4)) is True   # MACD down
+    assert push._is_weakening(_regime_exit_tr("CVX", "UPTREND", 0.6)) is False  # healthy
+    assert push._is_weakening(_regime_exit_tr("XX", "", None)) is False      # missing → healthy
+
+
+def test_caution_message_groups_weakening():
+    caution = [
+        (_regime_exit_tr("BA", "CHOP"), "exit_long"),
+        (_regime_exit_tr("CVX", "UPTREND", 0.6), "exit_long"),
+    ]
+    msg = push._caution_message(caution, "CHOP_LOW")
+    assert "weakening" in msg and "BA" in msg
+    assert "still trending" in msg and "CVX" in msg

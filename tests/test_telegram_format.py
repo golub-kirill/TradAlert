@@ -54,6 +54,29 @@ def test_regime_caution_singular_and_empty():
     assert fmt.format_regime_caution([], []) == ""
 
 
+def test_regime_caution_splits_weakening_from_still_trending():
+    out = _plain(fmt.format_regime_caution(
+        ["CVX", "BA", "EOG", "XLP"], regime_label="CHOP_LOW",
+        weakening=["ba", "XLP"]))          # case-insensitive subset
+    assert "weakening: BA, XLP" in out
+    assert "still trending: CVX, EOG" in out
+    assert "4 held longs" in out           # header still counts the full set
+
+
+def test_regime_caution_weakening_edge_groups():
+    # All weakening → no "still trending" line; empty weakening → no "weakening" line.
+    all_weak = _plain(fmt.format_regime_caution(["BA"], weakening=["BA"]))
+    assert "weakening: BA" in all_weak and "still trending" not in all_weak
+    none_weak = _plain(fmt.format_regime_caution(["CVX"], weakening=[]))
+    assert "still trending: CVX" in none_weak and "weakening" not in none_weak
+
+
+def test_regime_caution_without_weakening_keeps_legacy_flat_list():
+    out = _plain(fmt.format_regime_caution(["CVX", "BA"]))
+    assert "weakening" not in out and "still trending" not in out
+    assert "CVX, BA" in out
+
+
 def test_regime_caution_shorts_use_non_bear_wording():
     # A held-short regime cover fires when the regime turns non-BEAR — it must not
     # be labeled a "held long" under "non-BULL".

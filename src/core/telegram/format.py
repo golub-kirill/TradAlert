@@ -262,6 +262,7 @@ def format_regime_caution(
     shorts: Sequence[str] = (),
     *,
     regime_label: str | None = None,
+    weakening: Sequence[str] | None = None,
 ) -> str:
     """One consolidated caution for a broad regime-flip exit across held positions.
 
@@ -270,6 +271,13 @@ def format_regime_caution(
     the trader reviews and decides. Longs flip on a non-BULL regime, shorts cover
     on a non-BEAR regime (both can fire together in CHOP), so each side gets its
     own correctly-worded line. Empty on both sides → "" (caller skips the send).
+
+    ``weakening`` (optional): the subset of ``longs`` whose OWN chart is
+    deteriorating. When given, the long list is split into a "weakening" line and
+    a "still trending" line, so the caution carries per-position information —
+    the blanket regime signal flags an RSI-70 uptrend and a broken chart
+    identically, and the reader shouldn't have to open 12 charts to tell them
+    apart. None → the flat legacy list.
     """
     long_names = [str(t).upper() for t in longs if t]
     short_names = [str(t).upper() for t in shorts if t]
@@ -283,7 +291,16 @@ def format_regime_caution(
             f"Regime turned non-BULL{where} — {n} held long{'' if n == 1 else 's'} "
             "flagged for review."
         )
-        lines.append("🔎 " + ", ".join(_esc(t) for t in long_names))
+        if weakening is None:
+            lines.append("🔎 " + ", ".join(_esc(t) for t in long_names))
+        else:
+            weak = {str(t).upper() for t in weakening}
+            weak_names = [t for t in long_names if t in weak]
+            firm_names = [t for t in long_names if t not in weak]
+            if weak_names:
+                lines.append("📉 weakening: " + ", ".join(_esc(t) for t in weak_names))
+            if firm_names:
+                lines.append("🔎 still trending: " + ", ".join(_esc(t) for t in firm_names))
     if short_names:
         n = len(short_names)
         lines.append(
