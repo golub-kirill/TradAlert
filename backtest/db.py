@@ -304,6 +304,17 @@ _CONFIG_MATCH_EXCLUDE: tuple[str, ...] = (
 )
 
 
+def _excluded(key: str) -> bool:
+    """True when ``key`` is at or under an excluded subtree.
+
+    Matches on a DOT BOUNDARY, not a bare string prefix: the excluded names are
+    short and generic ("price", "volatility"), so `startswith` alone would also
+    swallow a future top-level block called `price_action` or `volatility_target`
+    — silently exempting it from the guard, the exact rot the denylist avoids.
+    """
+    return any(key == p or key.startswith(p + ".") for p in _CONFIG_MATCH_EXCLUDE)
+
+
 def _flatten(node, prefix: str = "") -> dict:
     out = {}
     for k, v in (node or {}).items():
@@ -342,7 +353,7 @@ def config_mismatch(config_json, shipped: dict | None = None) -> list[str] | Non
         return None
     diff = []
     for key in sorted(set(run) | set(shipped)):
-        if key.startswith(_CONFIG_MATCH_EXCLUDE):
+        if _excluded(key):
             continue
         if run.get(key) != shipped.get(key):
             diff.append(f"{key}: run={run.get(key)!r} shipped={shipped.get(key)!r}")
@@ -357,6 +368,28 @@ def _tag_config_match(row, shipped=None, diff=...):
     row["config_match"] = None if diff is None else not diff
     row["config_mismatch"] = diff or []
     return row
+
+
+def reference_caveat(ref, *, max_keys: int = 8) -> list[str]:
+    """Lines warning that ``ref`` measured a different strategy, or [] if it didn't.
+
+    EVERY consumer of ``reference_run`` must print these. The reference feeds the
+    displayed expected-hold range, the false-positive taxonomy and both
+    reconcilers; a mismatched arm silently poisons all of them, which is the
+    defect this whole mechanism exists to prevent. Shared here so the wording and
+    the truncation notice can't drift between call sites.
+    """
+    if not ref or ref.get("config_match") is not False:
+        return []
+    diff = ref.get("config_mismatch") or []
+    out = [f"⚠ Reference run {ref.get('id')} ran a DIFFERENT config from the shipped "
+           "filters.yaml — it measured a different strategy, so anything compared "
+           "against it is not like-for-like. Re-journal a baseline, or pass an "
+           "explicit run id:"]
+    out += [f"    {line}" for line in diff[:max_keys]]
+    if len(diff) > max_keys:
+        out.append(f"    … and {len(diff) - max_keys} more key(s)")
+    return out
 
 
 def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
@@ -394,9 +427,14 @@ def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
 
     shipped = _shipped_filters()
     diffs = [(r, config_mismatch(r.get("config_json"), shipped)) for r in full]
-    matched = [r for r, d in diffs if not d]      # [] (match) or None (unknown)
-    if matched:
-        return _tag_config_match(matched[0], shipped)
+    # A VERIFIED match outranks an UNVERIFIABLE row. Both are eligible, but
+    # `None` only means "no snapshot to check" — preferring it over a run whose
+    # config demonstrably matches would pick the weaker evidence, and nothing
+    # downstream warns on None.
+    for want_known in (True, False):
+        for row, d in diffs:
+            if d == [] if want_known else d is None:
+                return _tag_config_match(row, shipped, d)
     chosen = (full or off)[0]
     return _tag_config_match(chosen, shipped)
 
@@ -439,6 +477,14 @@ def expected_hold_range(cap: int = 25, fallback: tuple[int, int] | None = None) 
         ref = reference_run(cur)
         if ref is None:
             return fallback
+        if ref.get("config_match") is False:
+            # Display-only, so this does not fail the scan — but the hold range
+            # on every card would come from a strategy that is not the live one.
+            logger.warning(
+                "expected_hold_range: reference run %s ran a DIFFERENT config from "
+                "the shipped filters.yaml (%s) — the displayed hold range describes "
+                "that run, not the live strategy", ref.get("id"),
+                "; ".join(ref.get("config_mismatch") or [])[:200])
         cur.execute(
             "SELECT bars_held FROM backtest_trades "
             "WHERE run_id = %s AND bars_held IS NOT NULL", (ref["id"],)

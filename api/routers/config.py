@@ -73,7 +73,11 @@ _EDITABLE: dict[str, tuple[str, type, tuple[float, float] | None]] = {
 # Whitelisted keys that change TRADE COMPOSITION — i.e. editing one invalidates
 # the regression baseline until a paired A/B is re-run. Every `filters.*` key
 # qualifies by construction (the engine reads that file); the `settings.*` keys
-# left out are display/notification//layer toggles that do not alter entries.
+# left out are display / notification / layer toggles that do not alter entries.
+# NOTE `filters.signals.sector_gate.enabled` is flagged here but EXCLUDED from
+# backtest.db._CONFIG_MATCH_EXCLUDE: with an empty sector_map.yaml it changes no
+# trades, so it must not invalidate a reference run — but the panel stays
+# conservative, because populating the map would make it bite.
 _EDGE_DEFINING: frozenset[str] = frozenset(
     k for k in _EDITABLE if k.startswith("filters.")
 )
@@ -238,9 +242,14 @@ def write_config(body: ConfigWrite):
                 os.remove(tmp)
             except OSError:
                 pass
+        # A fault BETWEEN two os.replace calls leaves one file updated and one
+        # not — the documented residual gap, and precisely when "what landed?"
+        # is hardest to reconstruct. Record the attempt rather than nothing.
+        _record_provenance([{**e, "outcome": "failed", "error": str(exc)}
+                            for e in provenance])
         raise HTTPException(500, f"cannot write config: {exc}")
 
-    _record_provenance(provenance)
+    _record_provenance([{**e, "outcome": "applied"} for e in provenance])
     edge = sorted(k for k in written if k in _EDGE_DEFINING)
     if edge:
         logger.warning("[config] EDGE-DEFINING keys changed from the panel — the "

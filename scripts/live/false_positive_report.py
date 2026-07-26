@@ -294,6 +294,9 @@ def main() -> None:
     print("  FALSE-POSITIVE TAXONOMY  ·  live fills vs backtest reference")
     print("=" * 78)
     if ref is not None:
+        from backtest.db import reference_caveat
+        for line in reference_caveat(ref):
+            print(f"  {line}")
         _print_taxonomy(
             f"BACKTEST reference (run {ref['id']}, {ref['trades_count']} trades)",
             summarize(bt))

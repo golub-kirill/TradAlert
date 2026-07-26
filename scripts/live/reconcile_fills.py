@@ -168,12 +168,9 @@ def _print_report(result, exp, ref, open_positions, drift, commission_r):
               f"E[R] {bt_all:+.3f}, notes={ref['notes'] or '—'})")
         # A reference that ran a different config measured a different strategy,
         # so the drift below is not like-for-like. Never silent.
-        if ref.get("config_match") is False:
-            print("  ⚠ Reference config DIFFERS from the shipped filters.yaml — it "
-                  "measured a different strategy, so the drift below is NOT "
-                  "like-for-like. Re-journal a baseline, or pass --bt-run-id:")
-            for line in ref.get("config_mismatch", [])[:8]:
-                print(f"      {line}")
+        from backtest.db import reference_caveat
+        for line in reference_caveat(ref):
+            print(f"  {line}")
     skipped = []
     if result["no_stop"]:
         skipped.append(f"{result['no_stop']} no-stop")

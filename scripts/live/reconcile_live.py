@@ -80,10 +80,11 @@ def _max_open_risk() -> int:
 
 
 def _ref_run(cur, bt_run_id):
-    """Expectancy reference = the given backtest_runs id, else the latest scoring-OFF
-    FULL-WINDOW run (matching the live default; a windowed diagnostic can't hijack it),
-    else the newest overall. The chosen run is always printed by the caller so the
-    provenance is visible."""
+    """Expectancy reference = the given backtest_runs id, else the newest run that is
+    scoring-OFF, FULL-WINDOW **and ran the shipped config** (an A/B leg is not a
+    baseline — see backtest.db.reference_run), else the best available with the
+    shortfall tagged. The caller prints the chosen run AND ``reference_caveat(ref)``,
+    so both the provenance and any config divergence are visible."""
     from backtest.db import reference_run
     return reference_run(cur, bt_run_id)
 
@@ -251,7 +252,11 @@ def main() -> None:
           f"{'' if args.every_alert else '/engine-exit'}")
     print(f"  Expectancy reference: backtest_runs id={ref['id']} "
           f"({ref['start_date']}→{ref['end_date'] or 'latest'}, {ref['trades_count']} trades, "
-          f"E[R] {bt_all:+.3f}, notes={ref['notes'] or '—'})\n")
+          f"E[R] {bt_all:+.3f}, notes={ref['notes'] or '—'})")
+    from backtest.db import reference_caveat
+    for line in reference_caveat(ref):
+        print(f"  {line}")
+    print()
 
     fires = []  # resolved fires: dict(regime, signal_type, r, reason, ticker, entry_date, exit_date)
     pending = 0

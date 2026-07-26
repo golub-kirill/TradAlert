@@ -48,6 +48,60 @@ def test_provenance_records_old_and_new(tmp_path, monkeypatch):
     assert lines[0]["edge_defining"] is True and lines[1]["edge_defining"] is False
 
 
+@pytest.fixture
+def panel(tmp_path, monkeypatch):
+    """A real config dir + audit log the write path can operate on."""
+    (tmp_path / "settings.yaml").write_text(
+        "telegram:\n  enabled: true                 # push toggle\n", encoding="utf-8")
+    log = tmp_path / "config_audit.jsonl"
+    monkeypatch.setattr(cfgmod, "CONFIG", tmp_path)
+    monkeypatch.setattr(cfgmod, "AUDIT_LOG", log)
+    return log
+
+
+def _entries(log):
+    return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_successful_write_is_recorded_as_applied(panel):
+    body = cfgmod.ConfigWrite(updates={"settings.telegram.enabled": False})
+    assert cfgmod.write_config(body)["ok"] is True
+    [e] = _entries(panel)
+    assert (e["key"], e["old"], e["new"], e["outcome"]) == \
+        ("settings.telegram.enabled", True, False, "applied")
+
+
+def test_failed_commit_still_leaves_an_audit_record(panel, monkeypatch):
+    """A fault between the two os.replace calls leaves one file updated and one
+    not — the case where 'what actually landed?' is hardest to reconstruct. The
+    attempt must be recorded, tagged failed, not dropped."""
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cfgmod.os, "replace", _boom)
+    body = cfgmod.ConfigWrite(updates={"settings.telegram.enabled": False})
+    with pytest.raises(Exception):
+        cfgmod.write_config(body)
+    [e] = _entries(panel)
+    assert e["outcome"] == "failed" and "disk full" in e["error"]
+    assert e["key"] == "settings.telegram.enabled"
+
+
+def test_edge_defining_write_flags_a_regression_check(tmp_path, monkeypatch):
+    (tmp_path / "filters.yaml").write_text(
+        "trend:\n  ma_fast: 50                     # fast MA\n", encoding="utf-8")
+    monkeypatch.setattr(cfgmod, "CONFIG", tmp_path)
+    monkeypatch.setattr(cfgmod, "AUDIT_LOG", tmp_path / "config_audit.jsonl")
+    out = cfgmod.write_config(cfgmod.ConfigWrite(updates={"filters.trend.ma_fast": 40}))
+    assert out["requires_regression_check"] == ["filters.trend.ma_fast"]
+
+
+def test_operational_write_flags_nothing(panel):
+    out = cfgmod.write_config(cfgmod.ConfigWrite(
+        updates={"settings.telegram.enabled": False}))
+    assert out["requires_regression_check"] == []
+
+
 def test_provenance_appends_rather_than_truncates(tmp_path, monkeypatch):
     """The audit trail is the point — a second write must not erase the first."""
     log = tmp_path / "config_audit.jsonl"
