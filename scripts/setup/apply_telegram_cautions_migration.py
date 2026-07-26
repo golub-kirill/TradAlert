@@ -45,10 +45,17 @@ def ddl() -> str:
     if start < 0:
         raise SystemExit(f"{marker} not found in {SCHEMA} — schema and migration "
                          "are out of sync; fix the schema file first.")
-    end = text.find(";", start)
-    if end < 0:
-        raise SystemExit(f"unterminated CREATE TABLE for {TABLE} in {SCHEMA}")
-    return text[start:end].strip()
+    # Terminate on a statement-ending ';' — one at end of line, outside a comment.
+    # Scanning for the first bare ';' would truncate the DDL the moment a column
+    # default or an inline `-- note; …` comment contained one.
+    body: list[str] = []
+    for line in text[start:].splitlines():
+        code = line.split("--", 1)[0].rstrip()
+        body.append(line)
+        if code.endswith(";"):
+            statement = "\n".join(body)
+            return statement[:statement.rindex(";")].strip()
+    raise SystemExit(f"unterminated CREATE TABLE for {TABLE} in {SCHEMA}")
 
 
 def main() -> int:

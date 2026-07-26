@@ -73,6 +73,12 @@ export interface BacktestRun {
   notes: string | null;
   params?: ParamDiff[]; // run params that differed from the shipped config
   window?: string | null; // date window from the run's _meta
+  // Did this run measure the strategy that ships NOW? false = an experiment arm
+  // (e.g. an A/B leg with an extra gate on), so its headline numbers describe a
+  // different strategy. null = no config snapshot to check. Same definition as
+  // backtest.db.reference_run uses to pick the live expectancy reference.
+  config_match?: boolean | null;
+  config_mismatch?: string[];
 }
 
 export interface EquityPoint {

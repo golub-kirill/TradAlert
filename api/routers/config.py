@@ -89,7 +89,14 @@ _EDGE_DEFINING: frozenset[str] = frozenset(
 # config directory (every test that exercises a write) redirects the audit log
 # with it. Pinning it meant test runs appended invented entries — min_price
 # 1.0 -> 3.0 — straight into the production trail, which is worse than no trail.
+#
+# The derivation assumes the config dir sits beside the data dir, which holds for
+# the shipped layout (ROOT/config + ROOT/data). A deployment that points CONFIG
+# somewhere else entirely gets its audit log beside THAT directory, not in the
+# app's data dir — so the shipped path is resolved explicitly.
 def _audit_log() -> Path:
+    if CONFIG == ROOT / "config":
+        return ROOT / "data" / "config_audit.jsonl"
     return CONFIG.parent / "data" / "config_audit.jsonl"
 
 

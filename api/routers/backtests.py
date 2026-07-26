@@ -77,10 +77,20 @@ def backtests(limit: int = 20):
         "FROM backtest_runs ORDER BY id DESC LIMIT %s",
         (int(limit),),
     )
+    # config_match is the AUTHORITATIVE "did this run measure the strategy that
+    # ships now?" flag, shared with backtest.db.reference_run so the panel and the
+    # reconcilers cannot disagree about what a baseline is. (`params` above is a
+    # looser display diff — it includes scan gates, which the backtester never
+    # evaluates, so it flags runs that are in fact like-for-like.)
+    from backtest.db import config_mismatch
     for r in rows:
-        diff, window = _config_diff(r.pop("config_json", None))
+        raw = r.pop("config_json", None)
+        diff, window = _config_diff(raw)
         r["params"] = diff
         r["window"] = window
+        mismatch = config_mismatch(raw)
+        r["config_match"] = None if mismatch is None else not mismatch
+        r["config_mismatch"] = mismatch or []
     return rows
 
 

@@ -180,10 +180,14 @@ export const editPosition = (id: number, b: EditBody) =>
 // keys are edge-defining, and the server-side warning only reaches a log the
 // panel user never reads. Every write is also journaled to
 // data/config_audit.jsonl (old -> new, with an applied/failed outcome).
+// Optional on purpose: web/dist is built separately from the backend, so a panel
+// can be served against an older API that predates the field. Declaring it
+// required would let `res.requires_regression_check.length` compile and then
+// throw at runtime.
 export interface SaveConfigResult {
   ok: boolean;
   written: string[];
-  requires_regression_check: string[];
+  requires_regression_check?: string[];
 }
 export const saveConfig = (updates: Record<string, number | boolean | string>) =>
   request<SaveConfigResult>("/config", { method: "POST", ...body({ updates }) });

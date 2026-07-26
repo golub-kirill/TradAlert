@@ -6,12 +6,21 @@ import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api
 import { fnum, pct, rstr, signClass } from "../lib/format";
 
 export function Overview() {
-  const runs = useApi(() => getBacktests(1), []);
+  // Fetch several, not one: the newest journaled run is often an A/B leg, and
+  // headlining it puts an experiment arm's numbers on the dashboard as though
+  // they described the strategy. (Run 34 — a VIX-slope-gated leg — showed 44.32R
+  // here next to the baseline's 90.83R, which reads as a collapse in the edge.)
+  const runs = useApi(() => getBacktests(20), []);
   const positions = useApi(getPositions, []);
   const scan = useApi(getScannerLatest, []);
 
-  const r = runs.data?.[0];
+  const all = runs.data ?? [];
+  const newest = all[0];
+  // Newest run that measured the shipped config. `null` means "no snapshot to
+  // check" and stays eligible — refusing those would leave no baseline at all.
+  const r = all.find((x) => x.config_match !== false) ?? newest;
   const latestId = r?.id;
+  const skipped = newest && r && newest.id !== r.id ? newest : undefined;
   const monthly = useApi(() => (latestId ? getMonthly(latestId) : Promise.resolve(null)), [latestId]);
   const kpis: KpiItem[] = [
     { label: "Net total R", value: fnum(r?.total_r, 2), tone: (r?.total_r ?? 0) >= 0 ? "pos" : "neg" },
@@ -27,6 +36,21 @@ export function Overview() {
 
   return (
     <>
+      {skipped ? (
+        <div className="banner warn" role="status">
+          <i className="ti ti-flask" />
+          <div>
+            <strong>
+              Showing run #{latestId} — the newest baseline, not the newest run.
+            </strong>
+            <div className="mut" style={{ marginTop: 4 }}>
+              Run #{skipped.id} ({fnum(skipped.total_r, 2)}R) ran a different config from the
+              shipped <code>filters.yaml</code>, so it measured a different strategy — an A/B
+              leg, not the edge. {skipped.config_mismatch?.slice(0, 3).join("; ")}
+            </div>
+          </div>
+        </div>
+      ) : null}
       <Kpis items={kpis} />
 
       <Card

@@ -1,9 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, getConfig, getToken, saveConfig, setToken } from "../api/client";
 import { Card, Note } from "../components/Card";
 import { useApi } from "../hooks/useApi";
 import { useToast } from "../components/Toast";
 import { useRefresh } from "../state/refresh";
+
+// Survives a view switch: leaving Settings is not acknowledgement of a stale
+// regression baseline. Session-scoped on purpose — it describes this session's
+// writes, and data/config_audit.jsonl is the durable record.
+const PENDING_CHECK_KEY = "tradalert.pendingRegressionCheck";
+
+function readPendingCheck(): string[] {
+  try {
+    const raw = sessionStorage.getItem(PENDING_CHECK_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 interface ConfigShape {
   filters?: unknown;
@@ -82,10 +97,31 @@ export function Settings() {
 
   const [edits, setEdits] = useState<Record<string, number | boolean>>({});
   const [saving, setSaving] = useState(false);
-  // Edge-defining keys written by the last save. Held in state rather than
-  // toasted: the toast self-dismisses in 2.6s, and "the regression baseline no
-  // longer describes the live config" must stay on screen until acknowledged.
-  const [needsCheck, setNeedsCheck] = useState<string[]>([]);
+  // Edge-defining keys written by the last SUCCESSFUL save. Not a toast: that
+  // self-dismisses in 2.6s, and "the regression baseline no longer describes the
+  // live config" must survive until acknowledged — including a trip to another
+  // view, hence sessionStorage rather than plain component state.
+  const [needsCheck, setNeedsCheck] = useState<string[]>(readPendingCheck);
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+
+  function ackCheck() {
+    setNeedsCheck([]);
+    try {
+      sessionStorage.removeItem(PENDING_CHECK_KEY);
+    } catch {
+      /* private mode / storage disabled — the banner still clears for this view */
+    }
+  }
+
+  // Save sits in a savebar stuck to the bottom of a scrolling container, so a
+  // banner rendered at the top can land outside the viewport the user is looking
+  // at. Pull it into view and focus it, which also puts it in the tab order right
+  // after the button that triggered it.
+  useEffect(() => {
+    if (!needsCheck.length) return;
+    bannerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    bannerRef.current?.focus();
+  }, [needsCheck]);
   const [tokenVal, setTokenVal] = useState<string>(getToken());
 
   function seed(): Record<string, number | boolean> {
@@ -118,7 +154,14 @@ export function Settings() {
     try {
       const res = await saveConfig(updates);
       toast(`Saved ${Object.keys(updates).length} change${Object.keys(updates).length > 1 ? "s" : ""}`);
-      setNeedsCheck(res.requires_regression_check ?? []);
+      const edge = res.requires_regression_check ?? [];
+      setNeedsCheck(edge);
+      try {
+        if (edge.length) sessionStorage.setItem(PENDING_CHECK_KEY, JSON.stringify(edge));
+        else sessionStorage.removeItem(PENDING_CHECK_KEY);
+      } catch {
+        /* storage unavailable — the in-view banner still works */
+      }
       cfg.reload();
       refresh();
     } catch (e) {
@@ -160,12 +203,12 @@ export function Settings() {
   return (
     <>
       {needsCheck.length > 0 ? (
-        <div className="banner warn" role="alert">
+        <div className="banner warn" role="alert" ref={bannerRef} tabIndex={-1}>
           <i className="ti ti-alert-triangle" />
           <div>
             <strong>
-              Edge-defining {needsCheck.length === 1 ? "parameter" : "parameters"} changed —
-              the regression baseline no longer describes the live config.
+              Edge-defining {needsCheck.length === 1 ? "parameter" : "parameters"} changed by
+              the last saved edit — the regression baseline no longer describes the live config.
             </strong>
             <div className="mut" style={{ marginTop: 4 }}>
               {needsCheck.join(", ")}
@@ -177,7 +220,7 @@ export function Settings() {
               is journaled to <code>data/config_audit.jsonl</code>.
             </div>
           </div>
-          <button className="btn" onClick={() => setNeedsCheck([])}>
+          <button className="btn" onClick={ackCheck}>
             Dismiss
           </button>
         </div>
