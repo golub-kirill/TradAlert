@@ -18,6 +18,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from persistence import atomic
 
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
@@ -102,7 +103,7 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     try:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+        atomic.write_json(_STATE_PATH, state)
     except Exception as exc:
         logger.warning("[intraday] state write failed — %s", exc)
 

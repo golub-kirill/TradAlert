@@ -28,6 +28,7 @@ from core.paths import FUNDAMENTALS_DIR, SETTINGS_YAML
 from typing import Any
 
 import yaml
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +202,7 @@ def save_section(
     try:
         # Atomic tmp+replace: a kill mid-write would otherwise corrupt the file
         # and quarantine all sections, not just this one.
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2))
-        os.replace(tmp, path)
+        atomic.write_json(path, payload, indent=2)
     except OSError as exc:
         logger.warning("Failed to write cache %s — %s", path, exc)
 

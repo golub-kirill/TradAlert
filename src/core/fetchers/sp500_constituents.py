@@ -16,6 +16,7 @@ from core.paths import FUNDAMENTALS_DIR
 
 import requests
 from bs4 import BeautifulSoup
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ def _cache_fresh(cache_path: Path) -> bool:
 
 def _save_cache(cache_path: Path, tickers: list[str]) -> None:
     data = {"fetched_at": datetime.now().isoformat(), "tickers": tickers}
-    cache_path.write_text(json.dumps(data, indent=2))
+    atomic.write_json(cache_path, data, indent=2)
 
 
 def _load_cached_or_empty(cache_path: Path) -> list[str]:

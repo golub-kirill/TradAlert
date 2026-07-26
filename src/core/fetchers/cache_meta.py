@@ -10,6 +10,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,6 @@ def age_seconds(path: Path) -> float | None:
 def write_meta(meta_path: Path) -> None:
     """Write a ``{"fetched_at": iso}`` sidecar (freshness uses the file mtime)."""
     try:
-        meta_path.write_text(
-            json.dumps({"fetched_at": datetime.now().isoformat()}),
-            encoding="utf-8",
-        )
+        atomic.write_json(meta_path, {"fetched_at": datetime.now().isoformat()})
     except OSError as exc:
         logger.debug("meta write failed at %s: %s", meta_path, exc)

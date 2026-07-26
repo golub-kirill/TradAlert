@@ -24,6 +24,7 @@ import yfinance as yf
 from core.fetchers.symbology import to_yf_symbol
 from core.paths import PRICES_LIVE_DIR
 from core.validators.yf_tickerValidator import validate_ticker
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,6 @@ def _save_cache(
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
     try:
-        path.write_text(json.dumps(payload, indent=2))
+        atomic.write_json(path, payload, indent=2)
     except OSError as exc:
         logger.debug("Failed to write live price cache for %s — %s", ticker, exc)

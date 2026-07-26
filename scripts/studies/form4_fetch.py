@@ -34,6 +34,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 import pandas as pd  # noqa: E402
 import yaml          # noqa: E402
+from persistence import atomic
 
 UA = "TradAlert research foxxx2game@gmail.com"   # SEC requires a descriptive contact UA
 CACHE_DIR = _ROOT / "data" / "behavioral" / "form4"
@@ -140,7 +141,7 @@ def load_cik_map(rate: _RateLimiter) -> dict[str, int]:
     m = json.loads(_http_get("https://www.sec.gov/files/company_tickers.json", rate))
     out = {row["ticker"].upper(): int(row["cik_str"]) for row in m.values()}
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(out))
+    atomic.write_json(cache, out)
     return out
 
 

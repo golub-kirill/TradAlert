@@ -24,6 +24,7 @@ import pandas as pd
 from core.fetchers import cache_meta
 from core.fetchers.sp500_constituents import get_sp500_constituents
 from persistence.cache import load as cache_load
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def _cache_fresh(meta_path: Path, staleness_days: float) -> bool:
 def _write_meta(meta_path: Path) -> None:
     import json
     meta = {"fetched_at": datetime.now().isoformat()}
-    meta_path.write_text(json.dumps(meta))
+    atomic.write_json(meta_path, meta)
 
 
 def _load_cached_or_empty(parquet_path: Path,

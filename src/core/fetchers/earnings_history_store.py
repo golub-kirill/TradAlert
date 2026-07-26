@@ -33,6 +33,7 @@ from core.paths import EARNINGS_HISTORY_DIR, EARNINGS_PEAD_DIR
 from core.fetchers.earnings_history import fetch_earnings_dates_from_yfinance
 from core.pead import EarningsEvent, classify_session
 from core.validators.yf_tickerValidator import validate_ticker
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ def _save_cache(ticker: str, dates: list[date], cache_dir: Path | str) -> None:
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
     try:
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic.write_json(path, payload, indent=2)
     except OSError as exc:
         logger.warning("Failed to write earnings history cache for %s — %s",
                        ticker, exc)

@@ -25,6 +25,7 @@ from core.advisor.news_query import (
     is_relevant,
     symbol_root,
 )
+from persistence import atomic
 
 try:
     from core.fetchers.yf_fetchOne import to_yf_symbol
@@ -312,7 +313,7 @@ def _av_budget_ok(max_per_day: int) -> bool:
         return False
     try:
         NEWS_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"date": today, "count": count + 1}), encoding="utf-8")
+        atomic.write_json(path, {"date": today, "count": count + 1})
     except OSError:
         pass
     return True

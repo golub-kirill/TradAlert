@@ -27,6 +27,7 @@ from core.advisor.news_fetcher import (MIN_CATALYSTS, catalyst_count,
 from core.advisor.news_query import build_queries, generate_queries, split_headlines
 from core.advisor.rubric import apply_news, score_rubric
 from core.advisor.schemas import AdvisorInput, AdvisorVerdict, NewsRead
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ def _resolve_queries(ticker: str, company_name: str, ctx: AdvisorContext) -> lis
             cache = cache if isinstance(cache, dict) else {}
             cache[ticker] = qs
             NEWS_DIR.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+            atomic.write_json(path, cache, indent=2)
         except OSError:
             pass
     return qs

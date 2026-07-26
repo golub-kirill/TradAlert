@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.paths import NEWS_DIR
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +113,6 @@ def save_news(
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        atomic.write_json(path, doc, indent=2)
     except OSError as exc:
         logger.warning("news cache write failed %s: %s", path.name, exc)

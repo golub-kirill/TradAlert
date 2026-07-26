@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.fetchers.http import request_with_retry
+from persistence import atomic
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ def fetch_tv_calendar(
               .sort_values("date").reset_index(drop=True))
     try:
         merged.to_parquet(pq)
-        meta.write_text(json.dumps({"fetched_at": datetime.now().isoformat()}))
+        atomic.write_json(meta, {"fetched_at": datetime.now().isoformat()})
     except Exception as exc:  # noqa: BLE001
         logger.warning("[tv_calendar] cache write failed: %s", exc)
     return _slice(merged, start_ts, end_ts)
