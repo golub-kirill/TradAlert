@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -82,6 +83,11 @@ _WATCHLIST = _ROOT / "config" / "watchlist.yaml"
 _LOG_FILE = _ROOT / "data" / "tradealert.log"
 
 _MIN_ROWS: int = 20
+
+# Trading bars → calendar days. Expected-hold ranges are in BARS; the macro
+# calendar counts CALENDAR days, so a hold ceiling must be converted before it
+# becomes an event-risk horizon (5 trading days span a 7-day week).
+_CALENDAR_DAYS_PER_BAR: float = 7 / 5
 
 _REGIME_INDICES: list[str] = ["SPY", "QQQ"]  # tradeable, scanned
 _VIX_SYMBOL: str = "^VIX"  # context-only
@@ -436,7 +442,6 @@ def _run_pipeline(
         engine: FilterEngine,
         settings: dict | None = None,
         macro_state: object | None = None,
-        behavioral_state: object | None = None,
         behavioral_data: dict | None = None,
         rp_ranks: dict[str, float] | None = None,
         now: datetime | None = None,
@@ -465,10 +470,8 @@ def _run_pipeline(
     tickers          : Symbols successfully fetched (FetchSummary.succeeded).
     engine           : Shared FilterEngine instance.
     macro_state      : MacroState for regime size multiplier.
-    behavioral_state : Pre-classified BehavioralState. Ignored when
-                       ``behavioral_data`` is supplied.
-    behavioral_data  : Raw ``fetch_all_behavioral`` output, classified here (not
-                       by the caller) so the SPY frame reaches the breadth axis.
+    behavioral_data  : Raw ``fetch_all_behavioral`` output. Classified here, not
+                       by the caller, so the SPY frame reaches the breadth axis.
     rp_ranks         : Ticker → RP percentile rank [0, 99].
 
     Returns
@@ -515,10 +518,19 @@ def _run_pipeline(
     # without it left the axis permanently dark live while
     # behavioral.breadth_divergence_penalty ships active — live sized larger than
     # the validated model on a narrow rally.
-    if behavioral_data:
-        behavioral_state = _classify_behavioral(behavioral_data, settings, market_dfs)
+    behavioral_state = (_classify_behavioral(behavioral_data, settings, market_dfs)
+                        if behavioral_data else None)
 
     positions = load_open_positions()  # {ticker: Position}
+    # Stop geometry for rows the per-ticker loop will never reach — a pruned or
+    # delisted symbol, or one whose _process_ticker returns early (cache miss,
+    # too few rows, warmup NaN). Those are exactly the positions corruption hides
+    # in, so coverage must not depend on watchlist membership. Bars-free: the
+    # reachability half needs an excursion, so it stays in the per-ticker pass.
+    _scanned = set(tickers)
+    for _t, _p in positions.items():
+        if _t not in _scanned:
+            _warn_stop_geometry(_t, None, _p)
     # Chronic-loser tracker (D-011): journal-fed, built once per scan; None when
     # the switch is off or the journal is unreadable (fail-open, no penalty).
     ticker_health = _load_ticker_health(engine)
@@ -547,7 +559,7 @@ def _run_pipeline(
             # under-covered the hold by ~40% and could hide an FOMC inside it.
             horizon = (int(_within) if _within is not None
                        else max(EVENT_RISK_WITHIN_DAYS,
-                                -(-int(expected_hold[1]) * 7 // 5)))
+                                math.ceil(expected_hold[1] * _CALENDAR_DAYS_PER_BAR)))
             event_risk = event_risk_flags(cal_events, now.date(), horizon_days=horizon)
         except Exception as exc:
             logger.debug("[calendar] event_risk_flags failed (skipping): %s", exc)
@@ -888,21 +900,23 @@ def _process_ticker(
                            f"({_mh_mode}) — time-stop exit",
                 )
 
-    # ── 7c. live breakeven stop ───────────────────────────────────────────
-    # Mirror of the backtester's _apply_dynamic_stop breakeven rule
-    # (core.exits.breakeven_stop_level, DESIGN §4 D-004): once a held position's best
-    # excursion reaches the trigger, move positions.stop_price to entry (up for
-    # a long, down for a short). Skipped when the position is exiting this scan
-    # anyway. Fail-open.
     # ── 7c. open-position stop-geometry guard ─────────────────────────────
     # validate_open runs at OPEN only; nothing re-checked rows already in the
     # book. A corrupt stop is silent — the breakeven ratchet only moves a long
     # stop UP, so it can never repair one, and the Telegram card's R /
     # distance-to-stop rows are computed off it. Runs before the ratchet so the
-    # warning still fires on a position exiting this scan. Fail-open.
+    # warning still fires on a position exiting this scan. Deliberately NOT
+    # deduped per process (unlike the config warnings in filter_engine): only a
+    # human editing the row can clear this, so it must nag every scan. Fail-open.
     if held_position is not None:
         _warn_stop_geometry(ticker, df, held_position)
 
+    # ── 7d. live breakeven stop ───────────────────────────────────────────
+    # Mirror of the backtester's _apply_dynamic_stop breakeven rule
+    # (core.exits.breakeven_stop_level, DESIGN §4 D-004): once a held position's best
+    # excursion reaches the trigger, move positions.stop_price to entry (up for
+    # a long, down for a short). Skipped when the position is exiting this scan
+    # anyway. Fail-open.
     if held_side and held_position is not None and signal.direction != held_exit_dir:
         _maybe_raise_stop_to_breakeven(
             ticker, df, held_position,
@@ -1087,21 +1101,31 @@ def _apply_chronic_penalty(signal, ticker: str, health, as_of) -> None:
         ticker, mult, streak, signal.size_mult)
 
 
-def _warn_stop_geometry(ticker: str, df: pd.DataFrame, position) -> list[str]:
+def _warn_stop_geometry(ticker: str, df: pd.DataFrame | None, position) -> list[str]:
     """Surface stop-geometry defects on a held row; returns the problems found.
 
     The bars since entry supply the excursion bounds that separate a corrupt stop
     from a legitimately ratcheted one (``stop_geometry_problems``). Fail-open —
-    a missing/short frame just drops the reachability half of the check.
+    ``df=None``, a short frame, or a frame that starts AFTER the entry date drops
+    the reachability half and runs the geometry check alone.
     """
     logger = logging.getLogger(__name__)
     high = low = None
     try:
-        entry_pos = int(df.index.searchsorted(pd.Timestamp(position.entry_date)))
-        since = df.iloc[entry_pos:]
-        if len(since):
-            high = float(since["high"].max())
-            low = float(since["low"].min())
+        if df is not None and len(df):
+            entry_ts = pd.Timestamp(position.entry_date)
+            # A frame that begins after the entry would make df.iloc[0:] span bars
+            # from BEFORE the position existed, inflating the excursion and hiding
+            # an unreachable stop. Refuse the bounds rather than guess them.
+            if entry_ts >= df.index[0]:
+                since = df.iloc[int(df.index.searchsorted(entry_ts)):]
+                if len(since):
+                    high = float(since["high"].max())
+                    low = float(since["low"].min())
+            else:
+                logger.debug("[%s] frame starts %s, after entry %s — excursion "
+                             "bounds skipped", ticker, df.index[0].date(),
+                             position.entry_date)
     except Exception as exc:
         logger.debug("[%s] excursion bounds unavailable for stop check — %s", ticker, exc)
     try:
@@ -1134,7 +1158,10 @@ def _classify_behavioral(behavioral_data: dict, settings: dict,
             behavioral_data, settings=settings,
             spy_df=(market_dfs or {}).get("SPY"),
         )
-    except (KeyError, ValueError, TypeError, AttributeError, ImportError) as exc:
+    except Exception as exc:
+        # Broad, like every other optional step in _run_pipeline: the behavioral
+        # axis slices pandas frames and can raise outside any tuple worth naming.
+        # It sizes positions — it must never be the thing that aborts a scan.
         logger.warning("[behavioral] classification failed — proceeding without: %s",
                        exc, exc_info=True)
         return None

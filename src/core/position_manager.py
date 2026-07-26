@@ -109,9 +109,13 @@ def stop_geometry_problems(position, *, high_since_entry: float | None = None,
     except (TypeError, ValueError):
         return [f"entry price is not a number: {position.entry_price!r}"]
 
-    init = position.initial_stop if position.initial_stop is not None else position.stop_price
-    if init is not None:
-        init = float(init)
+    # Only a REAL initial_stop is checked. Rows predating the column carry None
+    # and fall back to stop_price elsewhere — but that fallback is a live,
+    # ratchetable value, so testing it here would flag every legacy row the
+    # breakeven move has since pushed to entry. No column, no R denominator to
+    # validate.
+    if position.initial_stop is not None:
+        init = float(position.initial_stop)
         if risk_unit(side, entry, init) <= 0:
             rel = "below" if side == "long" else "above"
             problems.append(

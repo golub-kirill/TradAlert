@@ -51,6 +51,13 @@ def _warn_once(key: str) -> bool:
     _WARNED.add(key)
     return True
 
+
+def reset_warn_once() -> None:
+    """Forget which warnings have fired. Call from test fixtures — otherwise a
+    test asserting one of these warnings passes alone and fails in a full run,
+    because an earlier test already consumed the key."""
+    _WARNED.clear()
+
 # ── module-level helpers (config type checking) ──────────────────────────────
 
 _NUMERIC: tuple[type, ...] = (int, float)

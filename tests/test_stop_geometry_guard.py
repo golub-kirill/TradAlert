@@ -21,7 +21,7 @@ from core.position_manager import stop_geometry_problems
 
 def _pos(**over):
     base = dict(id=1, ticker="TEST.1", side="long", entry_price=100.0,
-                entry_date=date(2026, 6, 1), stop_price=95.0, initial_stop=95.0)
+                entry_date=date(2026, 6, 2), stop_price=95.0, initial_stop=95.0)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -65,6 +65,20 @@ def test_profit_locked_stop_above_entry_is_clean():
     assert stop_geometry_problems(
         _pos(entry_price=362.52, stop_price=433.33, initial_stop=309.816),
         high_since_entry=438.50, low_since_entry=298.65) == []
+
+
+def test_legacy_row_without_initial_stop_is_not_flagged():
+    """Rows predating the initial_stop column carry None and fall back to
+    stop_price. That fallback is live and ratchetable — checking it here would
+    flag every legacy position the breakeven move has since pushed to entry."""
+    assert stop_geometry_problems(_pos(initial_stop=None, stop_price=100.0),
+                                  high_since_entry=115.0, low_since_entry=94.0) == []
+    # …and further, a legacy row profit-locked above entry stays clean.
+    assert stop_geometry_problems(_pos(initial_stop=None, stop_price=112.0),
+                                  high_since_entry=115.0, low_since_entry=94.0) == []
+    # The reachability half still bites on a legacy row.
+    assert len(stop_geometry_problems(_pos(initial_stop=None, stop_price=400.0),
+                                      high_since_entry=115.0, low_since_entry=94.0)) == 1
 
 
 def test_breached_stop_is_not_corrupt():
@@ -113,3 +127,38 @@ def test_scan_is_silent_on_a_healthy_row(caplog):
 def test_scan_guard_never_raises_on_a_bad_frame():
     """Fail-open: a frame with no usable bars must not break the scan."""
     assert main._warn_stop_geometry("KO", pd.DataFrame(), _pos()) == []
+    assert main._warn_stop_geometry("KO", None, _pos()) == []
+
+
+def test_bounds_skipped_when_the_frame_starts_after_entry():
+    """A frame beginning after the entry date would make iloc[0:] span bars from
+    BEFORE the position existed — inflating the excursion and hiding a corrupt
+    stop. The reachability half must be dropped, not guessed."""
+    late = _bars(144.40, 120.77)                      # starts 2026-06-01
+    pos = _pos(id=5, ticker="TGT", entry_price=132.64, stop_price=395.74,
+               initial_stop=123.0634, entry_date=date(2026, 5, 1))   # before it
+    assert main._warn_stop_geometry("TGT", late, pos) == []
+    # Same row, entry inside the frame → the corruption is caught.
+    assert len(main._warn_stop_geometry(
+        "TGT", late, _pos(id=5, ticker="TGT", entry_price=132.64, stop_price=395.74,
+                          initial_stop=123.0634))) == 1
+
+
+def test_positions_outside_the_scan_universe_are_still_checked(monkeypatch):
+    """A pruned or delisted symbol never reaches _process_ticker, and that is
+    exactly where a corrupt row hides. _run_pipeline must sweep them."""
+    warned = []
+    monkeypatch.setattr(main, "_warn_stop_geometry",
+                        lambda t, df, p: warned.append((t, df)))
+    monkeypatch.setattr(main, "_load_market_context", lambda tickers, now=None: (None, None))
+    monkeypatch.setattr(main, "_expected_hold_range", lambda engine: (5, 25))
+    monkeypatch.setattr(main, "_load_ticker_health", lambda engine: None)
+    monkeypatch.setattr(main, "_process_ticker", lambda ticker, engine, **kw: None)
+    monkeypatch.setattr(main, "load_open_positions",
+                        lambda: {"KO": _pos(ticker="KO"), "EFA": _pos(ticker="EFA")})
+
+    main._run_pipeline(["KO"], SimpleNamespace(_today=None), settings={})
+
+    # KO is scanned (checked in the per-ticker pass); EFA is not, so the sweep
+    # must pick it up — with no frame, so geometry only.
+    assert warned == [("EFA", None)]

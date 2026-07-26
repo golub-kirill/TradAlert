@@ -37,6 +37,17 @@ def _narrow_breadth(n: int = 40) -> pd.DataFrame:
 _SETTINGS = {"behavioral": {"breadth_divergence_penalty": 0.2}}
 
 
+@pytest.fixture(autouse=True)
+def _clear_behavioral_cache():
+    """classify_behavioral_state memoises on (data fingerprint, spy signature,
+    settings). Without this the second half of a parity assertion can be served
+    from cache — the test would pass while checking nothing."""
+    import core.behavioral as beh
+    beh._BEHAV_STATE_CACHE.clear()
+    yield
+    beh._BEHAV_STATE_CACHE.clear()
+
+
 def test_divergence_needs_the_spy_frame():
     """The axis is inert without spy_df — this is what made the leak invisible."""
     data = {"breadth": _narrow_breadth()}

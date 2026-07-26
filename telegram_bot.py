@@ -100,23 +100,26 @@ _REGIME_INDICES = ["SPY", "QQQ"]  # fallback; _regime_indices() reads the config
 _VIX_SYMBOL = "^VIX"  # fallback; _vix_symbol() reads the config knob
 
 
-def _regime_indices() -> list[str]:
+def _regime_cfg() -> dict:
+    """``filters.regime`` as a dict, or empty when the config is unreadable.
+    One parse serves both symbol lookups below — they are read together."""
+    try:
+        cfg = yaml.safe_load(FILTERS_YAML.read_text(encoding="utf-8")) or {}
+        return cfg.get("regime") or {}
+    except Exception:
+        return {}
+
+
+def _regime_indices(regime: dict | None = None) -> list[str]:
     """Regime index symbols from ``filters.regime.index_symbols`` (fallback SPY/QQQ)."""
-    try:
-        cfg = yaml.safe_load(FILTERS_YAML.read_text(encoding="utf-8")) or {}
-        idx = (cfg.get("regime") or {}).get("index_symbols")
-        return [str(s) for s in idx] if idx else list(_REGIME_INDICES)
-    except Exception:
-        return list(_REGIME_INDICES)
+    idx = (_regime_cfg() if regime is None else regime).get("index_symbols")
+    return [str(s) for s in idx] if idx else list(_REGIME_INDICES)
 
 
-def _vix_symbol() -> str:
+def _vix_symbol(regime: dict | None = None) -> str:
     """Volatility series from ``filters.regime.vix_symbol`` (fallback ^VIX)."""
-    try:
-        cfg = yaml.safe_load(FILTERS_YAML.read_text(encoding="utf-8")) or {}
-        return str((cfg.get("regime") or {}).get("vix_symbol") or _VIX_SYMBOL)
-    except Exception:
-        return _VIX_SYMBOL
+    return str((_regime_cfg() if regime is None else regime).get("vix_symbol")
+               or _VIX_SYMBOL)
 
 
 # ── startup: credentials, logging, single-instance lock ──────────────────────
@@ -236,18 +239,19 @@ def _load_market_context():
     from persistence.cache import load as cache_load
 
     now = datetime.now(timezone.utc)
+    regime = _regime_cfg()  # one parse; both symbol lookups read it
 
     def _closed(sym):
         return drop_unclosed_bar(cache_load(sym), now, exchange_for(sym))
 
     market_dfs = {}
-    for sym in _regime_indices():
+    for sym in _regime_indices(regime):
         try:
             market_dfs[sym] = _closed(sym)
         except Exception as exc:  # fail-open: regime degrades, never aborts
             logger.debug("[market] %s load failed — %s", sym, exc)
     vix_df = None
-    vix_sym = _vix_symbol()
+    vix_sym = _vix_symbol(regime)
     try:
         vix_df = _closed(vix_sym)
     except Exception as exc:
