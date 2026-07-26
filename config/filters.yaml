@@ -134,7 +134,12 @@ signals: # block: trigger configuration
     max_prev_bar_range_atr: 3.0         # block if prev (high-low) > N * ATR (elevated overnight risk)
 
   sector_gate: # block: sector-relative strength filter
-    enabled: true                       # true: block entries when sector ETF < MA(ma_fast)
+    # OFF (owner call 2026-07-25). It shipped `true` over an empty sector_map.yaml
+    # — configured but gating nothing; `false` states that honestly. The flip is
+    # behaviour-neutral: an empty map makes the gate inert either way.
+    # Before turning it on, read the live/backtest trap in config/sector_map.yaml —
+    # the backtest loads sector ETFs into market_dfs and the live scan does not.
+    enabled: false                      # true: block entries when sector ETF < MA(ma_fast)
     sector_map_path: "config/sector_map.yaml"  # path to sector_map.yaml relative to project root
 
   mean_reversion: # block: counter-trend triggers

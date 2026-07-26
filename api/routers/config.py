@@ -1,10 +1,20 @@
-"""Read the live strategy config, and write a small whitelist of operational knobs.
+"""Read the live strategy config, and write a whitelist of knobs.
 
-Reads return the full ``filters.yaml`` + ``settings.yaml`` for display. Writes are
-deliberately narrow: only operational knobs (live risk-budget awareness, the
-advisory event-risk window, Telegram notification toggles) are editable. The
-edge-defining parameters stay locked here — they're changed in the YAML with a
-regression check, never silently from the panel.
+Reads return the full ``filters.yaml`` + ``settings.yaml`` for display.
+
+**Writes are NOT limited to operational knobs.** This docstring used to claim
+"the edge-defining parameters stay locked here"; that was false, and the
+whitelist below is the evidence — 14 of its 21 keys (``_EDGE_DEFINING``) change
+which trades the strategy takes: the MA pair, the stop multiplier and min R:R,
+max-hold, the breakeven trigger, the scan gates, the VIX bands, shorts, and the
+sector gate. Editing any of them here moves the live strategy away from the
+config the +93.53R gate was measured under, with no regression check in the loop.
+
+Kept as a deliberate capability, but audited rather than silent: every write
+appends a line to ``data/config_audit.jsonl`` with timestamp, key, old → new
+value and whether the key is edge-defining, and the response carries
+``requires_regression_check`` listing any edge-defining keys touched. Narrowing
+``_EDITABLE`` instead remains an owner call.
 
 A write is a SURGICAL single-line edit: ruamel resolves the key's exact line and
 column, then only that one value token is rewritten in the raw text (the inline
@@ -13,7 +23,10 @@ comment is kept and re-aligned). Nothing else in the file is touched.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -21,6 +34,8 @@ from pydantic import BaseModel
 
 from api import ROOT
 from api.deps import load_yaml
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["config"])
 
@@ -54,6 +69,34 @@ _EDITABLE: dict[str, tuple[str, type, tuple[float, float] | None]] = {
     "filters.regime.vix_low": ("filters", float, (0.0, 100.0)),
     "filters.regime.vix_high": ("filters", float, (0.0, 100.0)),
 }
+
+# Whitelisted keys that change TRADE COMPOSITION — i.e. editing one invalidates
+# the regression baseline until a paired A/B is re-run. Every `filters.*` key
+# qualifies by construction (the engine reads that file); the `settings.*` keys
+# left out are display/notification//layer toggles that do not alter entries.
+_EDGE_DEFINING: frozenset[str] = frozenset(
+    k for k in _EDITABLE if k.startswith("filters.")
+)
+
+# Append-only provenance log. Not a DB table on purpose: it must survive a DB
+# outage, and it is read by humans after the fact ("who moved min_rr?").
+AUDIT_LOG = ROOT / "data" / "config_audit.jsonl"
+
+
+def _record_provenance(entries: list[dict]) -> None:
+    """Append one JSON line per changed key. Never raises into the request —
+    a full disk must not make a successful config write look like a failure."""
+    if not entries:
+        return
+    try:
+        AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e, default=str) + "\n")
+    except Exception:
+        logger.warning("config write succeeded but provenance was not recorded "
+                       "(%s): %s", AUDIT_LOG, ", ".join(e["key"] for e in entries),
+                       exc_info=True)
 
 
 @router.get("/config")
@@ -143,6 +186,7 @@ def write_config(body: ConfigWrite):
     # edit fails before anything is written; the staged text is committed below.
     staged: list[tuple[Path, str]] = []
     written: list[str] = []
+    provenance: list[dict] = []
     for file, items in by_file.items():
         path = CONFIG / f"{file}.yaml"
         try:
@@ -162,10 +206,18 @@ def write_config(body: ConfigWrite):
                 for s in segs[:-1]:
                     node = node[s]
                 pos = node.lc.data[segs[-1]]  # (key_line, key_col, val_line, val_col)
+                old = node[segs[-1]]
             except (KeyError, TypeError, AttributeError):
                 raise HTTPException(500, f"cannot locate '{key}' in {file}.yaml")
             text = _surgical_set(text, pos[2], pos[3], _token(val))
             written.append(key)
+            # Recorded only after the two-phase commit below succeeds — a staged
+            # edit that never lands must not appear in the audit trail.
+            provenance.append({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "key": key, "old": old, "new": val, "file": f"{file}.yaml",
+                "edge_defining": key in _EDGE_DEFINING,
+            })
         staged.append((path, text))
 
     # Two-phase commit: write every temp file first, then os.replace them all, so a
@@ -188,4 +240,11 @@ def write_config(body: ConfigWrite):
                 pass
         raise HTTPException(500, f"cannot write config: {exc}")
 
-    return {"ok": True, "written": sorted(written)}
+    _record_provenance(provenance)
+    edge = sorted(k for k in written if k in _EDGE_DEFINING)
+    if edge:
+        logger.warning("[config] EDGE-DEFINING keys changed from the panel — the "
+                       "regression baseline no longer describes the live config "
+                       "until a paired A/B is re-run: %s", ", ".join(edge))
+    return {"ok": True, "written": sorted(written),
+            "requires_regression_check": edge}

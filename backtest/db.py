@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Iterable
 
 from mysql.connector import Error as MySQLError
@@ -289,21 +290,100 @@ def _run_full_window(config_json) -> bool:
     return meta.get("start_date") is None and meta.get("end_date") is None
 
 
+# Config subtrees EXCLUDED from the shipped-config match below. Everything else
+# is compared, so a newly added edge-defining key is covered automatically — an
+# allowlist would silently rot.
+#   _meta                 run metadata (window, scoring flag), not strategy
+#   price/liquidity/
+#   market_cap/volatility scan gates; the backtester never calls scan(), so these
+#                         cannot change a backtest's trades and a diff is a false alarm
+#   signals.sector_gate   inert while config/sector_map.yaml maps no tickers, and
+#                         FilterEngine warns loudly if that stops being true
+_CONFIG_MATCH_EXCLUDE: tuple[str, ...] = (
+    "_meta", "price", "liquidity", "market_cap", "volatility", "signals.sector_gate",
+)
+
+
+def _flatten(node, prefix: str = "") -> dict:
+    out = {}
+    for k, v in (node or {}).items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flatten(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def _shipped_filters() -> dict | None:
+    """Flattened shipped config/filters.yaml, or None when it can't be read."""
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[1] / "config" / "filters.yaml"
+        return _flatten(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    except Exception:  # fail-open: nothing to compare against
+        return None
+
+
+def config_mismatch(config_json, shipped: dict | None = None) -> list[str] | None:
+    """Keys where a run's config snapshot disagrees with the shipped filters.yaml.
+
+    Empty list = the run measured the strategy that is live now. None = unknown
+    (no snapshot, or filters.yaml unreadable); callers treat that as eligible,
+    since refusing every legacy row would leave no reference at all.
+    """
+    if shipped is None:
+        shipped = _shipped_filters()
+    if not config_json or shipped is None:
+        return None
+    try:
+        run = _flatten(json.loads(config_json))
+    except (ValueError, TypeError):
+        return None
+    diff = []
+    for key in sorted(set(run) | set(shipped)):
+        if key.startswith(_CONFIG_MATCH_EXCLUDE):
+            continue
+        if run.get(key) != shipped.get(key):
+            diff.append(f"{key}: run={run.get(key)!r} shipped={shipped.get(key)!r}")
+    return diff
+
+
+def _tag_config_match(row, shipped=None, diff=...):
+    """Attach config_match/config_mismatch to a row and drop its config_json."""
+    if diff is ...:
+        diff = config_mismatch(row.get("config_json"), shipped)
+    row.pop("config_json", None)
+    row["config_match"] = None if diff is None else not diff
+    row["config_mismatch"] = diff or []
+    return row
+
+
 def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
     """Resolve the expectancy-reference backtest_runs row (dictionary cursor).
 
-    Explicit ``run_id`` → that row. Otherwise prefer the newest scoring-OFF
-    (``config_json._meta.use_scoring is False``, matching the live default),
-    FULL-WINDOW run — so a windowed diagnostic (e.g. a 2025-only run) or any
-    non-baseline experiment that merely happened to journal last can't silently
-    become the drift reference. Fallback ladder: newest scoring-OFF full-window →
-    newest scoring-OFF → newest overall. Returns the row dict (without
-    config_json) or None.
+    Explicit ``run_id`` → that row. Otherwise the newest run that (a) is
+    scoring-OFF (``config_json._meta.use_scoring is False``, matching the live
+    default), (b) is FULL-WINDOW, and (c) **ran the config shipped now**.
+
+    (c) is what stops an EXPERIMENT ARM becoming the drift reference. On
+    2026-07-19 run 34 — an A/B leg with ``regime.vix_slope_block`` ON, +44.32R
+    against the +90.83R baseline journaled sixteen minutes earlier — satisfied
+    (a) and (b) and duly became the reference, so every live-vs-backtest drift
+    reading was taken against the gated arm.
+
+    Fallback ladder: config-matched scoring-OFF full-window → scoring-OFF
+    full-window → scoring-OFF → newest overall. The returned row carries
+    ``config_match`` (bool | None) and, when False, ``config_mismatch`` listing
+    the offending keys — a degraded reference is visible, never silent. Returns
+    the row dict (without config_json) or None.
     """
     cols = "id, start_date, end_date, trades_count, expectancy_r, win_rate, notes"
     if run_id is not None:
-        cursor.execute(f"SELECT {cols} FROM backtest_runs WHERE id = %s", (run_id,))
-        return cursor.fetchone()
+        cursor.execute(f"SELECT {cols}, config_json FROM backtest_runs WHERE id = %s",
+                       (run_id,))
+        row = cursor.fetchone()
+        return _tag_config_match(row) if row else None
     cursor.execute(f"SELECT {cols}, config_json FROM backtest_runs ORDER BY id DESC LIMIT 50")
     rows = cursor.fetchall()
     if not rows:
@@ -311,9 +391,14 @@ def reference_run(cursor, run_id=None, prefer_scoring_off: bool = True):
     off = ([r for r in rows if _run_use_scoring(r.get("config_json")) is False]
            if prefer_scoring_off else rows) or rows
     full = [r for r in off if _run_full_window(r.get("config_json"))]
+
+    shipped = _shipped_filters()
+    diffs = [(r, config_mismatch(r.get("config_json"), shipped)) for r in full]
+    matched = [r for r, d in diffs if not d]      # [] (match) or None (unknown)
+    if matched:
+        return _tag_config_match(matched[0], shipped)
     chosen = (full or off)[0]
-    chosen.pop("config_json", None)
-    return chosen
+    return _tag_config_match(chosen, shipped)
 
 
 def hold_range_from_bars(bars, fallback, *, min_samples: int = 8) -> tuple[int, int]:

@@ -15,7 +15,7 @@ byte-identical — the backtest is the ground truth for every live decision.
   (baseline · OFAT sweep · walk-forward · robustness) share `core.FilterEngine`; live ≡ backtest by construction.
 - 🧭 **Regime-aware sizing** — macro (FRED/BoC) × behavioral (COT / breadth / sector-rotation)
   composite scales position *size*, never the signal direction.
-- 🛡️ **Risk discipline** — ATR stops, breakeven stop (ADR-004), max-hold time-stop,
+- 🛡️ **Risk discipline** — ATR stops, breakeven stop (DESIGN §4 D-004), max-hold time-stop,
   a per-ticker chronic-loser size penalty (D-011), and a portfolio open-risk budget —
   quoted under a friction-honest fill convention (0.002 slippage on entries **and**
   market-type exits, D-008a).
@@ -84,8 +84,9 @@ pytest tests/                                       # run the test suite (confte
 # are inline in src/persistence/db.py, backtest/db.py, src/core/position_manager.py
 ```
 
-If `signals.sector_gate.enabled: true` in filters.yaml, `config/sector_map.yaml`
-must exist (an empty `sector_map: { }` ships by default).
+`signals.sector_gate.enabled` ships **false** (2026-07-25). Setting it true
+requires `config/sector_map.yaml` to exist; an empty `sector_map: { }` ships by
+default, which leaves the gate inert (the engine warns when it is).
 
 ## Entry points
 
@@ -99,6 +100,7 @@ python main.py [--force] [--allow-shorts]
 |------------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--force`        | False   | Bypass cache staleness check; re-fetch every ticker.                                                                                                 |
 | `--allow-shorts` | False   | Enable short-side entries. Sets `signals.allow_shorts=true` in the loaded filters config. Off keeps the long-only baseline replay-stable. |
+| `--morning`      | False   | **Morning pre-close scan.** A run before the close is blind to today's still-forming bar and to the day's open, so every fired ENTRY is downgraded to `NEEDS_REVIEW` with a "morning scan (pre-close)" reason. Exits are never downgraded — a held position must still be able to exit. |
 
 Outputs: stdout report, `data/screenshots/{TICKER}_{Dmonyy}.webp` charts for
 fire-signals (date-stamped, e.g. `URA_4jun26.webp`, so daily shots don't overwrite),
@@ -136,7 +138,7 @@ Held positions (long or short) are also force-exited live when they reach the
 max-hold cap (`execution.max_hold_days`, default 25d `if_not_profit`) — a `time_stop`
 EXIT (a COVER for a held short) — using the same `core.exits.max_hold_exit_due` rule
 as the backtester, so live and backtest stay in step. Likewise, once a held position's
-best excursion reaches `execution.breakeven_trigger_r` (default `1.0`, ADR-004) the
+best excursion reaches `execution.breakeven_trigger_r` (default `1.0`, DESIGN §4 D-004) the
 scan raises `positions.stop_price` to breakeven via the shared
 `core.exits.breakeven_stop_level` rule (a Telegram notice is sent; `initial_stop`
 is never touched, so realized-R reconciliation is unaffected).
@@ -209,9 +211,19 @@ Window / IO flags:
 | `--no-journal`        | False               | Opt OUT of MySQL journaling for a throwaway run.     |
 | `--log LEVEL`         | WARNING             | DEBUG / INFO / WARNING / ERROR.                      |
 
+Walk-forward sub-flags (with `--walk-forward`):
+
+| Flag                    | Default | Description                                                                                                                                   |
+|-------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| `--wf-no-retune`        | False   | Run the **fixed current config** on each IS/OOS window (temporal-stability test) instead of re-tuning per window — ~18 runs vs ~900. This is the right test for "does the shipped config survive OOS", and the fast default in practice. |
+| `--wf-embargo-bars B`   | 0       | Trading bars skipped between the IS and OOS windows so a config is not scored on a market state contiguous with the one it was tuned on. **Pre-registered setting is `25`** (= `max_hold_days`, the label-horizon bound). |
+| `--wf-joint N`          | 0       | Replace the per-window OFAT sweep with N randomized multi-knob configs (seeded). OFAT mutates one knob at a time and so *understates* multi-parameter overfitting. Degradation is only comparable across runs with the same mode and N. |
+| `--wf-joint-knobs K`    | 3       | Knobs mutated per sampled config (with `--wf-joint`).                                                                                          |
+| `--wf-seed S`           | 1337    | Seed for the `--wf-joint` sampler (offset per window). Printed in the report tag — re-running with several seeds and quoting the prettiest degradation reintroduces the selection bias this mode exists to measure. |
+
 Strategy refinement flags — each **CLI flag** defaults off, but the YAML supplies the
 operative default: the shipped `filters.yaml` already enables max-hold
-(`25`/`if_not_profit`), the breakeven stop (`1.0R`, ADR-004), the anti-gap trigger
+(`25`/`if_not_profit`), the breakeven stop (`1.0R`, DESIGN §4 D-004), the anti-gap trigger
 filter, the chronic-loser size penalty (D-011) and symmetric `0.002` exit slippage
 (D-008a), so the no-flag baseline runs **with** those (it is the shipped headline
 config, not a bare strategy). Pass a flag to force its key on for an A/B even when the
@@ -224,9 +236,11 @@ YAML default is off:
 | `--vix-slope-gate`  | **Block fresh momentum entries when VIX is rising** over the configured lookback window (risk-off filter; mean-reversion entries unaffected). **A/B-refuted** (−43R / −0.19 Sharpe — entry vetoes tax the right tail); ships `false`, kept as a documented, tested lever.                                                                                                                            | `regime.vix_slope_block`               |
 | `--anti-gap-entry`  | Require the **trigger bar to close ≥ its open** before queuing the T+1 entry.                                                                                                                                                                                                                                                                                                                       | `signals.require_trigger_bar_up`       |
 | `--allow-shorts`    | Enable **short-side entries**: the engine fires shorts in BEAR regimes; the long-only baseline is unchanged when off. Also a `main.py` flag.                                                                                                                                                                                                                                             | `signals.allow_shorts`                 |
-| `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see `ADR-001`). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
-| `--breakeven-trigger-r R` | **Breakeven stop:** once a held trade's best excursion reaches `R` (in initial-risk units), the stop moves to entry — protects the give-back leak without capping the upside (it does not trail further, so winners still run to target). **Default `1.0`** (set in `filters.yaml`; validated walk-forward-stable with better totals, Sharpe and drawdown — see `ADR-004`). Pass `0` to disable. The R denominator stays the **initial** stop. The live scan applies the same rule to held positions (raises `positions.stop_price`, never `initial_stop`). | `execution.breakeven_trigger_r` (filters.yaml) |
+| `--max-hold-days N` | **Swing-horizon exit:** force-close a held trade at the bar's **close** once held `N` trading bars (exit reason `time_stop`). Pair with `--max-hold-mode {hard,if-not-profit}` — `hard` always cuts at the cap; `if-not-profit` cuts only when not in profit (lets winners run). **Default `25` bars, `if_not_profit`** (set in `filters.yaml`; it dominates `hard` on every metric — see DESIGN §4 D-001). Override or disable via the flags / config. | `execution.max_hold_days` / `execution.max_hold_mode` (filters.yaml) |
+| `--breakeven-trigger-r R` | **Breakeven stop:** once a held trade's best excursion reaches `R` (in initial-risk units), the stop moves to entry — protects the give-back leak without capping the upside (it does not trail further, so winners still run to target). **Default `1.0`** (set in `filters.yaml`; validated walk-forward-stable with better totals, Sharpe and drawdown — see DESIGN §4 D-004). Pass `0` to disable. The R denominator stays the **initial** stop. The live scan applies the same rule to held positions (raises `positions.stop_price`, never `initial_stop`). | `execution.breakeven_trigger_r` (filters.yaml) |
 | `--max-open-risk R` | **Portfolio open-risk budget** (default `5.0`), in `size_mult` units. Each open position consumes its own `size_mult`, so a new entry is dropped once total open risk would exceed the budget — a half-size (regime/chronic-reduced) position uses half a slot. A risk control, so it is universe-agnostic (not a raw count). Lower → fewer concurrent positions. (`5.0` is the risk-adjusted optimum, re-confirmed 2026-06-05 at the `if_not_profit` config via `scripts/studies/budget_sweep.py`.) | `portfolio.max_open_risk` (`base_port`) |
+| `--trail-atr-mult M` / `--trail-activate-r R` | **ATR (chandelier) trailing stop:** ratchet the stop to `highest_high − ATR×M` (long; short mirrors), in the trade's favor only; `--trail-activate-r` delays trailing until that MFE is reached. **A/B-refuted** (mult 3 cost −11R and capped winners 79→61; mults 5-8 are noise — the edge is the right tail, so banking early taxes it). Ships OFF, kept as a documented, tested lever. The R denominator stays the **initial** stop — a trail changes only the exit price/reason. | `trail_atr_mult` (`base_port`) |
+| `--breakeven-buffer-atr M` | With `--breakeven-trigger-r`: place the breakeven stop `M×ATR` **past** entry instead of exactly at it. Default `0` (exact breakeven) — the validated D-004 configuration; buffer/trail combos added nothing in the 11-config probe (parsimony). | `execution.breakeven_buffer_atr` (filters.yaml) |
 | `--correlation-cap` | **Correlation-aware open-risk budget** (default **OFF**): charge `--max-open-risk` against the correlation-adjusted effective risk `√(wᵀCw)` rather than the raw `size_mult` sum, so correlated concurrent names share a budget slot. Tune with `--correlation-lookback N` (return window in bars, default 60), `--correlation-min-overlap N` (min overlapping days to trust a pair, default 40), `--correlation-floor F` (correlations below `F` — and all negatives — count as 0). Effective ≤ raw for ρ∈[0,1], so it is monotone-safe. A/B'd via `scripts/studies/paired_ab_correlation.py`: at the shipped 5.0R budget it *hurts* the North Star (Sharpe 0.66→0.60), so it ships off — kept as a documented, tested lever. | `portfolio.correlation_*` (`base_port`) |
 
 > `--journal` requires `config/secrets.env` (`DB_*`). `run_backtest.py`
@@ -380,7 +394,7 @@ Gated by `settings.yaml::advisor.enabled`. A **hybrid** critic on every fired en
 a deterministic Python rubric computes the verdict and a calibrated confidence from
 technical posture plus historical base rates (`data/advisor_base_rates.json`,
 rebuilt per journaled backtest via `scripts/studies/build_advisor_base_rates.py
---latest`), while a local LLM (Ollama; `qwen3:8b` default) reads **only the news**
+--latest`), while a local LLM (Ollama; `qwen3.5:9b` default) reads **only the news**
 — it can add caution (downgrade / veto on adverse catalysts, penalize when blind)
 but can never inflate a weak setup, so a negative-EV signal cannot be rubber-stamped.
 
@@ -463,13 +477,13 @@ Loaded by `python-dotenv` at startup.
 | `events.earnings_buffer_two_sided`                                               | Opt-in trailing arm (also block N days AFTER the last earnings). **A/B'd 2026-07-17 and CLOSED — right-tail tax (−19.5R); ships `false`, do not flip.** Incompatible with `signals.pead`. |
 | `execution.{entry_slippage_pct,exit_slippage_pct,commission_r}`                  | Backtest fill model. **Symmetric `0.002` on entries and market-type exits is the headline convention (D-008a)**; target limit fills stay exact.                                        |
 | `execution.{max_hold_days,max_hold_mode}`                                        | Swing-horizon exit. **Default `25` bars, `if_not_profit`.** `max_hold_days` = bars before a held trade is closed at the bar close (`time_stop`); `max_hold_mode` = `hard` / `if_not_profit` (lets winners run). CLI `--max-hold-days` / `--max-hold-mode` override. |
-| `execution.breakeven_trigger_r`                                                  | Breakeven stop trigger in initial-risk units. **Default `1.0`** (ADR-004): at `+1R` best excursion the stop moves to entry, upside uncapped; applied identically in the backtest and the live scan. `0`/absent = off; CLI `--breakeven-trigger-r` overrides. |
+| `execution.breakeven_trigger_r`                                                  | Breakeven stop trigger in initial-risk units. **Default `1.0`** (DESIGN §4 D-004): at `+1R` best excursion the stop moves to entry, upside uncapped; applied identically in the backtest and the live scan. `0`/absent = off; CLI `--breakeven-trigger-r` overrides. |
 | `signals.momentum.long`                                                          | Momentum-long entry: rsi band, min_hist_delta_atr, max_bars_since_cross.                  |
 | `signals.momentum.short`                                                         | Held-long *momentum-fade exit* (legacy name; canonical at `signals.exits.momentum_fade`). |
 | `signals.mean_reversion.long`                                                    | Mean-rev entry: rsi_max, min_hist_delta_atr.                                              |
 | `signals.mean_reversion.short`                                                   | Held-long *overbought exit* (legacy; canonical at `signals.exits.mean_rev`).   |
 | `signals.gap_risk.{enabled,max_prev_bar_range_atr}`                              | Block entries after wide-range prev bar.                                                  |
-| `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when sector ETF below MA.                                                   |
+| `signals.sector_gate.{enabled,sector_map_path}`                                  | Block entries when the sector ETF is below its MA. **Ships `false`** — it was `true` over an empty map, i.e. gating nothing. See the live/backtest trap in `config/sector_map.yaml` before enabling. |
 | `signals.exits.{regime_flip,momentum_fade,mean_rev}`                             | Held-long exit toggles (also accept dict for `signals.exits.*` parameter blocks).         |
 | `signals.exits.{regime_flip_bear_only,regime_flip_confirm_bars}`                 | Regime-flip exit shaping (A/B levers). `regime_flip_bear_only` (default `false`) exits only on BEAR (CHOP no longer flattens); `regime_flip_confirm_bars` (default `1`) requires the flip to persist N bars first. Defaults reproduce the exit-on-any-non-BULL-bar behavior byte-for-byte. **A/B + walk-forward (`scripts/studies/regime_exit_{ab,wf}.py`, snapshot 2026-06-10):** full-period `bear_only` looks strong (+31.97R, +0.093 Sharpe, −7.89R maxDD) but the walk-forward **refutes it as a default** — it wins totalR in only 10/26 yearly windows, the aggregate rides ~5 years (2004/12/13/14/17), and it nets negative over the last 5. Kept as a documented, tested lever (ships `false`); `confirm_bars` is marginal-to-negative. The live "flatten-on-chop" UX concern is handled separately by `telegram.regime_flip_exit_mode`. |
 | `signals.stop_loss.{atr_multiplier,min_rr}`                                      | Stop distance + target definition. The target is **derived** (`target = stop_dist × min_rr`), so long-side R:R equals `min_rr` by construction — the panel marks it `(fixed)`; shorts additionally require the derived target to stay positive. |
@@ -490,6 +504,8 @@ Loaded by `python-dotenv` at startup.
 | `scanner.event_risk_within_days`                                           | Advisory horizon override (calendar days). Unset, the flag lists every FOMC/CPI/NFP inside the expected-hold ceiling; an explicit value wins verbatim. Display-only, never gates/sizes (distinct from the `events.stop_dates` entry-day block). |
 | `advisor.{enabled,endpoint,model,timeout,temperature,max_tokens}`           | AI advisor (live-only second opinion; see its section above). Rubric computes the verdict; the LLM reads only news.                                                                                                                                |
 | `news.{cache_ttl_hours,max_headlines_per_ticker,macro_summarization,sec_filings}` | Advisor news layer: headline cache/caps, scan-wide macro summary, SEC 8-K prepend (keyless).                                                                                                                                                |
+| `news.{use_alphavantage,alphavantage_max_per_day}`                          | Include AlphaVantage sentiment, and the **daily call budget** (free tier is 25/day; default 20). `use_alphavantage: false` disables that source entirely.                                                    |
+| `news.llm_queries`                                                          | Let the model build (cached) per-ticker news search queries instead of the deterministic ones. Default `false` — it adds an LLM call per new ticker.                                                          |
 | `macro.{enabled,fred_api_key_env,staleness_hours,series_dir,series_subset}` | Macro layer toggles + cache.                                                                                                                                                                                                                                      |
 | `macro.{fred_series,boc_series,yf_series}`                                  | Series IDs to fetch.                                                                                                                                                                                                                                              |
 | `macro.{size_mult_floor,size_mult_ceiling}`                                 | risk_on_score → size_multiplier mapping.                                                                                                                                                                                                                          |
@@ -524,7 +540,11 @@ sector_map:
   # ...
 ```
 
-Empty `sector_map: { }` is valid (gate becomes a no-op for unmapped tickers).
+Empty `sector_map: { }` is valid (gate becomes a no-op for unmapped tickers), and
+is what ships. **Before populating it:** the backtest loads sector ETFs into
+`market_dfs` while the live scan loads only `regime.index_symbols`, so a populated
+map activates the gate in the **backtest only** unless the live context load is
+extended in the same change. `FilterEngine` warns on both halves of that trap.
 
 ## Indicators
 
@@ -562,7 +582,9 @@ Credentials from `config/secrets.env`. Each table group ships a DDL file under
 | `backtest_runs`   | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
 | `backtest_trades` | `backtest/db.py`               | `run_backtest` (journals by default) | `data/backtest_schema.sql` |
 | `positions`       | `src/core/position_manager.py` | `position_CLI.py`        | `data/positions_schema.sql` |
+| `position_partials` | `src/core/position_manager.py` | `telegram_bot.py` (½ / ⅓ scale-out) | `data/positions_schema.sql` |
 | `price_alerts`    | `src/persistence/db.py`        | `telegram_bot.py` (`/alert`) | `data/price_alerts_schema.sql` |
+| `telegram_cautions` | `src/persistence/db.py`      | `main.py` push (regime-caution dedup) | `data/scan_schema.sql` |
 
 ## Program state
 
