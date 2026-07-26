@@ -59,6 +59,25 @@ def test_semicolon_inside_a_comment_does_not_truncate(mig, tmp_path, monkeypatch
     assert stmt.count("(") == stmt.count(")")
 
 
+def test_semicolon_in_the_terminating_line_comment_does_not_leak(mig, tmp_path, monkeypatch):
+    """The nastier half of the same case: the comment sits on the line that ENDS
+    the statement, so a search over raw text picks the comment's ';' and leaves
+    the real terminator embedded with a comment fragment glued on."""
+    schema = tmp_path / "scan_schema.sql"
+    schema.write_text(
+        "CREATE TABLE IF NOT EXISTS telegram_cautions (\n"
+        "    id INT NOT NULL,\n"
+        "    PRIMARY KEY (id)\n"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;  -- created 2026; see MIGRATIONS\n",
+        encoding="utf-8")
+    monkeypatch.setattr(mig, "SCHEMA", schema)
+    stmt = mig.ddl()
+    assert ";" not in stmt                      # terminator stripped, none embedded
+    assert "--" not in stmt                     # no comment fragment carried over
+    assert stmt.endswith("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+    assert stmt.count("(") == stmt.count(")")
+
+
 def test_missing_table_fails_loudly(mig, tmp_path, monkeypatch):
     schema = tmp_path / "scan_schema.sql"
     schema.write_text("CREATE TABLE IF NOT EXISTS something_else (id INT);\n",

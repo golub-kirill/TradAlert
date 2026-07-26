@@ -8,6 +8,11 @@ import { useRefresh } from "../state/refresh";
 // Survives a view switch: leaving Settings is not acknowledgement of a stale
 // regression baseline. Session-scoped on purpose — it describes this session's
 // writes, and data/config_audit.jsonl is the durable record.
+//
+// sessionStorage is PER TAB, so a second tab neither sees the warning nor the
+// dismissal. Accepted for a single-operator loopback panel; the audit log is the
+// cross-tab source of truth. Move to localStorage + a `storage` listener if the
+// panel ever gets multi-tab or multi-user use.
 const PENDING_CHECK_KEY = "tradalert.pendingRegressionCheck";
 
 function readPendingCheck(): string[] {
@@ -115,12 +120,17 @@ export function Settings() {
 
   // Save sits in a savebar stuck to the bottom of a scrolling container, so a
   // banner rendered at the top can land outside the viewport the user is looking
-  // at. Pull it into view and focus it, which also puts it in the tab order right
-  // after the button that triggered it.
+  // at. Always pull it into view; only STEAL FOCUS on the save that raised it —
+  // grabbing focus on every later visit would hijack a user who came to Settings
+  // to edit something and already knows about the warning.
+  const focusBanner = useRef(false);
   useEffect(() => {
     if (!needsCheck.length) return;
     bannerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    bannerRef.current?.focus();
+    if (focusBanner.current) {
+      bannerRef.current?.focus();
+      focusBanner.current = false;
+    }
   }, [needsCheck]);
   const [tokenVal, setTokenVal] = useState<string>(getToken());
 
@@ -155,6 +165,7 @@ export function Settings() {
       const res = await saveConfig(updates);
       toast(`Saved ${Object.keys(updates).length} change${Object.keys(updates).length > 1 ? "s" : ""}`);
       const edge = res.requires_regression_check ?? [];
+      focusBanner.current = edge.length > 0;   // this save raised it — take focus
       setNeedsCheck(edge);
       try {
         if (edge.length) sessionStorage.setItem(PENDING_CHECK_KEY, JSON.stringify(edge));

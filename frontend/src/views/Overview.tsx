@@ -5,12 +5,30 @@ import { useApi } from "../hooks/useApi";
 import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api/client";
 import { fnum, pct, rstr, signClass } from "../lib/format";
 
+const MISMATCH_SHOWN = 3;
+
+// Mirrors backtest.db.reference_caveat: say when the list is truncated, so three
+// shown keys are never mistaken for three total.
+function mismatchText(keys: string[] | undefined): string {
+  const list = keys ?? [];
+  if (!list.length) return "";
+  const head = list.slice(0, MISMATCH_SHOWN).join("; ");
+  return list.length > MISMATCH_SHOWN
+    ? `${head}; … and ${list.length - MISMATCH_SHOWN} more`
+    : head;
+}
+
 export function Overview() {
   // Fetch several, not one: the newest journaled run is often an A/B leg, and
   // headlining it puts an experiment arm's numbers on the dashboard as though
   // they described the strategy. (Run 34 — a VIX-slope-gated leg — showed 44.32R
   // here next to the baseline's 90.83R, which reads as a collapse in the edge.)
-  const runs = useApi(() => getBacktests(20), []);
+  // More than one, but not twenty: the newest journaled run is often an A/B leg,
+  // and headlining it puts an experiment arm's numbers on the dashboard as though
+  // they described the strategy. (Run 34 — a VIX-slope-gated leg — showed 44.32R
+  // here next to the baseline's 90.83R, which reads as a collapse in the edge.)
+  // Five covers any realistic A/B streak without shipping unused param diffs.
+  const runs = useApi(() => getBacktests(5), []);
   const positions = useApi(getPositions, []);
   const scan = useApi(getScannerLatest, []);
 
@@ -20,7 +38,11 @@ export function Overview() {
   // check" and stays eligible — refusing those would leave no baseline at all.
   const r = all.find((x) => x.config_match !== false) ?? newest;
   const latestId = r?.id;
+  // Warn when we stepped over a run to find a baseline, AND when there was no
+  // baseline to find — otherwise a run of nothing but A/B legs headlines an
+  // experiment arm in silence, which is the failure this exists to prevent.
   const skipped = newest && r && newest.id !== r.id ? newest : undefined;
+  const unmatched = r?.config_match === false ? r : undefined;
   const monthly = useApi(() => (latestId ? getMonthly(latestId) : Promise.resolve(null)), [latestId]);
   const kpis: KpiItem[] = [
     { label: "Net total R", value: fnum(r?.total_r, 2), tone: (r?.total_r ?? 0) >= 0 ? "pos" : "neg" },
@@ -36,7 +58,22 @@ export function Overview() {
 
   return (
     <>
-      {skipped ? (
+      {unmatched ? (
+        <div className="banner warn" role="status">
+          <i className="ti ti-alert-triangle" />
+          <div>
+            <strong>
+              No baseline run available — these numbers are from an A/B leg.
+            </strong>
+            <div className="mut" style={{ marginTop: 4 }}>
+              Run #{unmatched.id} ran a different config from the shipped{" "}
+              <code>filters.yaml</code>, and no recent run matched it, so the figures below
+              describe a different strategy. Re-journal a full-window baseline.{" "}
+              {mismatchText(unmatched.config_mismatch)}
+            </div>
+          </div>
+        </div>
+      ) : skipped ? (
         <div className="banner warn" role="status">
           <i className="ti ti-flask" />
           <div>
@@ -46,7 +83,7 @@ export function Overview() {
             <div className="mut" style={{ marginTop: 4 }}>
               Run #{skipped.id} ({fnum(skipped.total_r, 2)}R) ran a different config from the
               shipped <code>filters.yaml</code>, so it measured a different strategy — an A/B
-              leg, not the edge. {skipped.config_mismatch?.slice(0, 3).join("; ")}
+              leg, not the edge. {mismatchText(skipped.config_mismatch)}
             </div>
           </div>
         </div>

@@ -82,13 +82,14 @@ def backtests(limit: int = 20):
     # reconcilers cannot disagree about what a baseline is. (`params` above is a
     # looser display diff — it includes scan gates, which the backtester never
     # evaluates, so it flags runs that are in fact like-for-like.)
-    from backtest.db import config_mismatch
+    from backtest.db import _shipped_filters, config_mismatch
+    shipped = _shipped_filters()          # parse filters.yaml ONCE, not per row
     for r in rows:
         raw = r.pop("config_json", None)
         diff, window = _config_diff(raw)
         r["params"] = diff
         r["window"] = window
-        mismatch = config_mismatch(raw)
+        mismatch = config_mismatch(raw, shipped)
         r["config_match"] = None if mismatch is None else not mismatch
         r["config_mismatch"] = mismatch or []
     return rows

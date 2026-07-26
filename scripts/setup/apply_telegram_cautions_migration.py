@@ -51,10 +51,13 @@ def ddl() -> str:
     body: list[str] = []
     for line in text[start:].splitlines():
         code = line.split("--", 1)[0].rstrip()
-        body.append(line)
         if code.endswith(";"):
-            statement = "\n".join(body)
-            return statement[:statement.rindex(";")].strip()
+            # Cut on the CODE portion of this line, never the raw text: a trailing
+            # `-- created 2026; see X` would otherwise win the search and leave the
+            # real terminator embedded plus half a comment glued on.
+            body.append(code[:-1].rstrip())
+            return "\n".join(body).strip()
+        body.append(line)
     raise SystemExit(f"unterminated CREATE TABLE for {TABLE} in {SCHEMA}")
 
 
