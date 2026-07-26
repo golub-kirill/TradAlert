@@ -1,15 +1,41 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TradAlert · control panel</title>
+  <title>TradAlert — a systematic signal engine that shows its work</title>
+  <meta name="description" content="A rules-based scanner, backtester and journal for equity swing signals. Every figure carries its provenance." />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="theme-color" content="#0a0a0b" />
+
+  <!-- Resolve the theme before first paint so the page never flashes the wrong one. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("ta-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { /* private mode — fall through to the media query */ }
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <!-- Load fonts/icons non-render-blocking so first paint never waits on the CDN (graceful offline). -->
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css" media="print" onload="this.media='all'" />
+  <!-- Fonts/icons load non-render-blocking so first paint never waits on the CDN.
+       The panel must stay usable offline, hence the system fallback stacks. -->
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap"
+    media="print"
+    onload="this.media='all'"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css"
+    media="print"
+    onload="this.media='all'"
+  />
   <noscript>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.24.0/dist/tabler-icons.min.css" />
   </noscript>
 </head>

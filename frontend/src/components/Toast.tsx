@@ -1,24 +1,60 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
-type ToastFn = (msg: string) => void;
+interface ToastItem {
+  id: number;
+  msg: string;
+  kind: "info" | "error";
+}
+
+type ToastFn = (msg: string, kind?: "info" | "error") => void;
 const Ctx = createContext<ToastFn>(() => {});
 
-export function ToastProvider({ children }: { children: ReactNode }) {
-  const [msg, setMsg] = useState("");
-  const [show, setShow] = useState(false);
-  const timer = useRef<number | undefined>(undefined);
+const LIFETIME = 2600;
+const MAX = 3;
 
-  const toast = useCallback((m: string) => {
-    setMsg(m);
-    setShow(true);
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setShow(false), 2600);
+export function ToastProvider({ children }: { children: ReactNode }) {
+  const [items, setItems] = useState<ToastItem[]>([]);
+  const timers = useRef<number[]>([]);
+
+  // Clear pending dismissals on unmount — otherwise a toast fired seconds before
+  // teardown calls setItems on a torn-down provider.
+  useEffect(
+    () => () => {
+      timers.current.forEach(window.clearTimeout);
+      timers.current = [];
+    },
+    [],
+  );
+
+  const toast = useCallback<ToastFn>((msg, kind = "info") => {
+    const id = Date.now() + Math.random();
+    // Cap the stack so a burst of errors can't paper over the UI.
+    setItems((prev) => [...prev, { id, msg, kind }].slice(-MAX));
+    const t = window.setTimeout(() => {
+      setItems((prev) => prev.filter((x) => x.id !== id));
+      timers.current = timers.current.filter((x) => x !== t);
+    }, LIFETIME);
+    timers.current.push(t);
   }, []);
 
   return (
     <Ctx.Provider value={toast}>
       {children}
-      <div className={"toast" + (show ? " show" : "")}>{msg}</div>
+      <div className="toasts" role="status" aria-live="polite">
+        {items.map((t) => (
+          <div key={t.id} className={"toast" + (t.kind === "error" ? " toast--neg" : "")}>
+            {t.msg}
+          </div>
+        ))}
+      </div>
     </Ctx.Provider>
   );
 }

@@ -1,7 +1,10 @@
-import type {FiredSignal} from "../api/types";
-import {fnum} from "../lib/format";
+import type { ReactNode } from "react";
+import type { FiredSignal } from "../api/types";
+import { fnum } from "../lib/format";
 
-// open/buy = green, hold (entry on a name you already hold) = blue, exit/sell = red.
+// open/buy = lime rail, hold (entry on a name you already hold) = neutral rail,
+// exit/sell = coral rail. Colour confirms the state; the glyph and label carry
+// it, so nothing depends on hue alone.
 type Side = "buy" | "hold" | "sell";
 
 function sideOf(f: FiredSignal, held: boolean): Side {
@@ -17,6 +20,11 @@ function rr(f: FiredSignal): number | null {
 }
 
 const CHIP: Record<Side, string> = { buy: "Buy", hold: "Hold", sell: "Sell" };
+const GLYPH: Record<Side, string> = {
+  buy: "ti-arrow-up-right",
+  hold: "ti-minus",
+  sell: "ti-arrow-down-right",
+};
 
 const TYPE_LABEL: Record<string, string> = {
   regime: "Regime exit",
@@ -32,12 +40,16 @@ export function SignalCard({
   busy,
   onOpen,
   onClose,
+  confirm,
 }: {
   f: FiredSignal;
   held: boolean;
   busy: boolean;
   onOpen: (f: FiredSignal) => void;
   onClose: (f: FiredSignal) => void;
+  /** Confirmation prompt for a pending action on THIS signal. Rendered inside
+   *  the card so the question appears where the button was pressed. */
+  confirm?: ReactNode;
 }) {
   const side = sideOf(f, held);
   const isExit = side === "sell";
@@ -49,69 +61,83 @@ export function SignalCard({
   const ratio = rr(f);
 
   return (
-    <div className={"scard " + side}>
-      <div className="scard-top">
+    <article className={"signal signal--" + side}>
+      <div className="signal__top">
         <div style={{ minWidth: 0 }}>
-          <div className="scard-tkr">{f.ticker}</div>
-          <div className="scard-name">{f.name || typeLabel}</div>
+          <h3 className="signal__ticker">{f.ticker}</h3>
+          <p className="signal__name">{f.name || typeLabel}</p>
         </div>
-        <span className={"schip " + side}>{chip}</span>
-      </div>
-
-      <div className="statgrid">
-        <div className="stat">
-          <div className="k">Close</div>
-          <div className="val">{fnum(f.close, 2)}</div>
-        </div>
-        <div className="stat">
-          <div className="k">Stop</div>
-          <div className="val">{fnum(f.stop_price, 2)}</div>
-        </div>
-        <div className="stat">
-          <div className="k">Target</div>
-          <div className="val">{fnum(f.target_price, 2)}</div>
-        </div>
-        <div className="stat">
-          <div className="k">R:R</div>
-          <div className="val">{ratio == null ? "—" : ratio.toFixed(2)}</div>
-        </div>
-      </div>
-
-      {reason ? <div className="scard-reason">{reason}</div> : null}
-
-        {f.advisor_note ? (
-            <div className="scard-advisor">
-                <i className="ti ti-robot"/>
-                <span>{f.advisor_note}</span>
-            </div>
-        ) : null}
-
-      <div className="scard-foot">
-        <span className="scard-tier">
-          <span className="stag">{typeLabel}</span>
-          {f.tier === "NEEDS_REVIEW" ? <span className="badge b-rev">Review</span> : null}
+        <span className={"signal__chip signal__chip--" + side}>
+          <i className={"ti " + GLYPH[side]} aria-hidden="true" />
+          {chip}
         </span>
+      </div>
+
+      <div className="signal__stats">
+        <div>
+          <div className="signal__k">Close</div>
+          <div className="signal__v">{fnum(f.close, 2)}</div>
+        </div>
+        <div>
+          <div className="signal__k">Stop</div>
+          <div className="signal__v">{fnum(f.stop_price, 2)}</div>
+        </div>
+        <div>
+          <div className="signal__k">Target</div>
+          <div className="signal__v">{fnum(f.target_price, 2)}</div>
+        </div>
+        <div>
+          <div className="signal__k">R:R</div>
+          <div className="signal__v">{ratio == null ? "—" : ratio.toFixed(2)}</div>
+        </div>
+      </div>
+
+      {reason ? <p className="signal__reason">{reason}</p> : null}
+
+      {f.advisor_note ? (
+        <p className="signal__advisor">
+          <i className="ti ti-robot" aria-hidden="true" />
+          <span>{f.advisor_note}</span>
+        </p>
+      ) : null}
+
+      <div className="signal__foot">
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--sp-2)" }}>
+          <span className="tag">{typeLabel}</span>
+          {f.tier === "NEEDS_REVIEW" ? <span className="tag tag--warn">Review</span> : null}
+        </span>
+
         {side === "buy" ? (
-          <button className="btn success" disabled={busy || f.close == null} onClick={() => onOpen(f)}>
-            <i className="ti ti-plus" />
+          <button
+            className="btn btn--sm btn--pos"
+            disabled={busy || f.close == null}
+            aria-busy={busy || undefined}
+            onClick={() => onOpen(f)}
+          >
+            <i className="ti ti-plus" aria-hidden="true" />
             Open
           </button>
         ) : side === "hold" ? (
-          <span className="scard-tier">
-            <i className="ti ti-circle-check" />
+          <span className="mut" style={{ display: "inline-flex", alignItems: "center", gap: "var(--sp-1)", fontSize: "var(--fs-micro)" }}>
+            <i className="ti ti-circle-check" aria-hidden="true" />
             Holding
           </span>
         ) : held ? (
-          <button className="btn danger" disabled={busy} onClick={() => onClose(f)}>
-            <i className="ti ti-logout" />
+          <button
+            className="btn btn--sm btn--neg"
+            disabled={busy}
+            aria-busy={busy || undefined}
+            onClick={() => onClose(f)}
+          >
+            <i className="ti ti-logout" aria-hidden="true" />
             Close
           </button>
         ) : (
-          <span className="mut" style={{ fontSize: 11 }}>
-            flat
-          </span>
+          <span className="mut" style={{ fontSize: "var(--fs-micro)" }}>flat</span>
         )}
       </div>
-    </div>
+
+      {confirm}
+    </article>
   );
 }

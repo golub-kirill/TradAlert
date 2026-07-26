@@ -1,0 +1,371 @@
+/* Public landing page. See DESIGN.md §5, §9 and Appendix B. */
+
+.lp {
+  --lp-gutter: var(--sp-5);
+}
+.lp__wrap {
+  width: 100%;
+  max-width: var(--w-content);
+  margin: 0 auto;
+  padding-inline: var(--lp-gutter);
+}
+
+/* ── top nav ────────────────────────────────────────────────────────────── */
+.lp__nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  transition: background var(--t-med), border-color var(--t-med), backdrop-filter var(--t-med);
+  border-bottom: 1px solid transparent;
+}
+.lp__nav.stuck {
+  background: rgb(var(--rgb-surface-0) / 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom-color: var(--border);
+}
+.lp__navinner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  height: 64px;
+}
+.lp__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 700 1.0625rem / 1 var(--font-display);
+  letter-spacing: -0.02em;
+  text-decoration: none;
+  border-radius: var(--r);
+}
+.lp__brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.lp__navact {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ── hero ───────────────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 100svh;
+  padding: calc(64px + var(--sp-9)) 0 var(--sp-9);
+  overflow: hidden;
+}
+/* The equity curve is the hero graphic — full-bleed, behind the type. It is
+   masked away under the text column: a bright lime stroke crossing body copy
+   costs more legibility than the graphic is worth, and the curve's interesting
+   end is on the right anyway. */
+.hero__curve {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 62%;
+  pointer-events: none;
+  opacity: 0.85;
+  mask-image: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 38%,
+    rgb(0 0 0 / 0.35) 52%,
+    #000 68%
+  );
+  -webkit-mask-image: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 38%,
+    rgb(0 0 0 / 0.35) 52%,
+    #000 68%
+  );
+}
+.hero__curve svg {
+  width: 100%;
+  height: 100%;
+}
+.hero__inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+}
+.hero__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: rgb(var(--rgb-surface-1) / 0.6);
+  margin-bottom: var(--sp-5);
+}
+.hero__title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-display-xl);
+  line-height: 0.9;
+  letter-spacing: -0.045em;
+  max-width: 15ch;
+}
+/* Exactly one lime word carries the brand — no gradient text anywhere. */
+.hero__title em {
+  font-style: normal;
+  color: var(--accent);
+}
+.hero__sub {
+  max-width: 52ch;
+  margin-top: var(--sp-5);
+  font-size: var(--fs-body-lg);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-6);
+}
+.hero__figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-8);
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+.hero__fig {
+  min-width: 116px;
+}
+.hero__fignum {
+  font: 500 clamp(1.5rem, 2.6vw, 2.25rem) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+.hero__figlabel {
+  margin-top: var(--sp-2);
+}
+
+/* ── section frame ──────────────────────────────────────────────────────── */
+.sec {
+  padding: var(--sp-9) 0;
+  border-top: 1px solid var(--border);
+  /* Clears the fixed nav when an in-page anchor lands here. Without it the
+     section top slides under the nav and only the generous top padding keeps
+     the heading visible — which stops being true at the smaller breakpoints. */
+  scroll-margin-top: 80px;
+}
+.sec__head {
+  max-width: 62ch;
+  margin-bottom: var(--sp-7);
+}
+.sec__title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-display-l);
+  line-height: 1;
+  letter-spacing: -0.035em;
+  margin-top: var(--sp-3);
+}
+.sec__lede {
+  margin-top: var(--sp-4);
+  max-width: var(--w-prose);
+  font-size: var(--fs-body-lg);
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+/* ── marquee band (the system's own vocabulary) ─────────────────────────── */
+.band {
+  padding: var(--sp-5) 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.band__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-5);
+  font: 500 var(--fs-data) / 1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.band__item i {
+  font-size: var(--icon-xs);
+  color: var(--accent);
+}
+
+/* ── pipeline (the "smarter" story, told in falling counts) ─────────────── */
+.pipe {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--sp-3);
+}
+.pipe__stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  transition: border-color var(--t-med), background var(--t-med);
+}
+.pipe__stage:hover {
+  border-color: var(--border-strong);
+}
+/* The funnel made literal: each stage keeps less than the one before it. */
+.pipe__bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  width: var(--w, 100%);
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 700ms var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 90ms);
+}
+.in .pipe__bar,
+.pipe__stage.in .pipe__bar {
+  transform: scaleX(1);
+}
+.pipe__num {
+  font: 500 clamp(1.5rem, 2.4vw, 2rem) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+.pipe__name {
+  font: 600 var(--fs-h3) / 1.3 var(--font-sans);
+}
+.pipe__desc {
+  font-size: var(--fs-micro);
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ── capability bento ───────────────────────────────────────────────────── */
+.cap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 220px;
+  padding: var(--sp-5);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.cap:hover {
+  border-color: var(--border-strong);
+}
+.cap__icon {
+  font-size: var(--icon-xl);
+  color: var(--accent);
+}
+.cap__title {
+  font: 600 1.0625rem / 1.3 var(--font-sans);
+}
+.cap__desc {
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.cap__foot {
+  margin-top: auto;
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-hairline);
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  color: var(--text-muted);
+}
+/* Preview crops are real UI, never a flat colour block. */
+.cap__preview {
+  margin: var(--sp-2) calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5));
+  padding: var(--sp-4) var(--sp-5) 0;
+  border-top: 1px solid var(--border-hairline);
+  background: var(--surface-0);
+}
+
+/* ── footer ─────────────────────────────────────────────────────────────── */
+.lp__foot {
+  padding: var(--sp-7) 0 var(--sp-8);
+  border-top: 1px solid var(--border);
+}
+.lp__footrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+.lp__footnote {
+  margin-top: var(--sp-5);
+  font-size: var(--fs-micro);
+  line-height: 1.6;
+  color: var(--text-muted);
+  max-width: var(--w-prose);
+}
+/* The one detail worth noticing: this chip is wired to the real API. */
+.livechip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+
+/* ── responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .pipe {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .sec {
+    padding: var(--sp-8) 0;
+  }
+}
+@media (max-width: 640px) {
+  .lp {
+    --lp-gutter: var(--sp-4);
+  }
+  .hero {
+    min-height: auto;
+    padding: calc(64px + var(--sp-8)) 0 var(--sp-8);
+  }
+  .hero__title {
+    max-width: none;
+  }
+  .hero__curve {
+    height: 44%;
+    opacity: 0.6;
+  }
+  .hero__figures {
+    gap: var(--sp-5);
+    margin-top: var(--sp-6);
+  }
+  .pipe {
+    grid-template-columns: 1fr;
+  }
+  .sec {
+    padding: var(--sp-7) 0;
+  }
+  .cap {
+    min-height: 0;
+  }
+}

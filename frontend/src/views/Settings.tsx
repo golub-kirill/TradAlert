@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, getConfig, getToken, saveConfig, setToken } from "../api/client";
-import { Card, Note } from "../components/Card";
+import { Card } from "../components/Card";
 import { useApi } from "../hooks/useApi";
 import { useToast } from "../components/Toast";
 import { useRefresh } from "../state/refresh";
@@ -48,6 +48,7 @@ type Row = [label: string, key: string];
 interface Section {
   title: string;
   icon: string;
+  span: 5 | 7;
   rows: Row[];
 }
 
@@ -55,6 +56,7 @@ const SECTIONS: Section[] = [
   {
     title: "Scan filters",
     icon: "ti-adjustments",
+    span: 7,
     rows: [
       ["Min price", "filters.price.min_price"],
       ["Min $ volume 20d", "filters.liquidity.min_dollar_volume_20d"],
@@ -73,6 +75,7 @@ const SECTIONS: Section[] = [
   {
     title: "Layers & risk",
     icon: "ti-server-2",
+    span: 5,
     rows: [
       ["Macro layer", "settings.macro.enabled"],
       ["Behavioral layer", "settings.behavioral.enabled"],
@@ -85,6 +88,7 @@ const SECTIONS: Section[] = [
   {
     title: "Notifications",
     icon: "ti-bell",
+    span: 5,
     rows: [
       ["Telegram alerts", "settings.telegram.enabled"],
       ['Send "no signals" message', "settings.telegram.send_stand_down"],
@@ -176,7 +180,7 @@ export function Settings() {
       cfg.reload();
       refresh();
     } catch (e) {
-      toast(e instanceof ApiError || e instanceof Error ? e.message : String(e));
+      toast(e instanceof ApiError || e instanceof Error ? e.message : String(e), "error");
     } finally {
       setSaving(false);
     }
@@ -209,22 +213,33 @@ export function Settings() {
     );
   }
 
-  if (cfg.error) return <div className="banner">Config unavailable: {cfg.error}</div>;
+  if (cfg.error)
+    return (
+      <div className="banner banner--neg" role="alert">
+        <i className="ti ti-alert-triangle banner__icon" aria-hidden="true" />
+        <div className="banner__body">
+          <strong>Config unavailable.</strong>
+          <div className="banner__note">
+            {cfg.error}
+          </div>
+        </div>
+      </div>
+    );
 
   return (
     <>
       {needsCheck.length > 0 ? (
-        <div className="banner warn" role="alert" ref={bannerRef} tabIndex={-1}>
-          <i className="ti ti-alert-triangle" />
-          <div>
+        <div className="banner banner--warn" role="alert" ref={bannerRef} tabIndex={-1}>
+          <i className="ti ti-alert-triangle banner__icon" aria-hidden="true" />
+          <div className="banner__body">
             <strong>
               Edge-defining {needsCheck.length === 1 ? "parameter" : "parameters"} changed by
               the last saved edit — the regression baseline no longer describes the live config.
             </strong>
-            <div className="mut" style={{ marginTop: 4 }}>
+            <div className="banner__note">
               {needsCheck.join(", ")}
             </div>
-            <div className="mut" style={{ marginTop: 4 }}>
+            <div className="banner__note">
               These change which trades the strategy takes. Re-run{" "}
               <code>python scripts/paired_ab.py</code> before trusting the shipped headline,
               and expect live behaviour to diverge from the backtest until you do. The change
@@ -236,22 +251,29 @@ export function Settings() {
           </button>
         </div>
       ) : null}
-      <div className="grid2">
+
+      <div className="bento">
         {SECTIONS.map((sec) => (
-          <Card key={sec.title} title={sec.title} icon={sec.icon}>
+          <Card key={sec.title} title={sec.title} icon={sec.icon} span={sec.span} spot>
             {sec.rows.map(([label, key]) => (
               <div className="setrow" key={key}>
-                <span className="lbl">{label}</span>
+                <span className="setrow__label">{label}</span>
                 {control(key)}
               </div>
             ))}
           </Card>
         ))}
 
-        <Card title="Access" icon="ti-key">
+        <Card title="Access" icon="ti-key" span={7}>
           <div className="setrow">
-            <span className="lbl">API token</span>
+            <label className="setrow__label" htmlFor="api-token">
+              API token
+              <span className="setrow__hint">
+                Only needed if the server requires a token for changes.
+              </span>
+            </label>
             <input
+              id="api-token"
               type="password"
               value={tokenVal}
               placeholder="optional"
@@ -260,30 +282,34 @@ export function Settings() {
           </div>
           <button
             className="btn"
-            style={{ marginTop: 12 }}
+            style={{ marginTop: "var(--sp-4)" }}
             onClick={() => {
               setToken(tokenVal.trim());
               toast("API token saved");
             }}
           >
-            <i className="ti ti-device-floppy" />
+            <i className="ti ti-device-floppy" aria-hidden="true" />
             Save token
           </button>
-          <Note>Only needed if the server requires a token for changes.</Note>
         </Card>
       </div>
 
       {pending > 0 ? (
         <div className="savebar">
-          <span className="mut">
+          <span className="mut" style={{ fontSize: "var(--fs-data)" }}>
             {pending} unsaved change{pending > 1 ? "s" : ""}
           </span>
-          <span style={{ display: "flex", gap: 8 }}>
+          <span style={{ display: "flex", gap: "var(--sp-2)" }}>
             <button className="btn" onClick={() => setEdits(seed())} disabled={saving}>
               Reset
             </button>
-            <button className="btn pri" onClick={onSave} disabled={saving}>
-              <i className="ti ti-device-floppy" />
+            <button
+              className="btn btn--primary"
+              onClick={onSave}
+              disabled={saving}
+              aria-busy={saving || undefined}
+            >
+              <i className="ti ti-device-floppy" aria-hidden="true" />
               {saving ? "Saving…" : "Save changes"}
             </button>
           </span>

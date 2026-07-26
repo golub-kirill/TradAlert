@@ -1,0 +1,293 @@
+/* L2 motion layer — see DESIGN.md §7.
+   No animation library, no WebGL, no scroll-jacking: CSS keyframes plus one
+   IntersectionObserver and one rAF pointer loop. */
+
+/* ── keyframes ──────────────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes maskUp {
+  from {
+    transform: translateY(105%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes skel {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ping {
+  from {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes spark {
+  from {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translate(var(--sx), var(--sy)) scale(0.2);
+    opacity: 0;
+  }
+}
+/* Background drift: moves a gradient's position, not an element — no layout,
+   no compositing pressure, and safe to leave running. */
+@keyframes drift {
+  0% {
+    background-position: 18% 0%;
+  }
+  50% {
+    background-position: 72% 12%;
+  }
+  100% {
+    background-position: 18% 0%;
+  }
+}
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* ── effect 1: hero mask reveal, per-word stagger ───────────────────────── */
+.reveal-mask {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  padding-bottom: 0.06em; /* room for descenders inside the clip */
+}
+.reveal-mask > span {
+  display: inline-block;
+  animation: maskUp 700ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+
+/* ── effect 2: blur-to-sharp scroll reveal (settles to blur(0)) ─────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  filter: blur(6px);
+  transition: opacity var(--t-slow), transform var(--t-slow), filter var(--t-slow);
+}
+.reveal.in {
+  opacity: 1;
+  transform: none;
+  filter: blur(0);
+}
+
+/* ── effect 3: body word cascade ────────────────────────────────────────── */
+.cascade > span {
+  opacity: 0.18;
+  transition: opacity 420ms var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 26ms);
+}
+.cascade.in > span {
+  opacity: 1;
+}
+
+/* ── effect 4: magnetic CTA + click spark ───────────────────────────────── */
+.magnetic {
+  transform: translate(var(--dx, 0px), var(--dy, 0px));
+  transition: transform 220ms var(--ease-out);
+}
+.magnetic:active {
+  transition-duration: 60ms;
+}
+.spark {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+  animation: spark 420ms var(--ease-out) both;
+}
+
+/* ── effect 5: self-drawing equity curve ────────────────────────────────── */
+.curve__line {
+  stroke-dasharray: var(--len, 2000);
+  stroke-dashoffset: var(--len, 2000);
+  animation: draw 1600ms var(--ease-out) forwards;
+}
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.curve__area {
+  opacity: 0;
+  animation: areaIn 700ms var(--ease-out) 960ms forwards;
+}
+@keyframes areaIn {
+  to {
+    opacity: 1;
+  }
+}
+
+/* ── effect 6: grain + slow lime drift (hero only) ──────────────────────── */
+.atmos {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.atmos__glow {
+  position: absolute;
+  inset: -20%;
+  background: radial-gradient(
+    46% 42% at 50% 50%,
+    rgb(var(--rgb-accent) / 0.11),
+    transparent 70%
+  );
+  background-size: 160% 160%;
+  animation: drift 18s ease-in-out infinite;
+}
+.atmos__grain {
+  position: absolute;
+  inset: 0;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: overlay;
+  background-image: var(--grain-url);
+  background-size: 180px 180px;
+}
+
+/* ── staggered grid entrance ────────────────────────────────────────────── */
+/* nth-child supplies the index so children need no per-item wiring; --i is the
+   override for lists that already carry one. Past the 12th item the delay caps,
+   which is the right behaviour anyway — a 20-card grid should not take 1.2s. */
+.stagger > * {
+  animation: fadeUp 420ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 11) * 60ms);
+}
+.stagger > *:nth-child(1) {
+  --i: 0;
+}
+.stagger > *:nth-child(2) {
+  --i: 1;
+}
+.stagger > *:nth-child(3) {
+  --i: 2;
+}
+.stagger > *:nth-child(4) {
+  --i: 3;
+}
+.stagger > *:nth-child(5) {
+  --i: 4;
+}
+.stagger > *:nth-child(6) {
+  --i: 5;
+}
+.stagger > *:nth-child(7) {
+  --i: 6;
+}
+.stagger > *:nth-child(8) {
+  --i: 7;
+}
+.stagger > *:nth-child(9) {
+  --i: 8;
+}
+.stagger > *:nth-child(10) {
+  --i: 9;
+}
+.stagger > *:nth-child(11) {
+  --i: 10;
+}
+
+/* ── marquee band ───────────────────────────────────────────────────────── */
+.marquee {
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.marquee__track {
+  display: flex;
+  width: max-content;
+  animation: marquee 42s linear infinite;
+}
+.marquee:hover .marquee__track {
+  animation-play-state: paused;
+}
+
+/* ── route cross-fade ───────────────────────────────────────────────────── */
+.route-fade {
+  animation: fadeUp 180ms var(--ease-out) both;
+}
+
+/* ── reduced motion: every effect has a complete static path ────────────── */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Nothing may be left invisible or mid-transform when motion is off. */
+  .reveal {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+  .cascade > span {
+    opacity: 1;
+  }
+  .reveal-mask > span {
+    transform: none;
+  }
+  .curve__line {
+    stroke-dashoffset: 0;
+  }
+  .curve__area {
+    opacity: 1;
+  }
+  .magnetic {
+    transform: none;
+  }
+  .marquee__track {
+    animation: none;
+    transform: none;
+  }
+  .atmos__glow {
+    animation: none;
+  }
+}

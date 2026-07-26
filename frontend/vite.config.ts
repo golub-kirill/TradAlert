@@ -14,7 +14,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:8000",
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: false,
+        // Vite answers an unreachable upstream with 500, which is indistinguishable
+        // from the API itself erroring. Report 502 instead: the client only falls
+        // back to demo data when the API never answered, and must never substitute
+        // sample figures for a real server error.
+        configure: (proxy) => {
+          proxy.on("error", (_err, _req, res) => {
+            const r = res as import("http").ServerResponse;
+            if (!r.headersSent) r.writeHead(502, { "Content-Type": "application/json" });
+            r.end(JSON.stringify({ detail: "control API not running on :8000" }));
+          });
+        },
+      },
     },
   },
 });

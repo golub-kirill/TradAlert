@@ -1,11 +1,20 @@
-import {useEffect, useRef, useState} from "react";
-import {ApiError, getBacktests, getBacktestTrades, getConfig, runBacktest, streamJob} from "../api/client";
-import type {BacktestMode, BacktestRun, BacktestRunReq} from "../api/types";
-import {Card, Note} from "../components/Card";
-import {DateField} from "../components/DateField";
-import {useApi} from "../hooks/useApi";
-import {useToast} from "../components/Toast";
-import {fnum, pct, rstr, signClass, today} from "../lib/format";
+import { useEffect, useRef, useState } from "react";
+import {
+  ApiError,
+  getBacktests,
+  getBacktestTrades,
+  getConfig,
+  runBacktest,
+  streamJob,
+} from "../api/client";
+import type { BacktestMode, BacktestRun, BacktestRunReq } from "../api/types";
+import { Card, Empty } from "../components/Card";
+import { DateField } from "../components/DateField";
+import { Field, Slider, ToggleRow } from "../components/Field";
+import { SkeletonText } from "../components/Skeleton";
+import { useApi } from "../hooks/useApi";
+import { useToast } from "../components/Toast";
+import { fnum, pct, rstr, signClass, today } from "../lib/format";
 
 function fiveYearsAgo(): string {
   const d = new Date();
@@ -20,23 +29,6 @@ function fmtVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "on" : "off";
   if (Array.isArray(v)) return v.join(", ");
   return String(v);
-}
-
-function Toggle({
-  label,
-  on,
-  set,
-}: {
-  label: string;
-  on: boolean;
-  set: (v: boolean) => void;
-}) {
-  return (
-    <div className="setrow">
-      <span className="lbl">{label}</span>
-      <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} />
-    </div>
-  );
 }
 
 export function Backtest() {
@@ -66,30 +58,30 @@ export function Backtest() {
   const stopRef = useRef<(() => void) | null>(null);
   useEffect(() => () => stopRef.current?.(), []);
 
-    // Seed the form defaults from the LIVE shipped config (GET /config) so the sliders
-    // can't silently drift from filters.yaml / settings.yaml — the literals above are
-    // only the fallback if the fetch fails. Applied once, on mount.
-    const defaultsApplied = useRef(false);
-    useEffect(() => {
-        getConfig()
-            .then((cfg) => {
-                if (defaultsApplied.current) return;
-                defaultsApplied.current = true;
-                const ex = (cfg.filters?.execution ?? {}) as Record<string, unknown>;
-                const rk = (cfg.settings?.risk ?? {}) as Record<string, unknown>;
-                const n = (v: unknown, d: number) => (typeof v === "number" ? v : d);
-                setRisk(n(rk.max_open_risk, 5));
-                setHold(n(ex.max_hold_days, 25));
-                if (ex.max_hold_mode === "hard" || ex.max_hold_mode === "if_not_profit")
-                    setHoldMode(ex.max_hold_mode);
-                const beTrig = n(ex.breakeven_trigger_r, 1);
-                setBeOn(beTrig > 0);
-                if (beTrig > 0) setBe(beTrig);
-            })
-            .catch(() => {
-                /* keep the shipped-literal fallbacks above */
-            });
-    }, []);
+  // Seed the form defaults from the LIVE shipped config (GET /config) so the sliders
+  // can't silently drift from filters.yaml / settings.yaml — the literals above are
+  // only the fallback if the fetch fails. Applied once, on mount.
+  const defaultsApplied = useRef(false);
+  useEffect(() => {
+    getConfig()
+      .then((cfg) => {
+        if (defaultsApplied.current) return;
+        defaultsApplied.current = true;
+        const ex = (cfg.filters?.execution ?? {}) as Record<string, unknown>;
+        const rk = (cfg.settings?.risk ?? {}) as Record<string, unknown>;
+        const n = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+        setRisk(n(rk.max_open_risk, 5));
+        setHold(n(ex.max_hold_days, 25));
+        if (ex.max_hold_mode === "hard" || ex.max_hold_mode === "if_not_profit")
+          setHoldMode(ex.max_hold_mode);
+        const beTrig = n(ex.breakeven_trigger_r, 1);
+        setBeOn(beTrig > 0);
+        if (beTrig > 0) setBe(beTrig);
+      })
+      .catch(() => {
+        /* keep the shipped-literal fallbacks above */
+      });
+  }, []);
 
   async function onRun() {
     const req: BacktestRunReq = {
@@ -123,7 +115,10 @@ export function Backtest() {
         },
       );
     } catch (err) {
-      setLog("Failed: " + (err instanceof ApiError || err instanceof Error ? err.message : String(err)));
+      setLog(
+        "Failed: " +
+          (err instanceof ApiError || err instanceof Error ? err.message : String(err)),
+      );
       setRunning(false);
     }
   }
@@ -133,147 +128,171 @@ export function Backtest() {
 
   return (
     <>
-      <Card title="Run a backtest" icon="ti-flask">
-        <div className="dates">
-          <div className="fld">
-            From
-            <DateField value={from} onChange={setFrom} />
+      <div className="bento">
+        <Card title="Window and mode" icon="ti-calendar-stats" span={5} spot>
+          <div className="formrow">
+            <Field label="From">{() => <DateField value={from} onChange={setFrom} />}</Field>
+            <Field label="To">{() => <DateField value={to} onChange={setTo} />}</Field>
+            <Field label="Mode">
+              {(id) => (
+                <select
+                  id={id}
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as BacktestMode)}
+                >
+                  <option value="baseline">Baseline</option>
+                  <option value="sweep">Parameter sweep</option>
+                  <option value="walk-forward">Walk-forward</option>
+                  <option value="robustness">Robustness</option>
+                </select>
+              )}
+            </Field>
           </div>
-          <div className="fld">
-            To
-            <DateField value={to} onChange={setTo} />
-          </div>
-          <div className="fld">
-            Mode
-            <select value={mode} onChange={(e) => setMode(e.target.value as BacktestMode)}>
-              <option value="baseline">Baseline</option>
-              <option value="sweep">Parameter sweep</option>
-              <option value="walk-forward">Walk-forward</option>
-              <option value="robustness">Robustness</option>
-            </select>
-          </div>
-        </div>
 
-        <div className="ctrl">
-          <label>Open-risk budget</label>
-          <input
-            type="range"
+          <button
+            className="btn btn--primary btn--lg"
+            onClick={onRun}
+            disabled={running}
+            aria-busy={running || undefined}
+            style={{ marginTop: "var(--sp-4)", width: "100%" }}
+          >
+            <i className={running ? "ti ti-loader-2" : "ti ti-player-play"} aria-hidden="true" />
+            {running ? "Running…" : "Run backtest"}
+          </button>
+
+          {log ? (
+            <pre className="log" style={{ marginTop: "var(--sp-4)" }}>
+              {log}
+            </pre>
+          ) : null}
+        </Card>
+
+        <Card title="Parameters" icon="ti-adjustments" span={7} spot>
+          <Slider
+            label="Open-risk budget"
+            value={risk}
             min={1}
             max={10}
             step={0.5}
-            value={risk}
-            onChange={(e) => setRisk(Number(e.target.value))}
+            onChange={setRisk}
+            format={(v) => v.toFixed(1)}
           />
-          <span className="out">{risk.toFixed(1)}</span>
-        </div>
-        <div className="ctrl">
-          <label>Max hold (days)</label>
-          <input
-            type="range"
+          <Slider
+            label="Max hold (days)"
+            value={hold}
             min={5}
             max={40}
             step={1}
-            value={hold}
-            onChange={(e) => setHold(Number(e.target.value))}
+            onChange={setHold}
+            format={(v) => String(Math.round(v))}
           />
-          <span className="out">{Math.round(hold)}</span>
-        </div>
-        <div className="ctrl">
-          <label>Max-hold mode</label>
-          <select
-            value={holdMode}
-            onChange={(e) => setHoldMode(e.target.value as "if_not_profit" | "hard")}
-            style={{ flex: 1 }}
-          >
-            <option value="if_not_profit">If not in profit (let winners run)</option>
-            <option value="hard">Hard (always exit at cap)</option>
-          </select>
-        </div>
+          <div className="setrow">
+            <label className="setrow__label" htmlFor="holdmode">
+              Max-hold mode
+            </label>
+            <select
+              id="holdmode"
+              style={{ width: 260 }}
+              value={holdMode}
+              onChange={(e) => setHoldMode(e.target.value as "if_not_profit" | "hard")}
+            >
+              <option value="if_not_profit">If not in profit (let winners run)</option>
+              <option value="hard">Hard (always exit at cap)</option>
+            </select>
+          </div>
 
-        <Toggle label="Breakeven stop" on={beOn} set={setBeOn} />
-        {beOn && (
-          <div className="ctrl">
-            <label>Breakeven trigger</label>
-            <input
-              type="range"
+          <ToggleRow label="Breakeven stop" on={beOn} set={setBeOn} />
+          {beOn && (
+            <Slider
+              label="Breakeven trigger"
+              value={be}
               min={0.25}
               max={2}
               step={0.25}
-              value={be}
-              onChange={(e) => setBe(Number(e.target.value))}
+              onChange={setBe}
+              format={(v) => v.toFixed(2) + "R"}
             />
-            <span className="out">{be.toFixed(2)}R</span>
-          </div>
-        )}
-        <Toggle label="ATR trailing stop" on={trailOn} set={setTrailOn} />
-        {trailOn && (
-          <div className="ctrl">
-            <label>Trail ATR ×</label>
-            <input
-              type="range"
+          )}
+          <ToggleRow label="ATR trailing stop" on={trailOn} set={setTrailOn} />
+          {trailOn && (
+            <Slider
+              label="Trail ATR ×"
+              value={trail}
               min={1}
               max={6}
               step={0.5}
-              value={trail}
-              onChange={(e) => setTrail(Number(e.target.value))}
+              onChange={setTrail}
+              format={(v) => v.toFixed(1) + "×"}
             />
-            <span className="out">{trail.toFixed(1)}×</span>
-          </div>
-        )}
-        <Toggle label="Allow short entries" on={shorts} set={setShorts} />
-        <Toggle label="Chronic-loser penalty" on={chronic} set={setChronic} />
-        <Toggle label="VIX-slope gate" on={vixSlope} set={setVixSlope} />
-        <Toggle label="Anti-gap entry" on={antiGap} set={setAntiGap} />
-
-        <button className="btn pri" onClick={onRun} disabled={running} style={{ marginTop: 14 }}>
-          <i className={running ? "ti ti-loader-2 spin" : "ti ti-player-play"} />
-          {running ? "Running…" : "Run backtest"}
-        </button>
-
-        {log && <pre>{log}</pre>}
-      </Card>
+          )}
+          <ToggleRow label="Allow short entries" on={shorts} set={setShorts} />
+          <ToggleRow label="Chronic-loser penalty" on={chronic} set={setChronic} />
+          <ToggleRow label="VIX-slope gate" on={vixSlope} set={setVixSlope} />
+          <ToggleRow label="Anti-gap entry" on={antiGap} set={setAntiGap} />
+        </Card>
+      </div>
 
       <Card title="Recent runs" icon="ti-history">
-        {runs.length === 0 ? (
-          <Note>No backtest runs journaled yet. Run one above.</Note>
+        {runsState.loading ? (
+          <SkeletonText lines={5} />
+        ) : runs.length === 0 ? (
+          <Empty icon="ti-flask-off">No backtest runs journaled yet. Run one above.</Empty>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Window</th>
-                <th>Params</th>
-                <th>Trades</th>
-                <th>Total R</th>
-                <th>PF</th>
-                <th>Win</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((r) => {
-                const nCustom = (r.params?.length ?? 0) + (r.window ? 1 : 0);
-                return (
-                  <tr
-                    key={r.id}
-                    onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
-                    style={{ cursor: "pointer" }}
-                    title="Show details"
-                  >
-                    <td>
-                      {openRun === r.id ? "▸ " : ""}
-                      {r.id}
-                    </td>
-                    <td className="mut">{r.window || (r.start_date || "all") + " → " + (r.end_date || "all")}</td>
-                    <td className={nCustom ? "" : "mut"}>{nCustom ? `${nCustom} custom` : "default"}</td>
-                    <td>{r.trades_count}</td>
-                    <td className={signClass(r.total_r)}>{fnum(r.total_r, 2)}</td>
-                    <td>{fnum(r.profit_factor, 2)}</td>
-                    <td>{pct(r.win_rate)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Window</th>
+                  <th>Params</th>
+                  <th>Config</th>
+                  <th data-num>Trades</th>
+                  <th data-num>Total R</th>
+                  <th data-num>PF</th>
+                  <th data-num>Win</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const nCustom = (r.params?.length ?? 0) + (r.window ? 1 : 0);
+                  return (
+                    <tr
+                      key={r.id}
+                      onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
+                      style={{ cursor: "pointer" }}
+                      title="Show details"
+                    >
+                      <td>
+                        {openRun === r.id ? "▸ " : ""}
+                        {r.id}
+                      </td>
+                      <td className="mut">
+                        {r.window || (r.start_date || "all") + " → " + (r.end_date || "all")}
+                      </td>
+                      <td className={nCustom ? "" : "mut"}>
+                        {nCustom ? `${nCustom} custom` : "default"}
+                      </td>
+                      <td>
+                        {r.config_match === false ? (
+                          <span className="tag tag--warn">A/B leg</span>
+                        ) : r.config_match ? (
+                          <span className="mut">matches</span>
+                        ) : (
+                          <span className="mut">—</span>
+                        )}
+                      </td>
+                      <td data-num>{r.trades_count}</td>
+                      <td data-num className={signClass(r.total_r)}>
+                        {fnum(r.total_r, 2)}
+                      </td>
+                      <td data-num>{fnum(r.profit_factor, 2)}</td>
+                      <td data-num>{pct(r.win_rate)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
@@ -294,62 +313,70 @@ function RunDetail({ run, onClose }: { run: BacktestRun; onClose: () => void }) 
       icon="ti-list-details"
       right={
         <button className="btn" onClick={onClose}>
-          <i className="ti ti-x" />
+          <i className="ti ti-x" aria-hidden="true" />
           Close
         </button>
       }
     >
-      <div style={{ marginBottom: 14 }}>
-        <div className="mut" style={{ fontSize: 11, marginBottom: 7, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+      <div style={{ marginBottom: "var(--sp-4)" }}>
+        <p className="eyebrow" style={{ marginBottom: "var(--sp-2)" }}>
           Parameters vs default
-        </div>
+        </p>
         {run.window || params.length ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {run.window ? <span className="stag">window · {run.window}</span> : null}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)" }}>
+            {run.window ? <span className="tag">window · {run.window}</span> : null}
             {params.map((p) => (
-              <span className="stag" key={p.key}>
+              <span className="tag" key={p.key}>
                 {shortKey(p.key)} {fmtVal(p.value)}{" "}
                 <span className="mut">(def {fmtVal(p.default)})</span>
               </span>
             ))}
           </div>
         ) : (
-          <Note>All parameters at the shipped default.</Note>
+          <p className="mut" style={{ fontSize: "var(--fs-data)" }}>
+            All parameters at the shipped default.
+          </p>
         )}
       </div>
 
       {t.loading ? (
-        <Note>Loading trades…</Note>
+        <SkeletonText lines={5} />
       ) : trades.length === 0 ? (
-        <Note>No trades for this run.</Note>
+        <Empty icon="ti-list-search">No trades for this run.</Empty>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Dir</th>
-              <th>Type</th>
-              <th>Entry → Exit</th>
-              <th>Reason</th>
-              <th>R</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((tr, i) => {
-              const r = tr.effective_r ?? tr.r_multiple;
-              return (
-                <tr key={i}>
-                  <td>{tr.ticker}</td>
-                  <td className="mut">{tr.direction}</td>
-                  <td className="mut">{(tr.signal_type || "").replaceAll("_", " ")}</td>
-                  <td className="mut">{(tr.entry_date || "?") + " → " + (tr.exit_date || "?")}</td>
-                  <td className="mut">{tr.exit_reason ?? "—"}</td>
-                  <td className={signClass(r)}>{rstr(r)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        // Up to 200 rows — height-capped so the page stays navigable and the
+        // sticky header has a scroll container to stick to.
+        <div className="table-wrap table-wrap--scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Dir</th>
+                <th>Type</th>
+                <th>Entry → Exit</th>
+                <th>Reason</th>
+                <th data-num>R</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trades.map((tr, i) => {
+                const r = tr.effective_r ?? tr.r_multiple;
+                return (
+                  <tr key={i}>
+                    <td>{tr.ticker}</td>
+                    <td className="mut">{tr.direction}</td>
+                    <td className="mut">{(tr.signal_type || "").replaceAll("_", " ")}</td>
+                    <td className="mut">{(tr.entry_date || "?") + " → " + (tr.exit_date || "?")}</td>
+                    <td className="mut">{tr.exit_reason ?? "—"}</td>
+                    <td data-num className={signClass(r)}>
+                      {rstr(r)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );

@@ -88,8 +88,24 @@ def legacy():
 
 
 if (_DIST / "index.html").exists():
-    # Serve the built SPA at "/". Registered last so /api/* + /legacy win.
-    app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="spa")
+    # Hashed build output. Mounted explicitly so the catch-all below never has
+    # to guess whether a path is an asset.
+    if (_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        """Serve the SPA, falling back to index.html for client-side routes.
+
+        The panel deep-links (/app/scanner, /app/charts, …), so an unknown path
+        is a route, not a 404. Registered last, so /api/* and /legacy still win.
+        """
+        if full_path:
+            candidate = (_DIST / full_path).resolve()
+            # Refuse anything that escapes dist — full_path is attacker-controlled.
+            if candidate.is_file() and candidate.is_relative_to(_DIST.resolve()):
+                return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")
 else:
     @app.get("/", include_in_schema=False)
     def index():

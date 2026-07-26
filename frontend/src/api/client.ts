@@ -17,9 +17,12 @@ import type {
   ScannerLatest,
   ScanRun,
 } from "./types";
+import { demoFor } from "./demo";
 
 const BASE = "/api";
 const TOKEN_KEY = "tradalert_token";
+/** Statuses that mean "the API itself never answered", not "the API said no". */
+const UPSTREAM_DOWN = new Set([502, 503, 504]);
 
 export function getToken(): string {
   try {
@@ -51,7 +54,33 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (opts.body) headers["Content-Type"] = "application/json";
   const token = getToken();
   if (token) headers["X-API-Token"] = token;
-  const res = await fetch(BASE + path, { ...opts, headers });
+
+  const isRead = !opts.method || opts.method === "GET";
+
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, { ...opts, headers });
+  } catch (err) {
+    // The socket never answered. Reads fall back to clearly-labelled TEST.*
+    // sample data so the panel stays legible; writes and /health must still
+    // fail, so the shell knows it is offline and banner-marks every view as
+    // demo. Never substitute demo data for a real response — only for no
+    // response at all.
+    if (isRead) {
+      const demo = demoFor(path);
+      if (demo !== null) return demo as T;
+    }
+    throw err;
+  }
+
+  // A gateway error means the API is down behind a proxy — the dev server's
+  // /api proxy reports an unreachable backend this way rather than by failing
+  // the fetch. Same situation as above, same fallback.
+  if (isRead && UPSTREAM_DOWN.has(res.status)) {
+    const demo = demoFor(path);
+    if (demo !== null) return demo as T;
+  }
+
   if (!res.ok) {
     let detail: string | undefined;
     try {

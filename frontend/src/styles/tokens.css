@@ -1,0 +1,230 @@
+/* Terminal Luxe design tokens — see DESIGN.md §2, §3, §5, §6, §7.
+   Every colour is an RGB triple so components can take it at partial alpha via
+   rgb(var(--rgb-x) / a). Components must never carry a literal hex. */
+
+:root,
+:root[data-theme="dark"] {
+  /* ── surfaces (warm near-black ramp) ─────────────────────────────────── */
+  --rgb-surface-0: 10 10 11;
+  --rgb-surface-1: 16 16 18;
+  --rgb-surface-2: 23 23 26;
+  --rgb-surface-3: 31 31 36;
+
+  /* ── ink ─────────────────────────────────────────────────────────────── */
+  --rgb-text-primary: 237 237 237;
+  --rgb-text-secondary: 161 161 168;
+  --rgb-text-muted: 133 133 142;
+  --rgb-text-inverse: 10 10 11;
+
+  /* ── the single signature accent ─────────────────────────────────────── */
+  --rgb-accent: 198 242 78;
+
+  /* ── semantic ────────────────────────────────────────────────────────── */
+  --rgb-pos: 198 242 78;
+  --rgb-neg: 255 107 90;
+  --rgb-warn: 245 184 76;
+  --rgb-neutral: 161 161 168;
+
+  /* ── hairlines ───────────────────────────────────────────────────────── */
+  --border: rgb(255 255 255 / 0.07);
+  --border-strong: rgb(255 255 255 / 0.14);
+  --border-hairline: rgb(255 255 255 / 0.045);
+  --row-hover: rgb(255 255 255 / 0.025);
+
+  /* ── data-series ramp ────────────────────────────────────────────────── */
+  --rgb-series-1: 198 242 78;
+  --rgb-series-2: 125 211 252;
+  --rgb-series-3: 196 160 245;
+  --rgb-series-4: 245 184 76;
+  --rgb-series-5: 255 107 90;
+  --rgb-series-bench: 107 107 116;
+
+  /* ── elevation (shadows only for things that genuinely float) ────────── */
+  --sh-1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --sh-2: 0 8px 24px -12px rgb(0 0 0 / 0.55);
+  --sh-pop: 0 20px 56px -20px rgb(0 0 0 / 0.7);
+
+  --grain-opacity: 0.035;
+  color-scheme: dark;
+}
+
+/* Light theme — a first-class deliverable (decks, print, daylight screenshots),
+   not a filter. Lime fails AA as text on paper, so it darkens to olive here and
+   survives as stroke/fill only. */
+:root[data-theme="light"] {
+  --rgb-surface-0: 251 250 247;
+  --rgb-surface-1: 255 255 255;
+  --rgb-surface-2: 245 244 240;
+  --rgb-surface-3: 235 234 229;
+
+  --rgb-text-primary: 22 21 18;
+  --rgb-text-secondary: 90 88 82;
+  --rgb-text-muted: 110 107 99;
+  --rgb-text-inverse: 255 255 255;
+
+  /* Lime is unreadable as text on paper. Light mode darkens it to an olive that
+     clears AA both AS text on the page and UNDER white on a filled chip. */
+  --rgb-accent: 77 106 10;
+  --rgb-pos: 77 106 10;
+  --rgb-neg: 176 46 30;
+  --rgb-warn: 138 90 0;
+  --rgb-neutral: 90 88 82;
+
+  --border: rgb(0 0 0 / 0.1);
+  --border-strong: rgb(0 0 0 / 0.2);
+  --border-hairline: rgb(0 0 0 / 0.06);
+  --row-hover: rgb(0 0 0 / 0.022);
+
+  /* Series stay a touch lighter than the text tokens — they are strokes and
+     fills, which WCAG holds to 3:1, and going darker muddies the chart. */
+  --rgb-series-1: 106 143 14;
+  --rgb-series-2: 14 116 144;
+  --rgb-series-3: 124 58 173;
+  --rgb-series-4: 160 106 10;
+  --rgb-series-5: 186 52 36;
+  --rgb-series-bench: 122 119 111;
+
+  /* Black shadows on paper read as dirt — warm them and halve the weight. */
+  --sh-1: 0 1px 2px rgb(60 55 45 / 0.1);
+  --sh-2: 0 8px 24px -12px rgb(60 55 45 / 0.22);
+  --sh-pop: 0 20px 56px -20px rgb(60 55 45 / 0.3);
+
+  --grain-opacity: 0.02;
+  color-scheme: light;
+}
+
+/* Theme resolution: the data-theme attribute always wins; the media query only
+   supplies the default before a user has chosen. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --rgb-surface-0: 251 250 247;
+    --rgb-surface-1: 255 255 255;
+    --rgb-surface-2: 245 244 240;
+    --rgb-surface-3: 235 234 229;
+    --rgb-text-primary: 22 21 18;
+    --rgb-text-secondary: 90 88 82;
+    --rgb-text-muted: 110 107 99;
+    --rgb-text-inverse: 255 255 255;
+    --rgb-accent: 77 106 10;
+    --rgb-pos: 77 106 10;
+    --rgb-neg: 176 46 30;
+    --rgb-warn: 138 90 0;
+    --rgb-neutral: 90 88 82;
+    --border: rgb(0 0 0 / 0.1);
+    --border-strong: rgb(0 0 0 / 0.2);
+    --border-hairline: rgb(0 0 0 / 0.06);
+    --row-hover: rgb(0 0 0 / 0.022);
+    --rgb-series-1: 122 160 20;
+    --rgb-series-2: 14 116 144;
+    --rgb-series-3: 124 58 173;
+    --rgb-series-4: 169 116 16;
+    --rgb-series-5: 193 62 44;
+    --rgb-series-bench: 138 135 127;
+    --sh-1: 0 1px 2px rgb(60 55 45 / 0.1);
+    --sh-2: 0 8px 24px -12px rgb(60 55 45 / 0.22);
+    --sh-pop: 0 20px 56px -20px rgb(60 55 45 / 0.3);
+    --grain-opacity: 0.02;
+    color-scheme: light;
+  }
+}
+
+:root {
+  /* ── resolved colour aliases ─────────────────────────────────────────── */
+  --surface-0: rgb(var(--rgb-surface-0));
+  --surface-1: rgb(var(--rgb-surface-1));
+  --surface-2: rgb(var(--rgb-surface-2));
+  --surface-3: rgb(var(--rgb-surface-3));
+
+  --text-primary: rgb(var(--rgb-text-primary));
+  --text-secondary: rgb(var(--rgb-text-secondary));
+  --text-muted: rgb(var(--rgb-text-muted));
+  --text-inverse: rgb(var(--rgb-text-inverse));
+
+  --accent: rgb(var(--rgb-accent));
+  --accent-dim: rgb(var(--rgb-accent) / 0.55);
+  --bg-accent: rgb(var(--rgb-accent) / 0.1);
+  --border-accent: rgb(var(--rgb-accent) / 0.45);
+
+  --text-pos: rgb(var(--rgb-pos));
+  --text-neg: rgb(var(--rgb-neg));
+  --text-warn: rgb(var(--rgb-warn));
+  --text-neutral: rgb(var(--rgb-neutral));
+  --bg-pos: rgb(var(--rgb-pos) / 0.1);
+  --bg-neg: rgb(var(--rgb-neg) / 0.12);
+  --bg-warn: rgb(var(--rgb-warn) / 0.12);
+  --bg-neutral: rgb(var(--rgb-neutral) / 0.1);
+
+  --series-1: rgb(var(--rgb-series-1));
+  --series-2: rgb(var(--rgb-series-2));
+  --series-3: rgb(var(--rgb-series-3));
+  --series-4: rgb(var(--rgb-series-4));
+  --series-5: rgb(var(--rgb-series-5));
+  --series-bench: rgb(var(--rgb-series-bench));
+
+  --ring-focus: 0 0 0 3px rgb(var(--rgb-accent) / 0.15);
+
+  /* ── type ────────────────────────────────────────────────────────────── */
+  --font-display: "Space Grotesk", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Instrument Sans rather than Inter: Inter is the default of every generated
+     dashboard, and this one already commits to a voice in the display and mono
+     faces. Same grotesque class, slightly more character at label sizes. */
+  --font-sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  --fs-display-xl: clamp(3.25rem, 9vw, 7.5rem);
+  --fs-display-l: clamp(2.25rem, 5vw, 4rem);
+  --fs-display-m: clamp(1.5rem, 3vw, 2.25rem);
+  --fs-numeral-hero: clamp(2.75rem, 7vw, 5.5rem);
+  --fs-numeral-kpi: 2rem;
+  --fs-h1: 1.75rem;
+  --fs-h2: 1.25rem;
+  --fs-h3: 0.9375rem;
+  --fs-body: 0.875rem;
+  --fs-body-lg: 1.0625rem;
+  --fs-data: 0.8125rem;
+  --fs-label: 0.6875rem;
+  --fs-micro: 0.625rem;
+
+  /* Icon sizes are optical, not on the type scale — a 17px glyph next to 13px
+     text is correct where a 13px glyph would look starved. Tokenised anyway so
+     the sizes stay consistent instead of being re-guessed per component. */
+  --icon-xs: 5px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 18px;
+  --icon-xl: 20px;
+  --icon-2xl: 22px;
+
+  /* ── space ───────────────────────────────────────────────────────────── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+  --sp-10: 128px;
+
+  /* ── radii / widths ──────────────────────────────────────────────────── */
+  --r-sm: 4px;
+  --r: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  --w-content: 1180px;
+  --w-prose: 680px;
+  --w-rail: 212px;
+
+  /* ── motion ──────────────────────────────────────────────────────────── */
+  --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast: 140ms var(--ease);
+  --t-med: 240ms var(--ease);
+  --t-slow: 420ms var(--ease-out);
+
+  /* Static grain, inlined so it costs no request and never animates. */
+  --grain-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}

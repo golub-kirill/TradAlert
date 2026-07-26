@@ -54,7 +54,7 @@ export function DateField({
   const invalid = text.trim() !== "" && displayToIso(text) === null;
 
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, position: "relative" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--sp-1)", position: "relative" }}>
       <input
         id={id}
         type="text"
@@ -62,10 +62,17 @@ export function DateField({
         placeholder="dd/mm/yyyy"
         value={text}
         onChange={onText}
-        style={{ width: 96, borderColor: invalid ? "var(--text-danger)" : undefined }}
+        aria-invalid={invalid || undefined}
+        style={{ width: 108 }}
       />
-      <button type="button" className="ico" title="Pick date" onClick={openPicker}>
-        <i className="ti ti-calendar" />
+      <button
+        type="button"
+        className="btn btn--icon"
+        title="Pick date"
+        aria-label="Pick date"
+        onClick={openPicker}
+      >
+        <i className="ti ti-calendar" aria-hidden="true" />
       </button>
       <input
         ref={pickerRef}

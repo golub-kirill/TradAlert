@@ -1,0 +1,163 @@
+/* Reset, document defaults and shared utilities. See DESIGN.md §3, §5. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* `clip`, never `hidden`. `overflow-x: hidden` makes the element a scroll
+     container, which takes scrolling away from the viewport — that breaks
+     window.scrollY, IntersectionObserver reveals, anchor links and the nav's
+     stuck state. `clip` trims the bleed without creating a scroll box. */
+  overflow-x: clip;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+  /* Decorative layers may bleed to the viewport edge, but the page itself must
+     never scroll sideways (DESIGN.md §9). See the note on html above for why
+     this is `clip` and not `hidden`. */
+  overflow-x: clip;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+svg {
+  display: block;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+::selection {
+  background: rgb(var(--rgb-accent) / 0.25);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  background-clip: content-box;
+}
+
+/* ── type utilities ─────────────────────────────────────────────────────── */
+.display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+}
+.eyebrow {
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.prose {
+  max-width: var(--w-prose);
+  font-size: var(--fs-body-lg);
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.mut {
+  color: var(--text-muted);
+}
+.pos {
+  color: var(--text-pos);
+}
+.neg {
+  color: var(--text-neg);
+}
+.warn {
+  color: var(--text-warn);
+}
+
+/* Screen-reader-only, but focusable when it needs to be (skip link). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: absolute;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  z-index: 100;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--r);
+  transform: translateY(-200%);
+  transition: transform var(--t-fast);
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Hairline rule used to separate landing sections and card groups. */
+.rule {
+  height: 1px;
+  background: var(--border);
+  border: 0;
+  margin: 0;
+}

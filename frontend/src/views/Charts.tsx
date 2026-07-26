@@ -3,25 +3,30 @@ import { getChart, getPositions } from "../api/client";
 import { tickerOk } from "../lib/format";
 import { useApi } from "../hooks/useApi";
 import { useToast } from "../components/Toast";
-import { Card, Note } from "../components/Card";
+import { Card, Empty } from "../components/Card";
+import { SkeletonBlock } from "../components/Skeleton";
 import { PriceChart } from "../components/PriceChart";
+
+// Benchmarks only when nothing is held — the chip row is a starting point, not
+// a watchlist, so it never names individual holdings the panel doesn't track.
+const BENCHMARKS = ["SPY", "QQQ"];
 
 export function Charts() {
   const toast = useToast();
   const positions = useApi(getPositions, []);
   const held = Array.from(new Set((positions.data ?? []).map((p) => p.ticker)));
-  const chips = held.length ? [...held, "SPY"] : ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
+  const chips = held.length ? [...held, BENCHMARKS[0]] : BENCHMARKS;
 
   const [ticker, setTicker] = useState("");
   const [input, setInput] = useState("");
 
   // Default to the first held ticker once positions load (SPY fallback).
   useEffect(() => {
-    if (!ticker && positions.data) setTicker(held[0] || "SPY");
+    if (!ticker && positions.data) setTicker(held[0] || BENCHMARKS[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions.data]);
 
-  const active = ticker || "SPY";
+  const active = ticker || BENCHMARKS[0];
   const c = useApi(() => getChart(active, 120), [active]);
 
   const load = () => {
@@ -30,33 +35,35 @@ export function Charts() {
       setTicker(t.toUpperCase());
       setInput("");
     } else {
-      toast("Enter a valid ticker (e.g. AAPL).");
+      toast("Enter a valid ticker.", "error");
     }
-  };
-  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") load();
   };
 
   return (
     <>
-      <div className="tabs">
+      <div className="tabbar">
         {chips.map((t) => (
           <button
             key={t}
-            className={"chip" + (active === t ? " on" : "")}
+            className="chip"
+            aria-pressed={active === t}
             onClick={() => setTicker(t)}
           >
             {t}
           </button>
         ))}
-        <span style={{ flex: 1 }} />
-        <span className="chsearch">
-          <i className="ti ti-search" />
+        <span className="tabbar__spacer" />
+        <span className="searchpill">
+          <i className="ti ti-search" aria-hidden="true" />
           <input
+            type="search"
             placeholder="Search ticker…"
+            aria-label="Search for a ticker"
             value={input}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInput(e.target.value)}
-            onKeyDown={onKey}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") load();
+            }}
           />
         </span>
         <button className="btn" onClick={load}>
@@ -66,9 +73,11 @@ export function Charts() {
 
       <Card title={active + " · daily"} icon="ti-chart-candle">
         {c.loading ? (
-          <Note>Loading…</Note>
-        ) : c.error || !c.data ? (
-          <Note>No cached data for {active}.</Note>
+          <SkeletonBlock height={280} />
+        ) : c.error || !c.data || c.data.bars.length < 2 ? (
+          <Empty icon="ti-chart-line">
+            No cached bars for {active}. Fetch prices for it, then reload.
+          </Empty>
         ) : (
           <PriceChart bars={c.data.bars} />
         )}

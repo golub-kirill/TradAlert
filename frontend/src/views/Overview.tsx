@@ -1,7 +1,12 @@
-import { Card, Note } from "../components/Card";
-import { Kpis, type KpiItem } from "../components/Kpi";
-import { PerformanceChart } from "../components/PerformanceChart";
+import { useMemo } from "react";
+import { Card, Empty } from "../components/Card";
+import { EquityCurve, type CurvePoint } from "../components/EquityCurve";
+import { CountUp, StatStrip } from "../components/Stat";
+import { SkeletonBlock, SkeletonStats } from "../components/Skeleton";
+import { MonthlyBars } from "../components/PerformanceChart";
 import { useApi } from "../hooks/useApi";
+import { useSpotlight } from "../hooks/useMotion";
+import { Link } from "../lib/router";
 import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api/client";
 import { fnum, pct, rstr, signClass } from "../lib/format";
 
@@ -19,12 +24,9 @@ function mismatchText(keys: string[] | undefined): string {
 }
 
 export function Overview() {
+  const heroRef = useSpotlight<HTMLElement>();
   // Fetch several, not one: the newest journaled run is often an A/B leg, and
   // headlining it puts an experiment arm's numbers on the dashboard as though
-  // they described the strategy. (Run 34 — a VIX-slope-gated leg — showed 44.32R
-  // here next to the baseline's 90.83R, which reads as a collapse in the edge.)
-  // More than one, but not twenty: the newest journaled run is often an A/B leg,
-  // and headlining it puts an experiment arm's numbers on the dashboard as though
   // they described the strategy. (Run 34 — a VIX-slope-gated leg — showed 44.32R
   // here next to the baseline's 90.83R, which reads as a collapse in the edge.)
   // Five covers any realistic A/B streak without shipping unused param diffs.
@@ -43,113 +45,232 @@ export function Overview() {
   // experiment arm in silence, which is the failure this exists to prevent.
   const skipped = newest && r && newest.id !== r.id ? newest : undefined;
   const unmatched = r?.config_match === false ? r : undefined;
-  const monthly = useApi(() => (latestId ? getMonthly(latestId) : Promise.resolve(null)), [latestId]);
-  const kpis: KpiItem[] = [
-    { label: "Net total R", value: fnum(r?.total_r, 2), tone: (r?.total_r ?? 0) >= 0 ? "pos" : "neg" },
-    { label: "Win rate", value: pct(r?.win_rate, 1) },
-    { label: "Profit factor", value: fnum(r?.profit_factor, 2) },
-    { label: "Trades", value: r?.trades_count ?? "—" },
-    { label: "Expectancy", value: fnum(r?.expectancy_r, 3) },
-    { label: "Max DD R", value: fnum(r?.max_drawdown_r, 1), tone: "warn" },
-  ];
+
+  const monthly = useApi(
+    () => (latestId ? getMonthly(latestId) : Promise.resolve(null)),
+    [latestId],
+  );
+
+  const curve: CurvePoint[] = useMemo(
+    () => (monthly.data?.months ?? []).map((m) => ({ label: m.month, value: m.close })),
+    [monthly.data],
+  );
 
   const pos = positions.data ?? [];
   const run = scan.data?.run;
+  const totalR = r?.total_r ?? null;
+  const openR = pos.reduce((s, p) => s + (p.unrealized_r ?? 0), 0);
+
+  // The run's date window, however it was recorded: _meta carries `window` for
+  // most runs, older rows only have the two dates. Resolved once rather than
+  // mixing ?? and && inside the JSX, where an empty string slipped through as a
+  // truthy guard and rendered an empty value.
+  const windowLabel =
+    r?.window ||
+    (r?.start_date && r?.end_date ? `${r.start_date} → ${r.end_date}` : null);
 
   return (
     <>
       {unmatched ? (
-        <div className="banner warn" role="status">
-          <i className="ti ti-alert-triangle" />
-          <div>
-            <strong>
-              No baseline run available — these numbers are from an A/B leg.
-            </strong>
-            <div className="mut" style={{ marginTop: 4 }}>
-              Run #{unmatched.id} ran a different config from the shipped{" "}
-              <code>filters.yaml</code>, and no recent run matched it, so the figures below
-              describe a different strategy. Re-journal a full-window baseline.{" "}
-              {mismatchText(unmatched.config_mismatch)}
+        <div className="banner banner--warn" role="status">
+          <i className="ti ti-alert-triangle banner__icon" aria-hidden="true" />
+          <div className="banner__body">
+            <strong>No baseline run available — these numbers are from an A/B leg.</strong>
+            <div className="banner__note">
+              Run #{unmatched.id} ran a different config from the shipped <code>filters.yaml</code>,
+              and no recent run matched it, so the figures below describe a different strategy.
+              Re-journal a full-window baseline. {mismatchText(unmatched.config_mismatch)}
             </div>
           </div>
         </div>
       ) : skipped ? (
-        <div className="banner warn" role="status">
-          <i className="ti ti-flask" />
-          <div>
-            <strong>
-              Showing run #{latestId} — the newest baseline, not the newest run.
-            </strong>
-            <div className="mut" style={{ marginTop: 4 }}>
-              Run #{skipped.id} ({fnum(skipped.total_r, 2)}R) ran a different config from the
-              shipped <code>filters.yaml</code>, so it measured a different strategy — an A/B
-              leg, not the edge. {mismatchText(skipped.config_mismatch)}
+        <div className="banner banner--warn" role="status">
+          <i className="ti ti-flask banner__icon" aria-hidden="true" />
+          <div className="banner__body">
+            <strong>Showing run #{latestId} — the newest baseline, not the newest run.</strong>
+            <div className="banner__note">
+              Run #{skipped.id} ({fnum(skipped.total_r, 2)}R) ran a different config from the shipped{" "}
+              <code>filters.yaml</code>, so it measured a different strategy — an A/B leg, not the
+              edge. {mismatchText(skipped.config_mismatch)}
             </div>
           </div>
         </div>
       ) : null}
-      <Kpis items={kpis} />
 
-      <Card
-        title={"Performance" + (latestId ? ` · run #${latestId} (R)` : "")}
-        icon="ti-chart-candle"
-        right={
-          monthly.data ? (
-            <span className="mut" style={{ fontSize: 12 }}>
-              Win {pct(monthly.data.win_rate)} · Up months {pct(monthly.data.up_month_pct)}
+      {/* One figure leads; everything else supports it (DESIGN.md §5). */}
+      <section className="hero-band card--spot" ref={heroRef}>
+        <div className="hero-band__figure">
+          <div className="hero-band__eyebrow eyebrow">
+            <span>Net cumulative</span>
+          </div>
+          <div
+            className={
+              "hero-band__value " + (totalR == null ? "" : totalR >= 0 ? "pos" : "neg")
+            }
+          >
+            {runs.loading && totalR == null ? (
+              <span className="skel skel--num" style={{ display: "inline-block", height: 48, width: 200 }} />
+            ) : (
+              <>
+                <CountUp value={totalR} format={(v) => (v >= 0 ? "+" : "") + v.toFixed(2)} />
+                <span className="hero-band__unit">R</span>
+              </>
+            )}
+          </div>
+          {/* Provenance sits with the figure it describes — never buried. */}
+          <div className="hero-band__prov">
+            {latestId ? <span>run <b>#{latestId}</b></span> : null}
+            {windowLabel ? (
+              <span>
+                window <b>{windowLabel}</b>
+              </span>
+            ) : null}
+            <span>
+              trades <b>{r?.trades_count ?? "—"}</b>
             </span>
-          ) : undefined
-        }
-      >
-        {monthly.loading ? (
-          <Note>Loading…</Note>
-        ) : !monthly.data || monthly.data.months.length === 0 ? (
-          <Note>No trades to chart for the latest run.</Note>
-        ) : (
-          <PerformanceChart months={monthly.data.months} />
-        )}
-      </Card>
+            <span>
+              config{" "}
+              <b className={r?.config_match === false ? "warn" : undefined}>
+                {r?.config_match === false ? "mismatch" : r?.config_match ? "matches shipped" : "unverified"}
+              </b>
+            </span>
+          </div>
+        </div>
 
-      <div className="grid2">
-        <Card title="Open positions" icon="ti-briefcase">
-          {pos.length === 0 ? (
-            <Note>No open positions.</Note>
+        <div className="hero-band__chart">
+          {monthly.loading ? (
+            <SkeletonBlock height={200} />
+          ) : curve.length >= 2 ? (
+            <EquityCurve points={curve} height={200} interactive />
+          ) : (
+            <Empty icon="ti-chart-line">
+              No journaled trades to chart for this run yet.
+            </Empty>
+          )}
+        </div>
+      </section>
+
+      <div className="bento">
+        <Card title="Run detail" icon="ti-report-analytics" span={7} spot>
+          {runs.loading ? (
+            <SkeletonStats count={5} />
+          ) : (
+            <StatStrip
+              items={[
+                { label: "Win rate", value: pct(r?.win_rate, 1) },
+                { label: "Profit factor", value: fnum(r?.profit_factor, 2) },
+                { label: "Expectancy", value: fnum(r?.expectancy_r, 3), hint: "R per trade" },
+                {
+                  label: "Max drawdown",
+                  value: fnum(r?.max_drawdown_r, 1),
+                  tone: "warn",
+                  hint: "peak to trough, R",
+                },
+                {
+                  label: "Up months",
+                  value: monthly.data ? pct(monthly.data.up_month_pct) : "—",
+                },
+              ]}
+            />
+          )}
+        </Card>
+
+        <Card
+          title="Latest scan"
+          icon="ti-radar"
+          span={5}
+          spot
+          right={
+            <Link className="btn btn--sm" to="/app/scanner">
+              Open
+              <i className="ti ti-arrow-right" aria-hidden="true" />
+            </Link>
+          }
+        >
+          {scan.loading ? (
+            <SkeletonStats count={3} />
+          ) : !run ? (
+            <Empty
+              icon="ti-radar-off"
+              action={
+                <Link className="btn btn--sm" to="/app/scanner">
+                  Run a scan
+                </Link>
+              }
+            >
+              No scans journaled yet.
+            </Empty>
+          ) : (
+            <>
+              <StatStrip
+                items={[
+                  { label: "Scanned", value: run.tickers_scanned },
+                  { label: "Passed", value: run.scan_passed },
+                  {
+                    label: "Fired",
+                    value: run.signals_fired,
+                    tone: run.signals_fired ? "pos" : "",
+                  },
+                ]}
+              />
+              <div className="kv" style={{ marginTop: "var(--sp-4)" }}>
+                <span className="kv__k">Run</span>
+                <span className="kv__v">#{run.run_id}</span>
+              </div>
+              <div className="kv">
+                <span className="kv__k">Regime</span>
+                <span className="kv__v">{run.market_regime ?? "—"}</span>
+              </div>
+            </>
+          )}
+        </Card>
+
+        <Card
+          title="Open positions"
+          icon="ti-briefcase"
+          span={5}
+          spot
+          right={
+            <span className={"num " + signClass(openR)} style={{ fontSize: "var(--fs-data)" }}>
+              {pos.length ? rstr(openR) : ""}
+            </span>
+          }
+        >
+          {positions.loading ? (
+            <SkeletonStats count={2} />
+          ) : pos.length === 0 ? (
+            <Empty
+              icon="ti-briefcase-off"
+              action={
+                <Link className="btn btn--sm" to="/app/positions">
+                  Open one
+                </Link>
+              }
+            >
+              Nothing held right now.
+            </Empty>
           ) : (
             pos.slice(0, 6).map((p) => (
-              <div className="row" key={p.id}>
+              <div className="kv" key={p.id}>
                 <span>
-                  {p.ticker} <span className="mut">{p.side}</span>
+                  <span className="num">{p.ticker}</span>{" "}
+                  <span className="mut" style={{ fontSize: "var(--fs-micro)" }}>
+                    {p.side}
+                  </span>
                 </span>
-                <span className={signClass(p.unrealized_r)}>{rstr(p.unrealized_r)}</span>
+                <span className={"kv__v " + signClass(p.unrealized_r)}>{rstr(p.unrealized_r)}</span>
               </div>
             ))
           )}
         </Card>
 
-        <Card title="Latest scan" icon="ti-radar">
-          {!run ? (
-            <Note>No scans journaled yet.</Note>
+        <Card title="Monthly distribution" icon="ti-chart-histogram" span={7}>
+          {monthly.loading ? (
+            <SkeletonBlock height={200} />
+          ) : !monthly.data || monthly.data.months.length === 0 ? (
+            <Empty icon="ti-chart-bar-off">No trades to chart for the latest run.</Empty>
           ) : (
-            <>
-              <div className="row">
-                <span className="mut">Run</span>
-                <span>#{run.run_id}</span>
-              </div>
-              <div className="row">
-                <span className="mut">Scanned / passed</span>
-                <span>
-                  {run.tickers_scanned} / {run.scan_passed}
-                </span>
-              </div>
-              <div className="row">
-                <span className="mut">Fired</span>
-                <span className="pos">{run.signals_fired}</span>
-              </div>
-              <div className="row">
-                <span className="mut">Regime</span>
-                <span>{run.market_regime ?? "—"}</span>
-              </div>
-            </>
+            <MonthlyBars months={monthly.data.months} />
           )}
         </Card>
       </div>

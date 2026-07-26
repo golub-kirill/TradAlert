@@ -1,0 +1,876 @@
+/* Shared components — every one carries default / hover / active / focus-visible
+   / disabled. See DESIGN.md §4. Focus rings are never removed. */
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+.btn {
+  --btn-bg: var(--surface-2);
+  --btn-fg: var(--text-primary);
+  --btn-bd: var(--border-strong);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: 0 var(--sp-4);
+  font: 500 var(--fs-data) / 1 var(--font-sans);
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-bd);
+  border-radius: var(--r);
+  cursor: pointer;
+  white-space: nowrap;
+  /* Buttons are often anchors here (real links, in-app navigation) — they must
+     not inherit link underlines. */
+  text-decoration: none;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast),
+    transform var(--t-fast);
+}
+.btn:hover {
+  background: var(--surface-3);
+  border-color: var(--border-accent);
+}
+.btn:active {
+  transform: translateY(1px);
+  background: var(--surface-2);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  background: var(--surface-1);
+  border-color: var(--border);
+}
+.btn[aria-busy="true"] {
+  pointer-events: none;
+}
+.btn[aria-busy="true"] .ti {
+  animation: spin 0.9s linear infinite;
+}
+.btn .ti {
+  font-size: var(--icon-md);
+}
+
+/* Primary is ink-inverted, not lime — keeps "interactive" ≠ "profitable". */
+.btn--primary {
+  --btn-bg: var(--text-primary);
+  --btn-fg: var(--text-inverse);
+  --btn-bd: var(--text-primary);
+}
+.btn--primary:hover {
+  background: color-mix(in srgb, var(--text-primary) 88%, var(--accent));
+  border-color: color-mix(in srgb, var(--text-primary) 88%, var(--accent));
+}
+.btn--primary:active {
+  background: var(--text-secondary);
+  border-color: var(--text-secondary);
+}
+
+.btn--pos {
+  --btn-fg: var(--text-pos);
+  --btn-bg: var(--bg-pos);
+  --btn-bd: rgb(var(--rgb-pos) / 0.4);
+}
+.btn--pos:hover {
+  background: rgb(var(--rgb-pos) / 0.16);
+  border-color: rgb(var(--rgb-pos) / 0.7);
+}
+
+.btn--neg {
+  --btn-fg: var(--text-neg);
+  --btn-bg: var(--bg-neg);
+  --btn-bd: rgb(var(--rgb-neg) / 0.4);
+}
+.btn--neg:hover {
+  background: rgb(var(--rgb-neg) / 0.18);
+  border-color: rgb(var(--rgb-neg) / 0.7);
+}
+
+.btn--ghost {
+  --btn-bg: transparent;
+  --btn-fg: var(--text-secondary);
+  --btn-bd: transparent;
+}
+.btn--ghost:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.btn--sm {
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  font-size: 0.75rem;
+}
+.btn--lg {
+  min-height: 48px;
+  padding: 0 var(--sp-6);
+  font-size: 0.9375rem;
+}
+
+/* Icon-only. The visual box stays 30px; an invisible ::after brings the hit
+   area to 44×44 on coarse pointers rather than inflating the layout. */
+.btn--icon {
+  --btn-bg: transparent;
+  --btn-fg: var(--text-secondary);
+  --btn-bd: var(--border);
+  min-height: 30px;
+  width: 30px;
+  padding: 0;
+}
+.btn--icon:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.btn--icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+@media (pointer: fine) {
+  .btn--icon::after {
+    display: none;
+  }
+}
+
+/* Touch targets reach 44px on coarse pointers only (DESIGN.md §9). Keyed to
+   input modality rather than a breakpoint: the deck is a dense instrument on a
+   mouse, and a narrow window on a laptop still has a precise pointer, so
+   inflating every control there would cost rows without buying anything. */
+@media (pointer: coarse) {
+  .btn,
+  .chip,
+  input[type="text"],
+  input[type="number"],
+  input[type="date"],
+  input[type="search"],
+  input[type="password"],
+  select,
+  textarea {
+    min-height: 44px;
+  }
+  .btn--sm {
+    min-height: 40px;
+  }
+  /* Grown for real rather than leaning on the ::after hit-area, which stays as
+     the fallback for anything that can't change size. */
+  .btn--icon {
+    width: 44px;
+    min-height: 44px;
+  }
+  /* The pill is the visible control, so it carries the target size; the input
+     inside it stays slightly smaller so the border and icon still fit. */
+  .searchpill {
+    min-height: 44px;
+  }
+  .searchpill input {
+    min-height: 42px;
+  }
+}
+
+/* ── card ───────────────────────────────────────────────────────────────── */
+.card {
+  position: relative;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  transition: border-color var(--t-med), background var(--t-med);
+}
+.card:hover {
+  border-color: var(--border-strong);
+}
+.card:focus-within {
+  border-color: var(--border-accent);
+}
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-hairline);
+}
+.card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 600 var(--fs-h3) / 1.4 var(--font-sans);
+  color: var(--text-primary);
+}
+.card__title .ti {
+  font-size: var(--icon-md);
+  color: var(--text-muted);
+}
+/* Rows that carry their own vertical padding and hairline are excluded — adding
+   a margin on top of that puts the rule 12px above centre and breaks the even
+   ledger rhythm a list of these is supposed to read as. */
+.card__body > * + *:not(.kv):not(.setrow):not(.slider) {
+  margin-top: var(--sp-3);
+}
+
+/* Pointer-tracked highlight. Painted on a ::before layer so children never
+   repaint; --mx/--my are set from a rAF-throttled pointermove. */
+.card--spot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    340px circle at var(--mx, 50%) var(--my, 0%),
+    rgb(var(--rgb-accent) / 0.09),
+    transparent 62%
+  );
+  opacity: 0;
+  transition: opacity var(--t-med);
+  pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .card--spot:hover::before {
+    opacity: 1;
+  }
+}
+
+/* ── stat / KPI ─────────────────────────────────────────────────────────── */
+.stat__label {
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.stat__value {
+  font: 500 var(--fs-numeral-kpi) / 1.1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-top: var(--sp-2);
+}
+.stat__value--pos {
+  color: var(--text-pos);
+}
+.stat__value--neg {
+  color: var(--text-neg);
+}
+.stat__value--warn {
+  color: var(--text-warn);
+}
+.stat__delta {
+  font: 400 var(--fs-micro) / 1.3 var(--font-mono);
+  color: var(--text-muted);
+  margin-top: var(--sp-1);
+}
+
+/* ── field ──────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.field__label {
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.field__input,
+.field__select,
+.field__textarea,
+input[type="text"],
+input[type="number"],
+input[type="date"],
+input[type="search"],
+select,
+textarea {
+  width: 100%;
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-data) / 1.4 var(--font-mono);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.field__input:hover,
+.field__select:hover,
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="date"]:hover,
+select:hover {
+  border-color: var(--border-strong);
+}
+.field__input:focus,
+.field__select:focus,
+.field__textarea:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="date"]:focus,
+input[type="search"]:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-focus);
+}
+.field__input:disabled,
+.field__select:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--surface-1);
+}
+[aria-invalid="true"].field__input,
+[aria-invalid="true"] {
+  border-color: var(--text-neg);
+}
+[aria-invalid="true"].field__input:focus {
+  box-shadow: 0 0 0 3px rgb(var(--rgb-neg) / 0.15);
+}
+.field__hint {
+  font: 400 var(--fs-micro) / 1.4 var(--font-sans);
+  color: var(--text-muted);
+}
+
+/* A wrapping row of fields — the form layout used across Backtest/Positions. */
+.formrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3) var(--sp-4);
+}
+.formrow > .field {
+  flex: 0 1 auto;
+  min-width: 150px;
+}
+
+/* Labelled slider with a right-aligned readout. */
+.slider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.slider:last-child {
+  border-bottom: 0;
+}
+.slider__label {
+  flex: 0 0 168px;
+  font-size: var(--fs-data);
+  color: var(--text-secondary);
+}
+.slider input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.slider__out {
+  flex: 0 0 68px;
+  text-align: right;
+  font: 500 var(--fs-data) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* Label + control on one line — settings and boolean switches. */
+.setrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.setrow:last-child {
+  border-bottom: 0;
+}
+.setrow__label {
+  font-size: var(--fs-data);
+  color: var(--text-secondary);
+}
+.setrow__hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+}
+.setrow input[type="number"],
+.setrow input[type="text"] {
+  width: 132px;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .slider {
+    flex-wrap: wrap;
+  }
+  .slider__label {
+    flex: 1 1 100%;
+  }
+}
+
+/* Toggle switch — every checkbox in the panel. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  transition: background var(--t-med), border-color var(--t-med);
+}
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform var(--t-med), background var(--t-med);
+}
+input[type="checkbox"]:hover {
+  border-color: var(--border-accent);
+}
+input[type="checkbox"]:checked {
+  background: rgb(var(--rgb-accent) / 0.25);
+  border-color: var(--border-accent);
+}
+input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+  background: var(--accent);
+}
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+input[type="range"] {
+  accent-color: var(--accent);
+  height: 4px;
+}
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* ── chip / tab ─────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  font: 500 0.75rem / 1 var(--font-sans);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.chip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.chip:active {
+  background: var(--surface-2);
+}
+.chip[aria-pressed="true"] {
+  color: var(--text-inverse);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Row of filter chips with a trailing search/action cluster. */
+.tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.tabbar__spacer {
+  flex: 1 1 auto;
+}
+
+/* Pill search — icon and input share one focus ring. */
+.searchpill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.searchpill:hover {
+  border-color: var(--border-strong);
+}
+.searchpill:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring-focus);
+}
+.searchpill .ti {
+  font-size: var(--icon-md);
+  color: var(--text-muted);
+}
+.searchpill input {
+  width: 150px;
+  min-height: 34px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.searchpill input:focus {
+  outline: none;
+  box-shadow: none;
+  border: 0;
+}
+
+/* Static, non-interactive label. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 3px var(--sp-2);
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.tag--pos {
+  color: var(--text-pos);
+  background: var(--bg-pos);
+  border-color: rgb(var(--rgb-pos) / 0.25);
+}
+.tag--neg {
+  color: var(--text-neg);
+  background: var(--bg-neg);
+  border-color: rgb(var(--rgb-neg) / 0.25);
+}
+.tag--warn {
+  color: var(--text-warn);
+  background: var(--bg-warn);
+  border-color: rgb(var(--rgb-warn) / 0.25);
+}
+
+/* ── table ──────────────────────────────────────────────────────────────── */
+/* `overflow-x: auto` promotes overflow-y to auto as well, so this is a scroll
+   container on both axes. That is what makes the sticky header below work — but
+   only when the box is actually height-limited, hence the --scroll modifier for
+   long tables. Short tables never scroll and the sticky is simply inert. */
+.table-wrap {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.table-wrap--scroll {
+  max-height: min(60vh, 620px);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.table th[data-num],
+.table td[data-num] {
+  text-align: right;
+}
+.table td {
+  font: 400 var(--fs-data) / 1.45 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border-hairline);
+  white-space: nowrap;
+}
+.table tbody tr {
+  transition: background var(--t-fast);
+}
+.table tbody tr:hover {
+  background: var(--row-hover);
+}
+.table tbody tr:focus-within {
+  background: rgb(var(--rgb-accent) / 0.05);
+}
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Key/value row — the compact alternative to a table. */
+.kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+  font-size: var(--fs-data);
+}
+.kv:last-child {
+  border-bottom: 0;
+}
+.kv__k {
+  color: var(--text-muted);
+}
+.kv__v {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── banner ─────────────────────────────────────────────────────────────── */
+.banner {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  font-size: var(--fs-body);
+}
+.banner::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--sp-3);
+  bottom: var(--sp-3);
+  width: 2px;
+  border-radius: 2px;
+  background: var(--banner-rail, var(--text-muted));
+}
+.banner--warn {
+  --banner-rail: var(--text-warn);
+  border-color: rgb(var(--rgb-warn) / 0.25);
+}
+.banner--neg {
+  --banner-rail: var(--text-neg);
+  border-color: rgb(var(--rgb-neg) / 0.25);
+}
+.banner__icon {
+  flex: none;
+  margin-top: 1px;
+  font-size: var(--icon-lg);
+  color: var(--banner-rail, var(--text-muted));
+}
+.banner__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.banner__body strong {
+  font-weight: 600;
+}
+/* The secondary line under a banner headline. Was seven copies of an inline
+   marginTop across five views. */
+.banner__note {
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
+}
+.banner code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  word-break: break-word;
+}
+
+/* ── skeleton ───────────────────────────────────────────────────────────── */
+.skel {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: skel 1.3s ease-in-out infinite;
+  border-radius: var(--r-sm);
+}
+.skel--text {
+  height: 12px;
+}
+.skel--num {
+  height: 30px;
+  width: 96px;
+}
+.skel--block {
+  height: 180px;
+  border-radius: var(--r-lg);
+}
+
+/* ── empty state ────────────────────────────────────────────────────────── */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+}
+.empty__icon {
+  font-size: var(--icon-2xl);
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* ── toast ──────────────────────────────────────────────────────────────── */
+.toasts {
+  position: fixed;
+  right: var(--sp-5);
+  bottom: var(--sp-5);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+.toast {
+  position: relative;
+  max-width: 360px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  font-size: var(--fs-body);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  box-shadow: var(--sh-pop);
+  animation: toastIn 180ms var(--ease-out) both;
+}
+.toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--sp-2);
+  bottom: var(--sp-2);
+  width: 2px;
+  border-radius: 2px;
+  background: var(--toast-rail, var(--accent));
+}
+.toast--neg {
+  --toast-rail: var(--text-neg);
+}
+
+/* ── code / log output ──────────────────────────────────────────────────── */
+.log {
+  max-height: 260px;
+  overflow: auto;
+  padding: var(--sp-3);
+  font: 400 var(--fs-micro) / 1.6 var(--font-mono);
+  color: var(--text-secondary);
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── disclosure ─────────────────────────────────────────────────────────── */
+.disclosure > summary {
+  cursor: pointer;
+  font: 500 var(--fs-label) / 1.3 var(--font-sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  list-style: none;
+  padding: var(--sp-2) 0;
+  transition: color var(--t-fast);
+}
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.disclosure > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--sp-2);
+  transition: transform var(--t-fast);
+}
+.disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+.disclosure > summary:hover {
+  color: var(--text-primary);
+}
+.disclosure > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── live status dot ────────────────────────────────────────────────────── */
+.dot {
+  position: relative;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.dot--off {
+  background: var(--text-neg);
+}
+.dot--idle {
+  background: var(--text-muted);
+}
+/* One-shot ring on state change — not a permanent loop. */
+.dot--pulse::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  color: inherit;
+  background: transparent;
+  animation: ping 700ms var(--ease-out) 1 both;
+}
+.dot--pulse {
+  color: var(--accent);
+}

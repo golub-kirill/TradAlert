@@ -1,80 +1,137 @@
+/* Two panes over the same monthly series:
+ *   • the cumulative-R equity curve (EquityCurve, self-drawing)
+ *   • monthly net R as bars around zero
+ * Rebuilt as real SVG elements — the previous version assembled an HTML string
+ * and injected it with dangerouslySetInnerHTML. */
+
+import { useMemo } from "react";
 import type { MonthlyBar } from "../api/types";
+import { EquityCurve, type CurvePoint } from "./EquityCurve";
 
-// Two-pane performance chart from monthly data:
-//  • top  — cumulative-R equity curve (area + line)   [the "curve"]
-//  • below — monthly net-R bars around zero (green win / red loss), well-scaled
-// Only numeric/server values are interpolated into the SVG (safe to inject).
+const VB_W = 1000;
+const VB_H = 96;
+
+function tooFew(months: MonthlyBar[]) {
+  return months.length < 2;
+}
+
+function NotEnough() {
+  return (
+    <p className="mut" style={{ fontSize: "var(--fs-data)" }}>
+      Not enough journaled trades to chart this run.
+    </p>
+  );
+}
+
+/** Monthly net R around zero. Split out so a view that already headlines the
+ *  equity curve can show the distribution without drawing the curve twice. */
+export function MonthlyBars({ months }: { months: MonthlyBar[] }) {
+  const bars = useMemo(() => {
+    if (!months.length) return null;
+    const rMax = Math.max(...months.map((m) => Math.abs(m.r)), 0.01);
+    const zero = VB_H / 2;
+    const slot = VB_W / months.length;
+    const w = Math.max(1.5, slot * 0.62);
+    return months.map((m, i) => {
+      const h = (Math.abs(m.r) / rMax) * (VB_H / 2 - 6);
+      return {
+        key: m.month,
+        x: i * slot + (slot - w) / 2,
+        y: m.r >= 0 ? zero - h : zero,
+        w,
+        h: Math.max(1, h),
+        up: m.r >= 0,
+        r: m.r,
+      };
+    });
+  }, [months]);
+
+  if (tooFew(months)) return <NotEnough />;
+
+  const first = months[0].month;
+  const last = months[months.length - 1].month;
+
+  return (
+    <div>
+      <div className="legend">
+        <span>
+          <i className="legend__swatch" style={{ background: "var(--series-1)" }} />
+          Month up
+        </span>
+        <span>
+          <i className="legend__swatch" style={{ background: "var(--series-5)" }} />
+          Month down
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${VB_W} ${VB_H}`}
+        width="100%"
+        role="img"
+        aria-label={`Monthly net R from ${first} to ${last}.`}
+      >
+        <line
+          x1="0"
+          x2={VB_W}
+          y1={VB_H / 2}
+          y2={VB_H / 2}
+          stroke="var(--border-strong)"
+          strokeWidth="1"
+          vectorEffect="non-scaling-stroke"
+        />
+        {bars?.map((b) => (
+          <rect
+            key={b.key}
+            x={b.x}
+            y={b.y}
+            width={b.w}
+            height={b.h}
+            rx="1"
+            fill={b.up ? "var(--series-1)" : "var(--series-5)"}
+            fillOpacity="0.85"
+          >
+            <title>{`${b.key} · ${b.r >= 0 ? "+" : ""}${b.r.toFixed(2)}R`}</title>
+          </rect>
+        ))}
+      </svg>
+      <div
+        className="mut"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontFamily: "var(--font-mono)",
+          fontSize: "var(--fs-micro)",
+          marginTop: "var(--sp-2)",
+        }}
+      >
+        <span>{first}</span>
+        <span>{last}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Curve above, distribution below — for views that don't already headline the
+ *  equity curve somewhere else on the page. */
 export function PerformanceChart({ months }: { months: MonthlyBar[] }) {
-  if (months.length < 2) return <p className="note">Not enough trades to chart.</p>;
+  const curve: CurvePoint[] = useMemo(
+    () => months.map((m) => ({ label: m.month, value: m.close })),
+    [months],
+  );
 
-  const VB_W = 720,
-    L = 10,
-    R = 684;
-  const eT = 12,
-    eB = 214; // equity pane
-  const bT = 238,
-    bB = 312; // P&L pane
-  const VB_H = 332;
-  const n = months.length;
+  if (tooFew(months)) return <NotEnough />;
 
-  const closes = months.map((m) => m.close);
-  const eLo = Math.min(0, ...closes);
-  const eHi = Math.max(...closes);
-  const ePad = (eHi - eLo) * 0.06 || 1;
-  const lo = eLo - ePad,
-    hi = eHi + ePad;
-
-  const X = (i: number) => L + i * ((R - L) / (n - 1));
-  const EY = (v: number) => eT + (1 - (v - lo) / (hi - lo || 1)) * (eB - eT);
-
-  const rMax = Math.max(...months.map((m) => Math.abs(m.r)), 0.01);
-  const BY = (v: number) => bT + (1 - (v / rMax + 1) / 2) * (bB - bT); // 0 centred
-
-  // equity grid + R labels
-  let grid = "";
-  for (let k = 0; k <= 4; k++) {
-    const yy = eT + k * ((eB - eT) / 4);
-    const pv = hi - (k / 4) * (hi - lo);
-    grid += `<line x1="${L}" x2="${R}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" style="stroke:var(--border);stroke-width:.5"/><text x="${R + 4}" y="${(yy + 3).toFixed(1)}" style="fill:var(--text-muted);font-size:10px;font-family:var(--font-mono)">${pv.toFixed(0)}</text>`;
-  }
-
-  const pts = closes.map((v, i) => `${X(i).toFixed(1)},${EY(v).toFixed(1)}`).join(" ");
-  const area =
-    `M${X(0).toFixed(1)},${eB} L` +
-    closes.map((v, i) => `${X(i).toFixed(1)},${EY(v).toFixed(1)}`).join(" L") +
-    ` L${X(n - 1).toFixed(1)},${eB} Z`;
-
-  // P&L bars
-  const z = BY(0);
-  const bw = Math.max(1.4, ((R - L) / n) * 0.72);
-  let bars = `<line x1="${L}" x2="${R}" y1="${z.toFixed(1)}" y2="${z.toFixed(1)}" style="stroke:var(--border-strong);stroke-width:.6"/>`;
-  for (let i = 0; i < n; i++) {
-    const r = months[i].r;
-    const y = BY(r);
-    const col = r >= 0 ? "var(--text-success)" : "var(--text-danger)";
-    bars += `<rect x="${(X(i) - bw / 2).toFixed(1)}" y="${Math.min(z, y).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.8, Math.abs(z - y)).toFixed(1)}" rx="0.5" style="fill:${col};opacity:.85"/>`;
-  }
-
-  // x labels (shared)
-  let xl = "";
-  const step = Math.max(1, Math.round(n / 7));
-  for (let i = 0; i < n; i += step) {
-    xl += `<text x="${X(i).toFixed(1)}" y="${(bB + 14).toFixed(1)}" text-anchor="middle" style="fill:var(--text-muted);font-size:9px;font-family:var(--font-mono)">${months[i].month}</text>`;
-  }
-
-  const svg =
-    `<svg viewBox="0 0 ${VB_W} ${VB_H}" width="100%">` +
-    `<defs><linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">` +
-    `<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>` +
-    `<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>` +
-    grid +
-    `<path d="${area}" fill="url(#eqfill)"/>` +
-    `<polyline points="${pts}" style="fill:none;stroke:var(--text-accent);stroke-width:1.8"/>` +
-    `<text x="${L}" y="${(eT + 9).toFixed(1)}" style="fill:var(--text-muted);font-size:10px">Equity · R</text>` +
-    `<text x="${L}" y="${(bT - 4).toFixed(1)}" style="fill:var(--text-muted);font-size:10px">Monthly P&L · R</text>` +
-    bars +
-    xl +
-    `</svg>`;
-
-  return <div dangerouslySetInnerHTML={{ __html: svg }} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
+      <div>
+        <div className="legend">
+          <span>
+            <i className="legend__swatch" style={{ background: "var(--series-1)" }} />
+            Cumulative R
+          </span>
+        </div>
+        <EquityCurve points={curve} height={200} interactive />
+      </div>
+      <MonthlyBars months={months} />
+    </div>
+  );
 }
