@@ -82,6 +82,10 @@ export function Settings() {
 
   const [edits, setEdits] = useState<Record<string, number | boolean>>({});
   const [saving, setSaving] = useState(false);
+  // Edge-defining keys written by the last save. Held in state rather than
+  // toasted: the toast self-dismisses in 2.6s, and "the regression baseline no
+  // longer describes the live config" must stay on screen until acknowledged.
+  const [needsCheck, setNeedsCheck] = useState<string[]>([]);
   const [tokenVal, setTokenVal] = useState<string>(getToken());
 
   function seed(): Record<string, number | boolean> {
@@ -112,8 +116,9 @@ export function Settings() {
     if (!Object.keys(updates).length) return;
     setSaving(true);
     try {
-      await saveConfig(updates);
+      const res = await saveConfig(updates);
       toast(`Saved ${Object.keys(updates).length} change${Object.keys(updates).length > 1 ? "s" : ""}`);
+      setNeedsCheck(res.requires_regression_check ?? []);
       cfg.reload();
       refresh();
     } catch (e) {
@@ -154,6 +159,29 @@ export function Settings() {
 
   return (
     <>
+      {needsCheck.length > 0 ? (
+        <div className="banner warn" role="alert">
+          <i className="ti ti-alert-triangle" />
+          <div>
+            <strong>
+              Edge-defining {needsCheck.length === 1 ? "parameter" : "parameters"} changed —
+              the regression baseline no longer describes the live config.
+            </strong>
+            <div className="mut" style={{ marginTop: 4 }}>
+              {needsCheck.join(", ")}
+            </div>
+            <div className="mut" style={{ marginTop: 4 }}>
+              These change which trades the strategy takes. Re-run{" "}
+              <code>python scripts/paired_ab.py</code> before trusting the shipped headline,
+              and expect live behaviour to diverge from the backtest until you do. The change
+              is journaled to <code>data/config_audit.jsonl</code>.
+            </div>
+          </div>
+          <button className="btn" onClick={() => setNeedsCheck([])}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div className="grid2">
         {SECTIONS.map((sec) => (
           <Card key={sec.title} title={sec.title} icon={sec.icon}>

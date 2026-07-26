@@ -525,6 +525,33 @@ input[type="range"] {
   align-items: center;
   gap: 9px;
 }
+/* Multi-line, dismissible variant — the edge-defining config warning, which must
+   stay on screen (unlike the 2.6s toast) until the user acknowledges it. */
+.banner.warn {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  border-color: rgb(var(--rgb-warning) / 0.55);
+}
+.banner.warn > i {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  font-size: 16px;
+}
+.banner.warn > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.banner.warn code {
+  background: rgb(255 255 255 / 0.07);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+  word-break: break-word;
+}
+.banner.warn > .btn {
+  flex: 0 0 auto;
+}
 .toast {
   position: fixed;
   bottom: 18px;

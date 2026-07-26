@@ -171,10 +171,22 @@ export const editPosition = (id: number, b: EditBody) =>
   request<OkResult>(`/positions/${id}`, { method: "PATCH", ...body(b) });
 
 // ---- config write + live scan ----
-// Updates are dotted keys -> value, restricted server-side to a whitelist of
-// operational knobs (see GET /config `editable`). Locked keys are rejected.
+// Updates are dotted keys -> value, restricted server-side to a whitelist (see
+// GET /config `editable`). Non-whitelisted keys are rejected.
+//
+// `requires_regression_check` lists the written keys that change TRADE
+// COMPOSITION — the regression baseline no longer describes the live config
+// until a paired A/B is re-run. The panel MUST surface it: 14 of the 21 editable
+// keys are edge-defining, and the server-side warning only reaches a log the
+// panel user never reads. Every write is also journaled to
+// data/config_audit.jsonl (old -> new, with an applied/failed outcome).
+export interface SaveConfigResult {
+  ok: boolean;
+  written: string[];
+  requires_regression_check: string[];
+}
 export const saveConfig = (updates: Record<string, number | boolean | string>) =>
-  request<{ ok: boolean; written: string[] }>("/config", { method: "POST", ...body({ updates }) });
+  request<SaveConfigResult>("/config", { method: "POST", ...body({ updates }) });
 export const runScan = (opts: { morning?: boolean; force?: boolean } = {}) =>
   request<JobRef>("/scan", { method: "POST", ...body(opts) });
 

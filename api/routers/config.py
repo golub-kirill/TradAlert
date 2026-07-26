@@ -84,7 +84,13 @@ _EDGE_DEFINING: frozenset[str] = frozenset(
 
 # Append-only provenance log. Not a DB table on purpose: it must survive a DB
 # outage, and it is read by humans after the fact ("who moved min_rr?").
-AUDIT_LOG = ROOT / "data" / "config_audit.jsonl"
+#
+# DERIVED from CONFIG rather than pinned to ROOT: anything that redirects the
+# config directory (every test that exercises a write) redirects the audit log
+# with it. Pinning it meant test runs appended invented entries — min_price
+# 1.0 -> 3.0 — straight into the production trail, which is worse than no trail.
+def _audit_log() -> Path:
+    return CONFIG.parent / "data" / "config_audit.jsonl"
 
 
 def _record_provenance(entries: list[dict]) -> None:
@@ -92,14 +98,15 @@ def _record_provenance(entries: list[dict]) -> None:
     a full disk must not make a successful config write look like a failure."""
     if not entries:
         return
+    path = _audit_log()
     try:
-        AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
             for e in entries:
                 f.write(json.dumps(e, default=str) + "\n")
     except Exception:
         logger.warning("config write succeeded but provenance was not recorded "
-                       "(%s): %s", AUDIT_LOG, ", ".join(e["key"] for e in entries),
+                       "(%s): %s", path, ", ".join(e["key"] for e in entries),
                        exc_info=True)
 
 

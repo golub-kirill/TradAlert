@@ -27,42 +27,54 @@ for _p in (str(_ROOT), str(_ROOT / "src")):
 
 from persistence.db_conn import connect  # noqa: E402
 
-DDL = """
-CREATE TABLE IF NOT EXISTS telegram_cautions (
-    id      INT       NOT NULL AUTO_INCREMENT,
-    run_id  INT       NOT NULL,
-    tickers TEXT      NOT NULL,
-    sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_telegram_cautions_run (run_id),
-    CONSTRAINT fk_telegram_cautions_run
-        FOREIGN KEY (run_id) REFERENCES scan_runs (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-"""
+TABLE = "telegram_cautions"
+SCHEMA = _ROOT / "data" / "scan_schema.sql"
+
+
+def ddl() -> str:
+    """The CREATE TABLE for ``TABLE``, read from data/scan_schema.sql.
+
+    Single source of truth on purpose: a second copy inlined here would drift the
+    moment the table gains a column, and it would drift in the direction that
+    matters — fresh deploys get the schema file, only the EXISTING live DB runs
+    this script.
+    """
+    text = SCHEMA.read_text(encoding="utf-8")
+    marker = f"CREATE TABLE IF NOT EXISTS {TABLE}"
+    start = text.find(marker)
+    if start < 0:
+        raise SystemExit(f"{marker} not found in {SCHEMA} — schema and migration "
+                         "are out of sync; fix the schema file first.")
+    end = text.find(";", start)
+    if end < 0:
+        raise SystemExit(f"unterminated CREATE TABLE for {TABLE} in {SCHEMA}")
+    return text[start:end].strip()
 
 
 def main() -> int:
     apply = "--apply" in sys.argv
+    statement = ddl()          # fails loudly if the schema file lost the table
     conn = connect()
     cur = conn.cursor()
 
-    cur.execute("SHOW TABLES LIKE 'telegram_cautions'")
+    cur.execute(f"SHOW TABLES LIKE '{TABLE}'")
     if cur.fetchone():
-        print("telegram_cautions already exists — nothing to do.")
+        print(f"{TABLE} already exists — nothing to do.")
         conn.close()
         return 0
 
     if not apply:
-        print("telegram_cautions is MISSING. The caution dedup is inert until it "
-              "exists (fails open, repeats every scan).\n")
-        print(DDL.strip())
+        print(f"{TABLE} is MISSING. The caution dedup is inert until it exists "
+              "(fails open, repeats every scan).\n")
+        print(f"-- from {SCHEMA.relative_to(_ROOT)}")
+        print(statement)
         print("\nDRY RUN — re-run with --apply to create it.")
         conn.close()
         return 0
 
-    cur.execute(DDL)
+    cur.execute(statement)
     conn.commit()
-    cur.execute("SHOW CREATE TABLE telegram_cautions")
+    cur.execute(f"SHOW CREATE TABLE {TABLE}")
     row = cur.fetchone()
     print("created:\n")
     print(row[1] if row else "(no output)")

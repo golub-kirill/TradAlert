@@ -15,6 +15,14 @@ import pytest
 from api.routers import config as cfgmod
 
 
+def _redirect(tmp_path, monkeypatch):
+    """Point CONFIG at a temp dir; the audit log follows it."""
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(cfgmod, "CONFIG", cfg_dir)
+    return tmp_path / "data" / "config_audit.jsonl"
+
+
 def test_edge_defining_set_covers_every_filters_key():
     """Anything the engine reads out of filters.yaml alters entries."""
     filters_keys = {k for k in cfgmod._EDITABLE if k.startswith("filters.")}
@@ -33,8 +41,7 @@ def test_edge_defining_set_covers_every_filters_key():
 
 
 def test_provenance_records_old_and_new(tmp_path, monkeypatch):
-    log = tmp_path / "config_audit.jsonl"
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", log)
+    log = _redirect(tmp_path, monkeypatch)
     cfgmod._record_provenance([
         {"ts": "2026-07-25T00:00:00+00:00", "key": "filters.trend.ma_fast",
          "old": 50, "new": 40, "file": "filters.yaml", "edge_defining": True},
@@ -50,12 +57,12 @@ def test_provenance_records_old_and_new(tmp_path, monkeypatch):
 
 @pytest.fixture
 def panel(tmp_path, monkeypatch):
-    """A real config dir + audit log the write path can operate on."""
-    (tmp_path / "settings.yaml").write_text(
+    """A config dir the write path can operate on. ONLY CONFIG is redirected —
+    the audit log must follow it on its own, which is what keeps test runs out of
+    the production trail."""
+    log = _redirect(tmp_path, monkeypatch)
+    (cfgmod.CONFIG / "settings.yaml").write_text(
         "telegram:\n  enabled: true                 # push toggle\n", encoding="utf-8")
-    log = tmp_path / "config_audit.jsonl"
-    monkeypatch.setattr(cfgmod, "CONFIG", tmp_path)
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", log)
     return log
 
 
@@ -88,12 +95,20 @@ def test_failed_commit_still_leaves_an_audit_record(panel, monkeypatch):
 
 
 def test_edge_defining_write_flags_a_regression_check(tmp_path, monkeypatch):
-    (tmp_path / "filters.yaml").write_text(
+    _redirect(tmp_path, monkeypatch)
+    (cfgmod.CONFIG / "filters.yaml").write_text(
         "trend:\n  ma_fast: 50                     # fast MA\n", encoding="utf-8")
-    monkeypatch.setattr(cfgmod, "CONFIG", tmp_path)
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", tmp_path / "config_audit.jsonl")
     out = cfgmod.write_config(cfgmod.ConfigWrite(updates={"filters.trend.ma_fast": 40}))
     assert out["requires_regression_check"] == ["filters.trend.ma_fast"]
+
+
+def test_audit_log_follows_a_redirected_config_dir(tmp_path, monkeypatch):
+    """Regression: AUDIT_LOG used to be pinned to the repo root, so any test that
+    redirected CONFIG still appended invented rows to the PRODUCTION trail. An
+    audit log containing writes that never happened is worse than none."""
+    log = _redirect(tmp_path, monkeypatch)
+    assert cfgmod._audit_log() == log
+    assert tmp_path in cfgmod._audit_log().parents
 
 
 def test_operational_write_flags_nothing(panel):
@@ -104,8 +119,7 @@ def test_operational_write_flags_nothing(panel):
 
 def test_provenance_appends_rather_than_truncates(tmp_path, monkeypatch):
     """The audit trail is the point — a second write must not erase the first."""
-    log = tmp_path / "config_audit.jsonl"
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", log)
+    log = _redirect(tmp_path, monkeypatch)
     cfgmod._record_provenance([{"key": "a", "old": 1, "new": 2}])
     cfgmod._record_provenance([{"key": "b", "old": 3, "new": 4}])
     assert [json.loads(x)["key"] for x in log.read_text(encoding="utf-8").splitlines()] \
@@ -115,7 +129,7 @@ def test_provenance_appends_rather_than_truncates(tmp_path, monkeypatch):
 def test_provenance_failure_never_breaks_the_write(tmp_path, monkeypatch, caplog):
     """A successful config write must not be reported as a failure because the
     audit file could not be appended to."""
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", tmp_path / "nope" / "x.jsonl")
+    _redirect(tmp_path, monkeypatch)
 
     def _boom(*a, **k):
         raise OSError("disk full")
@@ -127,8 +141,7 @@ def test_provenance_failure_never_breaks_the_write(tmp_path, monkeypatch, caplog
 
 
 def test_empty_provenance_writes_nothing(tmp_path, monkeypatch):
-    log = tmp_path / "config_audit.jsonl"
-    monkeypatch.setattr(cfgmod, "AUDIT_LOG", log)
+    log = _redirect(tmp_path, monkeypatch)
     cfgmod._record_provenance([])
     assert not log.exists()
 
