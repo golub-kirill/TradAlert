@@ -27,7 +27,7 @@ import functools
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,6 +54,7 @@ from telegram.ext import (  # noqa: E402
 
 from core import position_manager as pm  # noqa: E402
 from core.exits import max_hold_exit_due  # noqa: E402
+from core.freshness import drop_unclosed_bar, exchange_for  # noqa: E402
 from core.execution.adapter import get_adapter  # noqa: E402
 from core.paths import DATA_DIR, FILTERS_YAML, SCREENSHOTS_DIR, SETTINGS_YAML  # noqa: E402
 from exceptions import ValidationError  # noqa: E402
@@ -96,7 +97,7 @@ _LOCK_FH = None
 _ENGINE = None
 
 _REGIME_INDICES = ["SPY", "QQQ"]  # fallback; _regime_indices() reads the config knob
-_VIX_SYMBOL = "^VIX"
+_VIX_SYMBOL = "^VIX"  # fallback; _vix_symbol() reads the config knob
 
 
 def _regime_indices() -> list[str]:
@@ -107,6 +108,15 @@ def _regime_indices() -> list[str]:
         return [str(s) for s in idx] if idx else list(_REGIME_INDICES)
     except Exception:
         return list(_REGIME_INDICES)
+
+
+def _vix_symbol() -> str:
+    """Volatility series from ``filters.regime.vix_symbol`` (fallback ^VIX)."""
+    try:
+        cfg = yaml.safe_load(FILTERS_YAML.read_text(encoding="utf-8")) or {}
+        return str((cfg.get("regime") or {}).get("vix_symbol") or _VIX_SYMBOL)
+    except Exception:
+        return _VIX_SYMBOL
 
 
 # ── startup: credentials, logging, single-instance lock ──────────────────────
@@ -126,7 +136,7 @@ def _load_credentials() -> bool:
 
 
 def _setup_logging() -> None:
-    """Root logger → stdout + logs/telegram_bot.log, with the secret-mask filter.
+    """Root logger → stdout + data/telegram_bot.log, with the secret-mask filter.
 
     Installs the shared mask filter BEFORE the bot token is ever used so PTB's
     polling URL / debug lines can't leak it.
@@ -217,20 +227,31 @@ def _get_engine():
 
 
 def _load_market_context():
-    """Load SPY/QQQ (+ ^VIX) from cache for regime — mirrors main._load_market_context."""
+    """Load SPY/QQQ (+ ^VIX) from cache for regime — mirrors main._load_market_context.
+
+    Any unclosed current-day bar is dropped, as in the scanner: /recalc and /chart
+    run intraday, and classifying regime on a partial bar gives the daemon a
+    different answer from the scan that produced the alert.
+    """
     from persistence.cache import load as cache_load
+
+    now = datetime.now(timezone.utc)
+
+    def _closed(sym):
+        return drop_unclosed_bar(cache_load(sym), now, exchange_for(sym))
 
     market_dfs = {}
     for sym in _regime_indices():
         try:
-            market_dfs[sym] = cache_load(sym)
+            market_dfs[sym] = _closed(sym)
         except Exception as exc:  # fail-open: regime degrades, never aborts
             logger.debug("[market] %s load failed — %s", sym, exc)
     vix_df = None
+    vix_sym = _vix_symbol()
     try:
-        vix_df = cache_load(_VIX_SYMBOL)
+        vix_df = _closed(vix_sym)
     except Exception as exc:
-        logger.debug("[market] %s load failed — %s", _VIX_SYMBOL, exc)
+        logger.debug("[market] %s load failed — %s", vix_sym, exc)
     return (market_dfs or None), vix_df
 
 
@@ -309,13 +330,21 @@ def _basic_metrics(pos, df, now_price: float | None = None) -> dict:
     last_close = float(df["close"].iloc[-1])
     cur = float(now_price) if now_price is not None else last_close
     sign = 1 if pos.side == "long" else -1
-    risk = abs(pos.entry_price - pos.stop_price) if pos.stop_price else None
+    # R is denominated in the INITIAL risk unit, repo-wide (_closed_metrics,
+    # _one_r_stop, reconcile_fills). Measuring it off the CURRENT stop made the
+    # denominator collapse to 0 after a breakeven move — falsy, so the card
+    # dropped its R and →stop rows exactly when protection had locked in.
+    risk_stop = pos.initial_stop if pos.initial_stop is not None else pos.stop_price
+    risk = abs(pos.entry_price - risk_stop) if risk_stop else None
     m: dict = {"now": cur}
     if pos.entry_price:
         m["unrealized_pct"] = sign * (cur - pos.entry_price) / pos.entry_price * 100
     if risk:
         m["unrealized_r"] = sign * (cur - pos.entry_price) / risk
-        m["to_stop_r"] = sign * (cur - pos.stop_price) / risk
+        # Distance to where the exit would actually happen (the CURRENT stop),
+        # expressed in initial-R units.
+        if pos.stop_price:
+            m["to_stop_r"] = sign * (cur - pos.stop_price) / risk
     try:
         entry_pos = int(df.index.searchsorted(pd.Timestamp(pos.entry_date)))
         bars_held = max(0, (len(df) - 1) - entry_pos)

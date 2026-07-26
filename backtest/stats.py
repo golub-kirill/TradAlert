@@ -143,7 +143,7 @@ def group_by(
     return {k: compute_stats(v) for k, v in buckets.items()}
 
 
-# ── exit-quality diagnostics (exit-logic Phase 0) ────────────────────────────
+# ── exit-quality diagnostics ──────────────────────────────────────────
 
 
 @dataclass

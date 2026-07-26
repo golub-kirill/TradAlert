@@ -814,7 +814,7 @@ def test_basic_metrics_reads_typed_execution_config(monkeypatch):
     idx = pd.date_range("2025-01-01", periods=10, freq="B")
     df = pd.DataFrame({"close": [100.0] * 10}, index=idx)
     pos = SimpleNamespace(side="long", entry_price=100.0, stop_price=95.0,
-                          entry_date=idx[0].date(), ticker="TEST.1")
+                          initial_stop=95.0, entry_date=idx[0].date(), ticker="TEST.1")
 
     m = tb._basic_metrics(pos, df)
     assert m["max_hold"] == 25
@@ -834,7 +834,7 @@ def test_basic_metrics_uses_live_now_price(monkeypatch):
     idx = pd.date_range("2025-01-01", periods=5, freq="B")
     df = pd.DataFrame({"close": [100.0] * 5}, index=idx)          # last daily close = 100
     pos = SimpleNamespace(side="long", entry_price=100.0, stop_price=90.0,
-                          entry_date=idx[0].date(), ticker="TEST.1")
+                          initial_stop=90.0, entry_date=idx[0].date(), ticker="TEST.1")
 
     # live price 98 (below entry) → now/PnL reflect the live tape, not the flat close
     m = tb._basic_metrics(pos, df, 98.0)
@@ -842,6 +842,25 @@ def test_basic_metrics_uses_live_now_price(monkeypatch):
     assert m["unrealized_pct"] == pytest.approx(-2.0)
     assert m["unrealized_r"] == pytest.approx(-0.2)               # (98-100)/10
     assert m["to_stop_r"] == pytest.approx(0.8)                   # (98-90)/10
+
+
+def test_basic_metrics_keeps_r_rows_after_a_breakeven_move():
+    """R is denominated in the INITIAL risk unit: a breakeven move puts stop_price
+    at entry, and measuring R off THAT collapsed the denominator to 0 — the card
+    silently dropped its R and →stop rows exactly when protection had locked in."""
+    import pandas as pd
+    from types import SimpleNamespace
+
+    idx = pd.date_range("2025-01-01", periods=5, freq="B")
+    df = pd.DataFrame({"close": [100.0] * 5}, index=idx)
+    pos = SimpleNamespace(side="long", entry_price=100.0,
+                          stop_price=100.0,      # ratcheted to breakeven
+                          initial_stop=90.0,     # the frozen R denominator
+                          entry_date=idx[0].date(), ticker="TEST.1")
+
+    m = tb._basic_metrics(pos, df, 110.0)
+    assert m["unrealized_r"] == pytest.approx(1.0)   # (110-100)/10, not a dropped row
+    assert m["to_stop_r"] == pytest.approx(1.0)      # (110-100)/10 to the breakeven stop
 
     # no live price → falls back to the last close → reads flat
     m2 = tb._basic_metrics(pos, df)

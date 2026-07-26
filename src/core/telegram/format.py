@@ -162,7 +162,7 @@ def format_entry(tr: Any, *, risk_on: float | None = None, n_open: int | None = 
     fill bar. Secondary detail (hold, size, decisive/advisory panel, regime, open
     count) goes in an expandable blockquote. `panel` is ``(decisive, advisory)`` —
     the gates that fired vs non-gating context — kept separate so the card is not
-    read as a broad multi-factor score (audit S7).
+    read as a broad multi-factor score.
     """
     s, sc = tr.signal, tr.scan
     is_long = s.direction == "long"

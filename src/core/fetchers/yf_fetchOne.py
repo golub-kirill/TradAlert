@@ -20,7 +20,10 @@ from core.validators.dataframe_validator import REQUIRED_COLUMNS
 from core.validators.yf_tickerValidator import validate_ticker
 from exceptions import FetchError
 
-DEFAULT_LOOKBACK: int = 10000  # calendar days — ~350 trading days, covers MA200 warmup
+# Calendar days — ~27 years, i.e. full available history, not a warmup window.
+# Deliberate: every refetch re-pulls the whole series, which is the mechanism
+# behind the documented ±10R cache jitter between runs (DESIGN §5).
+DEFAULT_LOOKBACK: int = 10000
 DEFAULT_INTERVAL: str = "1d"  # daily bars — correct for swing trading
 
 

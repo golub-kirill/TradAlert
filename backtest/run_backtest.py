@@ -210,7 +210,7 @@ def main() -> None:
               + "; ratchets the stop in the trade's favor — baseline is OFF)")
 
     # Breakeven stop. `execution.breakeven_trigger_r` in filters.yaml supplies the
-    # shipped default (ADR-004); the CLI flag overrides it, and 0 disables.
+    # shipped default (DESIGN §4 D-004); the CLI flag overrides it, and 0 disables.
     be_trigger = exec_cfg.get("breakeven_trigger_r")
     be_buffer = exec_cfg.get("breakeven_buffer_atr")
     be_source = "filters.yaml" if be_trigger else None
@@ -342,7 +342,7 @@ def main() -> None:
         print_baseline(pt, equity=ec, bootstrap=boots,
                        kelly=kel, attribution=attr, streaks=stks,
                        mc_dd=mc_dd)
-        print_exit_quality(trades)  # exit-logic Phase 0 — where do exits leak
+        print_exit_quality(trades)  # where do exits leak
         if wf_report:
             print_walk_forward(wf_report)
 
@@ -612,7 +612,7 @@ def _parse_args() -> argparse.Namespace:
                         "the stop to breakeven — protects the downside WITHOUT "
                         "capping the upside (does not trail further). Default comes "
                         "from execution.breakeven_trigger_r in filters.yaml "
-                        "(shipped: 1.0, ADR-004); pass 0 to disable. R stays off "
+                        "(shipped: 1.0, DESIGN §4 D-004); pass 0 to disable. R stays off "
                         "the INITIAL stop.")
     p.add_argument("--breakeven-buffer-atr", type=float, default=None, metavar="M",
                    help="With --breakeven-trigger-r: place the breakeven stop M×ATR in "
@@ -621,8 +621,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Exit-side slippage fraction on MARKET-type exit fills "
                         "(stop, engine_exit, time_stop, open_eod; target limit "
                         "fills stay exact). Default: execution.exit_slippage_pct "
-                        "in filters.yaml (absent/0 = off — the shipped headline "
-                        "fills exits frictionless). Pass 0 to disable.")
+                        "in filters.yaml, which ships 0.0020 — the headline is "
+                        "quoted WITH exit friction. Pass 0 to disable.")
     p.add_argument("--correlation-cap", action="store_true",
                    help="Correlation-aware open-risk budget: charge max_open_risk "
                         "against the correlation-adjusted effective risk sqrt(wᵀCw) "

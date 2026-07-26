@@ -12,6 +12,11 @@ production sweep machinery, so numbers match `run_backtest.py --sweep`. Explorat
     python scripts/studies/budget_sweep.py --budgets 3 4 5 6 7 8 --workers 8
 
 Read-only on the DB. Needs the price cache (data/prices).
+CONVENTION WARNING (2026-07-25): this study does NOT pass the shipped friction /
+sizing convention (execution.exit_slippage_pct 0.0020 = D-008a, breakeven, and
+chronic_loser_penalty = D-011). Its recorded DELTAS stay valid — both legs share
+the gap — but any RE-RUN quotes LEVELS on the pre-D-008a/D-011 convention and is
+NOT comparable to the +93.53R gate. Add the passthroughs before quoting levels.
 """
 
 from __future__ import annotations

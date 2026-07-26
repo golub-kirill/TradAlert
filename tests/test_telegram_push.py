@@ -255,6 +255,45 @@ def test_caution_delivery_recorded_only_on_successful_send(monkeypatch):
     assert recorded == []
 
 
+def test_failed_send_lets_the_next_scan_through(monkeypatch):
+    """End-to-end over a fake delivery journal: an episode whose FIRST push fails
+    must still reach the reader on the next scan — the failure mode a fail-open
+    dedup must not have (the journal alone would have suppressed it forever)."""
+    journal = []
+    monkeypatch.setattr(push, "_record_caution",
+                        lambda run_id, tickers: journal.append(set(tickers)))
+    monkeypatch.setattr(push, "_caution_state",
+                        lambda: (journal[-1], False) if journal else None)
+    monkeypatch.setenv("TG_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TG_CHAT_ID", "12345")
+    from core import position_manager
+    monkeypatch.setattr(position_manager, "load_open_positions", lambda: {})
+    sends = []
+
+    async def outage(*a, **k):
+        sends.append("failed")
+        raise RuntimeError("telegram outage")
+
+    async def ok(*a, **k):
+        sends.append("sent")
+        return True
+
+    # Scan 1 — episode starts, push fails: nothing journaled.
+    monkeypatch.setattr(push, "_send_all", outage)
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=20)
+    assert journal == []
+
+    # Scan 2 — same episode, same set: must RETRY, not suppress.
+    monkeypatch.setattr(push, "_send_all", ok)
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=21)
+    assert journal == [{"ARX.TO"}]
+
+    # Scan 3 — now genuinely delivered, so the repeat is suppressed.
+    push.send_alerts([_exit_tr("ARX.TO", "regime")], _ENABLED, run_id=22)
+    assert sends == ["failed", "sent"]
+    assert journal == [{"ARX.TO"}]
+
+
 def test_suppressed_caution_is_not_recorded(monkeypatch):
     """Suppression must not write a fresh delivery row — only real sends do."""
     recorded = []

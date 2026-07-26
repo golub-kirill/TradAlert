@@ -17,7 +17,8 @@ Design contract
 
 Usage: the backtester instantiates one ``TickerHealth`` per ``run()``, shared
 across the bar walk (per-ticker, so no cross-worker state). The live scanner
-builds one via ``from_csv(path)`` over the production ``trades.csv`` at startup.
+builds one per scan from the ``positions`` journal (``main._load_ticker_health``);
+``from_csv(path)`` remains for offline analysis over a backtest ``trades.csv``.
 
 Sliding-scale interpretation
 ────────────────────────────

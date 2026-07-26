@@ -1,5 +1,5 @@
 """
-Phase-1 outbound push: send the day's fired signals to Telegram after a scan.
+Outbound push: send the day's fired signals to Telegram after a scan.
 
 `send_alerts(results, settings)` is the SYNC entry point called from main.py. It is
 **fail-open** — a missing dependency, bad token, or Telegram outage degrades to a
@@ -16,6 +16,7 @@ import asyncio
 import html
 import logging
 import os
+import time
 from datetime import date
 
 from core.paths import SCREENSHOTS_DIR
@@ -313,7 +314,7 @@ def _render(tr, kind, risk_on, n_open):
     return text, chart
 
 
-# Entry-card panel (audit S7): split the engine's gate checks into what DECIDED the
+# Entry-card panel: split the engine's gate checks into what DECIDED the
 # signal (the MOMENTUM entry gates) vs non-gating ADVISORY context (52-week position),
 # so the card no longer reads as a broad multi-factor "score". Same source as the chart
 # panel (SignalResult.checks); event_risk is surfaced separately by format_entry.
@@ -347,12 +348,34 @@ def _markup(tr, kind, cfg: TelegramConfig, run_id=None):
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
 
+# A chart is rendered seconds before the push, so anything older belongs to an
+# earlier scan. Bounded by AGE rather than by date equality on purpose: the run
+# date is UTC while mtime is local, and the two disagree for an evening scan.
+_CHART_MAX_AGE_SECONDS = 6 * 3600
+
+
 def _latest_chart(ticker: str):
-    """Newest screenshot for this ticker (today's), or None — avoids re-deriving the date stamp."""
+    """This scan's screenshot for ``ticker``, or None when the render failed.
+
+    Filenames embed the SIGNAL BAR's date, so a stale file carries a stale chart
+    under a current entry/stop caption — worse than no chart. When today's render
+    failed (main.py logs "alert still sent") the newest file is an earlier scan's;
+    drop it and let the alert go out as text.
+    """
     try:
         cands = sorted(SCREENSHOTS_DIR.glob(f"{ticker.upper()}_*.webp"),
                        key=lambda p: p.stat().st_mtime)
-        return cands[-1] if cands else None
+        if not cands:
+            return None
+        newest = cands[-1]
+        age = time.time() - newest.stat().st_mtime
+        if age > _CHART_MAX_AGE_SECONDS:
+            logger.warning(
+                "[telegram] %s: newest chart %s is %.1fh old — this scan's render "
+                "failed; sending the alert without a chart rather than with a "
+                "stale one", ticker, newest.name, age / 3600)
+            return None
+        return newest
     except Exception:
         return None
 

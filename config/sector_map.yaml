@@ -6,9 +6,16 @@
 # whose sector ETF is below its MA(trend.ma_fast). Tickers absent from this
 # map are not gated (return True from _sector_strength_ok).
 #
-# F5-C: this file is committed (was previously missing — sector gate silently
-# disabled with a WARNING). Empty mapping = gate effectively disabled even
-# when enabled=true, until a real mapping is supplied.
+# Empty mapping = gate INERT even when signals.sector_gate.enabled is true
+# (the engine warns on load).
+#
+# LIVE/BACKTEST TRAP — read before populating this file. The gate only bites
+# where the sector ETF is present in market_dfs. backtest/loader.py files
+# SECTOR_ETFS into market_dfs; the live scan loads regime indices only
+# (main._load_market_context reads filters.regime.index_symbols). So populating
+# this map activates the gate in the BACKTEST while live keeps passing every
+# ticker — a silent live≠backtest divergence. Add the sector ETFs to the live
+# context load in the same change, or leave the gate off.
 #
 # Convention: sector ETFs themselves map to themselves (so the gate doesn't
 # disqualify them while evaluating their own setup).

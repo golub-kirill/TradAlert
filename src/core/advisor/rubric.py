@@ -86,15 +86,23 @@ def _edge(inp: AdvisorInput) -> Criterion:
 
 
 def _alignment(inp: AdvisorInput) -> Criterion:
-    """Direction vs market regime + ticker trend. Aligned/counter carry ±2."""
-    regime = (inp.market_regime or "").upper()
+    """Direction vs market regime + ticker trend. Aligned/counter carry ±2.
+
+    ``market_regime`` arrives as the COMBINED ``MarketRegime.label`` (trend_vol,
+    e.g. ``"BULL_LOW"``), so only the trend half is comparable here — matching the
+    whole label against a bare trend made this axis contribute 0 to every live
+    verdict. CHOP is neither supportive nor counter: the engine's ``allows_longs``
+    requires BULL, so claiming alignment in chop would assert more than the
+    validated gate does.
+    """
+    regime = (inp.market_regime or "").upper().split("_")[0]
     trend = (inp.ticker_trend or "").upper()
     is_long = str(inp.direction).lower() == "long"
     if is_long:
-        supportive = (regime in ("BULL", "NEUTRAL"), trend == "UPTREND")
+        supportive = (regime == "BULL", trend == "UPTREND")
         counter = (regime == "BEAR", trend == "DOWNTREND")
     else:
-        supportive = (regime in ("BEAR", "NEUTRAL"), trend == "DOWNTREND")
+        supportive = (regime == "BEAR", trend == "DOWNTREND")
         counter = (regime == "BULL", trend == "UPTREND")
     tag = f"{regime or '—'}/{trend or '—'}"
     if any(counter):

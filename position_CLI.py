@@ -3,7 +3,7 @@ Position-management CLI.
 
 Subcommands
     list                                      show all positions
-    open    TICKER PRICE [--stop ...] [--date ...] open a new long
+    open    TICKER PRICE [--stop ...] [--side ...] open a position (--side long|short)
     close   ID PRICE                          close an open position
     stop    ID PRICE                          update stop on an open position
 

@@ -11,7 +11,9 @@ def _inp(**over) -> AdvisorInput:
     base = dict(
         ticker="TEST.1", company_name="Test Industries Inc.", direction="long",
         signal_type="momentum", stop_price=90.0, target_price=115.0, min_rr=2.0,
-        market_regime="BULL", ticker_trend="UPTREND", reason="breakout",
+        # Combined MarketRegime.label (trend_vol) — the shape the live path
+        # actually passes; a bare "BULL" never reaches the rubric.
+        market_regime="BULL_LOW", ticker_trend="UPTREND", reason="breakout",
         rsi=64.0, pct_from_ma=6.2, atr_to_stop=1.4, dv20=52e6, cap_tier="large",
         base_rate={"avg_r": 0.35, "win_rate": 0.58, "n": 140},
     )
@@ -39,8 +41,27 @@ def test_strongly_negative_edge_disagrees():
 
 
 def test_counter_trend_is_not_a_clean_agree():
-    r = score_rubric(_inp(market_regime="BEAR", ticker_trend="DOWNTREND"))
+    r = score_rubric(_inp(market_regime="BEAR_HIGH", ticker_trend="DOWNTREND"))
     assert r.verdict != "agree"
+
+
+def test_alignment_reads_the_trend_half_of_the_combined_regime_label():
+    """The regime arrives as ``trend_vol``; matching the whole label against a
+    bare trend silently zeroed this axis on every live verdict."""
+    align = {c.name: c for c in score_rubric(_inp()).criteria}["alignment"]
+    assert (align.label, align.points) == ("aligned", 2)
+    # Every volatility suffix resolves to the same trend verdict.
+    for label in ("BULL_LOW", "BULL_NORMAL", "BULL_HIGH"):
+        crit = {c.name: c for c in score_rubric(_inp(market_regime=label)).criteria}
+        assert crit["alignment"].points == 2, label
+    # Counter regime still counters through the suffix.
+    counter = {c.name: c
+               for c in score_rubric(_inp(market_regime="BEAR_NORMAL")).criteria}
+    assert (counter["alignment"].label, counter["alignment"].points) == ("counter", -2)
+    # CHOP is neither — the engine's allows_longs requires BULL, so the advisor
+    # must not claim alignment the entry gate would refuse.
+    chop = {c.name: c for c in score_rubric(_inp(market_regime="CHOP_HIGH")).criteria}
+    assert (chop["alignment"].label, chop["alignment"].points) == ("mixed", 0)
 
 
 def test_unknown_edge_caps_confidence():

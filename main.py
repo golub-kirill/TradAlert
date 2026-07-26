@@ -45,6 +45,7 @@ from core.fetchers.earnings_fetcher import get_next_earnings  # noqa: E402
 from core.fetchers.info_fetcher import get_market_cap  # noqa: E402
 from core.indicators.indicators import attach_indicators  # noqa: E402
 from core.position_manager import load_open_positions  # noqa: E402
+from core.defaults import DEFAULTS  # noqa: E402
 from core.exits import breakeven_stop_level, max_hold_exit_due  # noqa: E402
 from exceptions import InsufficientDataError  # noqa: E402
 from core.fetchers.http import mask_api_keys_filter  # noqa: E402
@@ -140,12 +141,19 @@ def main() -> None:
     # not re-read it.
     filters_cfg = yaml.safe_load(_FILTERS.read_text(encoding="utf-8"))
 
-    # Regime indices come from config (filters.regime.index_symbols), same knob
-    # the engine's regime classifier reads — the module default is the fallback.
-    global _REGIME_INDICES
-    _idx = (filters_cfg.get("regime") or {}).get("index_symbols")
+    # Regime indices and the volatility series come from config
+    # (filters.regime.index_symbols / .vix_symbol), the same knobs the engine's
+    # regime classifier reads — the module defaults are the fallback.
+    # backtest/loader.py keeps its literals for replay byte-identity.
+    global _REGIME_INDICES, _VIX_SYMBOL, _CONTEXT_ONLY
+    _regime_cfg = filters_cfg.get("regime") or {}
+    _idx = _regime_cfg.get("index_symbols")
     if _idx:
         _REGIME_INDICES = [str(s) for s in _idx]
+    _vix = _regime_cfg.get("vix_symbol")
+    if _vix:
+        _VIX_SYMBOL = str(_vix)
+        _CONTEXT_ONLY = {_VIX_SYMBOL}
 
     # --allow-shorts flips the master switch on. Only mutated when the flag is
     # set, so an unflagged run leaves the long-only baseline replay-identical
@@ -168,14 +176,14 @@ def main() -> None:
             logger.warning("[macro] classification failed — proceeding without: %s",
                            exc, exc_info=True)
 
-    # Fetch behavioral data once (market-wide, reused across tickers)
+    # Fetch behavioral data once (market-wide, reused across tickers). Classified
+    # in _run_pipeline, not here: breadth_divergence needs the SPY frame, which
+    # only exists after the market context loads.
     behavioral_data = {}
-    behavioral_state = None
     if _BEHAVIORAL_AVAILABLE and settings.get("behavioral", {}).get("enabled", True):
         try:
             behavioral_data = fetch_all_behavioral(_SETTINGS, force=args.force)
             if behavioral_data:
-                from core.behavioral import classify_behavioral_state
                 # LIVE staleness guard: drop feeds older than
                 # behavioral.stale_window_days so a stale cache degrades the axis
                 # to missing (confidence falls) instead of sizing on it.
@@ -183,16 +191,12 @@ def main() -> None:
                     (settings.get("behavioral", {}) or {}).get("stale_window_days", 14))
                 behavioral_data = _drop_stale_behavioral(
                     behavioral_data, datetime.now(timezone.utc), stale_days)
-                behavioral_state = classify_behavioral_state(
-                    behavioral_data, settings=settings)
-                logger.info("[behavioral] score=%.2f confidence=%.0f%%",
-                            behavioral_state.behavioral_score,
-                            behavioral_state.confidence * 100)
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
-            logger.warning("[behavioral] classification failed — proceeding without: %s",
+            logger.warning("[behavioral] fetch failed — proceeding without: %s",
                            exc, exc_info=True)
+            behavioral_data = {}
 
-    # Macro calendar (FOMC/CPI/NFP) — ADVISORY ONLY (audit S6, 2026-06-22).
+    # Macro calendar (FOMC/CPI/NFP) — ADVISORY ONLY.
     # The hard entry-day block was DEMOTED: a paired A/B showed an FOMC/CPI/NFP
     # entry-block is a near-no-op (≈18 entries / +0.19R over 2015-2026) and the
     # backtest can't replicate it (live==backtest), so calendar dates feed ONLY the
@@ -235,7 +239,7 @@ def main() -> None:
     results = _run_pipeline(
         fetch_summary.succeeded, engine,
         settings=settings,
-        macro_state=macro_state, behavioral_state=behavioral_state,
+        macro_state=macro_state, behavioral_data=behavioral_data,
         rp_ranks=rp_ranks, cal_events=cal_events, morning=args.morning,
     )
 
@@ -313,7 +317,7 @@ def _maybe_raise_stop_to_breakeven(ticker, df, position, exec_cfg, settings) -> 
     """Move a held position's stop to breakeven once its best excursion since entry
     reaches ``execution.breakeven_trigger_r`` — the live half of the rule the
     backtester applies in ``_apply_dynamic_stop`` (shared decision:
-    ``core.exits.breakeven_stop_level``; ADR-004).
+    ``core.exits.breakeven_stop_level``; DESIGN §4 D-004).
 
     A long stop ratchets UP to (around) entry, a short stop ratchets DOWN; either
     way the position's risk drops to ~0 without capping upside. Returns the new
@@ -433,6 +437,7 @@ def _run_pipeline(
         settings: dict | None = None,
         macro_state: object | None = None,
         behavioral_state: object | None = None,
+        behavioral_data: dict | None = None,
         rp_ranks: dict[str, float] | None = None,
         now: datetime | None = None,
         cal_events: list | None = None,
@@ -460,7 +465,10 @@ def _run_pipeline(
     tickers          : Symbols successfully fetched (FetchSummary.succeeded).
     engine           : Shared FilterEngine instance.
     macro_state      : MacroState for regime size multiplier.
-    behavioral_state : BehavioralState for regime size multiplier.
+    behavioral_state : Pre-classified BehavioralState. Ignored when
+                       ``behavioral_data`` is supplied.
+    behavioral_data  : Raw ``fetch_all_behavioral`` output, classified here (not
+                       by the caller) so the SPY frame reaches the breadth axis.
     rp_ranks         : Ticker → RP percentile rank [0, 99].
 
     Returns
@@ -501,6 +509,15 @@ def _run_pipeline(
             "[filters] every events.stop_dates row is past (latest %s) — the "
             "entry blackout is DARK; prune or refresh config/filters.yaml", _dark)
 
+    # Classify the behavioral axes HERE, not at fetch time: breadth_divergence
+    # reads the SPY frame, which only exists once the market context is loaded.
+    # The backtester passes spy_df (portfolio_backtester._run), so classifying
+    # without it left the axis permanently dark live while
+    # behavioral.breadth_divergence_penalty ships active — live sized larger than
+    # the validated model on a narrow rally.
+    if behavioral_data:
+        behavioral_state = _classify_behavioral(behavioral_data, settings, market_dfs)
+
     positions = load_open_positions()  # {ticker: Position}
     # Chronic-loser tracker (D-011): journal-fed, built once per scan; None when
     # the switch is off or the journal is unreadable (fail-open, no penalty).
@@ -524,9 +541,13 @@ def _run_pipeline(
             from core.macro.calendar import EVENT_RISK_WITHIN_DAYS, event_risk_flags
             _within = (settings.get("scanner") or {}).get("event_risk_within_days")
             # An explicit scanner.event_risk_within_days wins verbatim; the
-            # DEFAULT widens to the expected-hold ceiling.
+            # DEFAULT widens to the expected-hold ceiling. expected_hold is in
+            # TRADING BARS while events_in_window counts CALENDAR days, so convert
+            # (5 trading days ≈ 7 calendar) — passing bars straight through
+            # under-covered the hold by ~40% and could hide an FOMC inside it.
             horizon = (int(_within) if _within is not None
-                       else max(EVENT_RISK_WITHIN_DAYS, int(expected_hold[1])))
+                       else max(EVENT_RISK_WITHIN_DAYS,
+                                -(-int(expected_hold[1]) * 7 // 5)))
             event_risk = event_risk_flags(cal_events, now.date(), horizon_days=horizon)
         except Exception as exc:
             logger.debug("[calendar] event_risk_flags failed (skipping): %s", exc)
@@ -841,7 +862,7 @@ def _process_ticker(
         )
 
     # ── 7b. live max-hold (time-stop) exit ────────────────────────────────
-    # Mirror of the backtester's swing-horizon cap (ADR-001): force an exit on a
+    # Mirror of the backtester's swing-horizon cap (DESIGN §4 D-001): force an exit on a
     # held position (long or short) that reached the cap and — in if_not_profit
     # mode — is not in profit. Shares core.exits with the backtester so live and
     # backtest never diverge. Engine exits take precedence (only a non-exit signal
@@ -869,10 +890,19 @@ def _process_ticker(
 
     # ── 7c. live breakeven stop ───────────────────────────────────────────
     # Mirror of the backtester's _apply_dynamic_stop breakeven rule
-    # (core.exits.breakeven_stop_level, ADR-004): once a held position's best
+    # (core.exits.breakeven_stop_level, DESIGN §4 D-004): once a held position's best
     # excursion reaches the trigger, move positions.stop_price to entry (up for
     # a long, down for a short). Skipped when the position is exiting this scan
     # anyway. Fail-open.
+    # ── 7c. open-position stop-geometry guard ─────────────────────────────
+    # validate_open runs at OPEN only; nothing re-checked rows already in the
+    # book. A corrupt stop is silent — the breakeven ratchet only moves a long
+    # stop UP, so it can never repair one, and the Telegram card's R /
+    # distance-to-stop rows are computed off it. Runs before the ratchet so the
+    # warning still fires on a position exiting this scan. Fail-open.
+    if held_position is not None:
+        _warn_stop_geometry(ticker, df, held_position)
+
     if held_side and held_position is not None and signal.direction != held_exit_dir:
         _maybe_raise_stop_to_breakeven(
             ticker, df, held_position,
@@ -936,10 +966,13 @@ def _process_ticker(
                 except Exception as exc:
                     logger.warning("[%s] advisor skipped — %s", ticker, exc)
 
-        # Collect historical signals for chart overlay
-        hist_signals = []
-        if _PHASE_MODULES_AVAILABLE and settings.get("scanner", {}).get("chart", {}).get("signal_history",
-                                                                                         False):
+        # Collect historical signals for chart overlay. Fallback comes from the
+        # DEFAULTS registry, not a local literal — a re-hardcoded default silently
+        # contradicts the documented one once the key is dropped from YAML.
+        _chart_cfg = (settings.get("scanner") or {}).get("chart") or {}
+        _signal_history = _chart_cfg.get(
+            "signal_history", DEFAULTS.get("settings.scanner.chart.signal_history"))
+        if _PHASE_MODULES_AVAILABLE and _signal_history:
             try:
                 hist_signals = collect_signal_history(
                     ticker, df, engine,
@@ -1052,6 +1085,66 @@ def _apply_chronic_penalty(signal, ticker: str, health, as_of) -> None:
     logging.getLogger(__name__).info(
         "[%s] chronic-loser penalty ×%g (streak %d) → size %.2fx",
         ticker, mult, streak, signal.size_mult)
+
+
+def _warn_stop_geometry(ticker: str, df: pd.DataFrame, position) -> list[str]:
+    """Surface stop-geometry defects on a held row; returns the problems found.
+
+    The bars since entry supply the excursion bounds that separate a corrupt stop
+    from a legitimately ratcheted one (``stop_geometry_problems``). Fail-open —
+    a missing/short frame just drops the reachability half of the check.
+    """
+    logger = logging.getLogger(__name__)
+    high = low = None
+    try:
+        entry_pos = int(df.index.searchsorted(pd.Timestamp(position.entry_date)))
+        since = df.iloc[entry_pos:]
+        if len(since):
+            high = float(since["high"].max())
+            low = float(since["low"].min())
+    except Exception as exc:
+        logger.debug("[%s] excursion bounds unavailable for stop check — %s", ticker, exc)
+    try:
+        from core.position_manager import stop_geometry_problems
+        problems = stop_geometry_problems(position, high_since_entry=high,
+                                          low_since_entry=low)
+    except Exception as exc:
+        logger.debug("[%s] stop-geometry check skipped — %s", ticker, exc)
+        return []
+    for p in problems:
+        logger.warning("[%s] CORRUPT open position (id=%s): %s — fix the row; "
+                       "stop-derived displays and protection are unreliable until "
+                       "you do", ticker, getattr(position, "id", "?"), p)
+    return problems
+
+
+def _classify_behavioral(behavioral_data: dict, settings: dict,
+                         market_dfs: dict[str, pd.DataFrame] | None):
+    """BehavioralState from the fetched feeds + the SPY frame, or None on failure.
+
+    ``spy_df`` is keyed "SPY" to match ``backtest/loader.py``'s
+    ``market_dfs.get("SPY")`` — the breadth-divergence axis must see the same
+    frame in both paths. Fail-open: a classification error drops the axis
+    (no size multiplier) rather than breaking the scan.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        from core.behavioral import classify_behavioral_state
+        state = classify_behavioral_state(
+            behavioral_data, settings=settings,
+            spy_df=(market_dfs or {}).get("SPY"),
+        )
+    except (KeyError, ValueError, TypeError, AttributeError, ImportError) as exc:
+        logger.warning("[behavioral] classification failed — proceeding without: %s",
+                       exc, exc_info=True)
+        return None
+    logger.info("[behavioral] score=%.2f confidence=%.0f%% divergence=%s",
+                state.behavioral_score, state.confidence * 100,
+                "yes" if state.breadth_divergence else "no")
+    if (market_dfs or {}).get("SPY") is None:
+        logger.warning("[behavioral] no SPY frame — breadth_divergence cannot "
+                       "fire; live sizing diverges from the backtest this run")
+    return state
 
 
 def _frame_date(market_dfs: dict[str, pd.DataFrame] | None):
@@ -1525,17 +1618,25 @@ def _print_report(
 
 
 def _print_alpha_decay_watch() -> None:
-    """Compute and display 6-month rolling E[R] from backtest trade CSV."""
+    """Display 6-month rolling E[R] from the backtest trade CSV.
+
+    UNATTRIBUTED BY CONSTRUCTION: ``trades.csv`` is whatever ran last with the
+    default ``--out`` — a full-window baseline, a windowed slice, or one leg of an
+    A/B. Every line therefore carries the file's write time so the reader can tell
+    which. Advisory only; the live arbiter is ``scripts/live/reconcile_fills.py``.
+    """
     logger = logging.getLogger(__name__)
     try:
         import csv
-        from datetime import date as _date
+        from datetime import date as _date, datetime as _datetime
         from pathlib import Path
 
         csv_path = Path(__file__).parent / "data" / "backtest_out" / "trades.csv"
         if not csv_path.exists():
             logger.info("[alpha-decay] No trades.csv found — run a backtest first")
             return
+        written = _datetime.fromtimestamp(csv_path.stat().st_mtime)
+        src = f"trades.csv written {written:%Y-%m-%d %H:%M}"
 
         six_months_ago = _date.today() - __import__("datetime").timedelta(days=180)
         rs = []
@@ -1555,18 +1656,20 @@ def _print_alpha_decay_watch() -> None:
 
         rolling_er = sum(rs) / len(rs)
         logger.info(
-            "[alpha-decay] 6-month rolling E[R]: %+.3f R (%d trades)",
-            rolling_er, len(rs),
+            "[alpha-decay] 6-month rolling E[R]: %+.3f R (%d trades) — source: %s",
+            rolling_er, len(rs), src,
         )
         if rolling_er < 0:
             logger.warning(
-                "[alpha-decay] CRITICAL: rolling E[R] < 0 — "
-                "stop trading pending re-validation",
+                "[alpha-decay] rolling E[R] < 0 (%s) — confirm this file is the "
+                "full-window baseline and not an A/B leg or a windowed slice "
+                "before acting; if it is, stop trading pending re-validation", src,
             )
         elif rolling_er < 0.05:
             logger.warning(
-                "[alpha-decay] WARNING: rolling E[R] < +0.05 R — "
-                "halve position size if sustained >8 weeks",
+                "[alpha-decay] rolling E[R] < +0.05 R (%s) — if this file is the "
+                "full-window baseline, halve position size if sustained >8 weeks",
+                src,
             )
     except Exception as exc:
         logger.debug("[alpha-decay] Could not compute rolling E[R]: %s", exc)

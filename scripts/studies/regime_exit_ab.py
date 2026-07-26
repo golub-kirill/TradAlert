@@ -9,6 +9,11 @@ Usage:
     python scripts/studies/regime_exit_ab.py [--snapshot data/snapshot_2026-06-10]
 
 Exploratory: no journal, no HTML, no CSV.
+CONVENTION WARNING (2026-07-25): this study does NOT pass the shipped friction /
+sizing convention (execution.exit_slippage_pct 0.0020 = D-008a, breakeven, and
+chronic_loser_penalty = D-011). Its recorded DELTAS stay valid — both legs share
+the gap — but any RE-RUN quotes LEVELS on the pre-D-008a/D-011 convention and is
+NOT comparable to the +93.53R gate. Add the passthroughs before quoting levels.
 """
 
 from __future__ import annotations

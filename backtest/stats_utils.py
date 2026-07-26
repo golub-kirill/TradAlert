@@ -341,7 +341,7 @@ def sharpe_ratio(monthly_r: Sequence[float]) -> float:
     (mean / std, annualised by √12) with no risk-free hurdle. Subtracting a
     cash rate would need a 1R↔equity-% factor the backtest doesn't define and
     would make the ratio depend on the risk fraction, not the edge (see
-    ADR-001). Absolute return-over-cash is reported separately.
+    DESIGN §4 D-001). Absolute return-over-cash is reported separately.
 
     Returns NaN when fewer than 2 months or when std == 0.
     """

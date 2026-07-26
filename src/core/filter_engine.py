@@ -2,11 +2,13 @@
 Two-stage filter pipeline.
 
     scan()    structural quality gate, always runs.
-    signal()  long-entry detection (held_long=False) or exit detection on
-              a held long (held_long=True).
+    signal()  entry detection when no position is held, or exit detection on a
+              held one — both sides (held_long / held_short). Entry setups:
+              momentum, mean-reversion, and PEAD (opt-in).
 
-Required indicator columns on the input DataFrame: rsi, atr, macd_hist.
-The engine is stateless; construct once, call per ticker per bar.
+Required indicator columns on the input DataFrame: rsi, atr, macd, macd_signal,
+macd_hist, plus close/high/low/volume; Bollinger columns when the overextension
+veto is enabled. The engine is stateless; construct once, call per ticker per bar.
 """
 
 from __future__ import annotations
@@ -35,6 +37,19 @@ from core.types import (  # noqa: F401
 from exceptions import ConfigError, InsufficientDataError
 
 logger = logging.getLogger(__name__)
+
+# Keys already warned about in this process. Config-shaped warnings sit on paths
+# that run per ticker per bar, so an unguarded logger.warning would emit millions
+# of lines in a backtest.
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str) -> bool:
+    """True the first time ``key`` is seen in this process, False afterwards."""
+    if key in _WARNED:
+        return False
+    _WARNED.add(key)
+    return True
 
 # ── module-level helpers (config type checking) ──────────────────────────────
 
@@ -186,7 +201,16 @@ class FilterEngine:
             return {}
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        return dict(raw.get("sector_map", {}))
+        mapping = dict(raw.get("sector_map", {}))
+        if not mapping and _warn_once(f"sector_map_empty:{path}"):
+            logger.warning(
+                "signals.sector_gate.enabled is true but %s maps no tickers — the "
+                "gate is INERT (configured, gating nothing). Populating it activates "
+                "the gate in the BACKTEST ONLY: backtest/loader.py files sector ETFs "
+                "into market_dfs, the live scan loads regime indices only, so live "
+                "would keep passing every ticker while the backtest starts blocking.",
+                path)
+        return mapping
 
     # ── scan: liquidity & quality screen ───────────────────────────────────────────────────────────────
 
@@ -1017,6 +1041,16 @@ class FilterEngine:
         if sector is None:
             return True, ""
         if market_dfs is None or sector not in market_dfs:
+            # Fail-open, but never silently: a mapped ticker whose sector frame is
+            # absent means this path is NOT applying the gate the config claims.
+            # The live scan loads regime indices only, so an unguarded pass here
+            # is exactly how live and backtest drift apart. Once per ticker per
+            # process — this runs on every bar of a backtest.
+            if _warn_once(f"sector_frame_missing:{ticker}:{sector}"):
+                logger.warning(
+                    "sector gate INERT for %s — mapped to %s but no %s frame in "
+                    "market_dfs; this path passes every ticker while a path that "
+                    "carries sector frames blocks them", ticker, sector, sector)
             return True, ""
         sector_df = market_dfs[sector]
         if len(sector_df) < self.cfg.trend.ma_fast:

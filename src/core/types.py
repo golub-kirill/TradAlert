@@ -112,9 +112,9 @@ class SignalResult:
     ----------
     passed             : True when a signal fired and all gates cleared.
     direction          : "long" | "short" | "exit_long" | "exit_short" | "none".
-    signal_type        : "momentum" | "mean_reversion" | "regime" | "time_stop" | "none".
-                         "regime" and "time_stop" pair only with an exit direction
-                         ("exit_long" / "exit_short").
+    signal_type        : "momentum" | "mean_reversion" | "pead" | "regime" |
+                         "time_stop" | "none". "regime" and "time_stop" pair only
+                         with an exit direction ("exit_long" / "exit_short").
     stop_price         : ``close − ATR × atr_multiplier`` on entry. 0.0 on exit.
     target_price       : ``close + risk × min_rr`` on entry. 0.0 on exit.
     min_rr             : Minimum risk:reward ratio from config. 0.0 on exit.

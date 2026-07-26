@@ -78,6 +78,64 @@ def validate_open(ticker: str, entry_price: float, side: str,
         raise ValidationError("already has an open position — close it first", ticker=t)
 
 
+def stop_geometry_problems(position, *, high_since_entry: float | None = None,
+                           low_since_entry: float | None = None) -> list[str]:
+    """Defects in an EXISTING row's stop geometry — empty list means clean.
+
+    ``validate_open`` guards the OPEN action; nothing re-checked rows already in
+    the book, so a corrupt stop can sit there indefinitely. Its rule
+    (``risk_unit() <= 0``) is deliberately NOT reused on ``stop_price``: once the
+    breakeven ratchet or a manual profit-lock has moved a live stop it sits AT or
+    BEYOND entry by design, so that rule would flag every protected winner.
+
+    Two invariants that do hold for a row in the book:
+
+    1. ``initial_stop`` must give a positive risk unit. It is the immutable R
+       denominator — inverted, every realized-R score off this row is meaningless.
+    2. ``stop_price`` must be REACHABLE. A ratchet can only move a stop to a level
+       the market actually visited, so a long stop above every high since entry
+       (or a short stop below every low) cannot have come from any legitimate
+       path — it is a data error. A merely *breached* stop still passes: price
+       traded through it, so it is inside the excursion.
+
+    Excursion bounds are optional; omit them to run the geometry check alone.
+    """
+    problems: list[str] = []
+    side = getattr(position, "side", None)
+    if side not in ("long", "short"):
+        return [f"side must be 'long' or 'short', got {side!r}"]
+    try:
+        entry = float(position.entry_price)
+    except (TypeError, ValueError):
+        return [f"entry price is not a number: {position.entry_price!r}"]
+
+    init = position.initial_stop if position.initial_stop is not None else position.stop_price
+    if init is not None:
+        init = float(init)
+        if risk_unit(side, entry, init) <= 0:
+            rel = "below" if side == "long" else "above"
+            problems.append(
+                f"initial_stop {init:g} must be {rel} entry {entry:g} for a {side} "
+                f"— the R denominator is non-positive, so realized-R is meaningless")
+
+    stop = position.stop_price
+    if stop is not None:
+        stop = float(stop)
+        if not math.isfinite(stop) or stop <= 0:
+            problems.append(f"stop_price must be > 0, got {stop:g}")
+        elif side == "long" and high_since_entry is not None and stop > float(high_since_entry):
+            problems.append(
+                f"stop_price {stop:g} is above every high since entry "
+                f"({float(high_since_entry):g}) — unreachable, so no ratchet produced "
+                "it; breakeven protection cannot move a long stop back DOWN")
+        elif side == "short" and low_since_entry is not None and stop < float(low_since_entry):
+            problems.append(
+                f"stop_price {stop:g} is below every low since entry "
+                f"({float(low_since_entry):g}) — unreachable, so no ratchet produced "
+                "it; breakeven protection cannot move a short stop back UP")
+    return problems
+
+
 def open_risk_advisory(max_open_risk: float | None, *, open_count: int | None = None) -> str | None:
     """Advisory string when open positions meet/exceed the aggregate-risk cap, else None.
 

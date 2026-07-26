@@ -145,7 +145,7 @@ def print_bootstrap(bootstrap, bankroll=50_000):
 
 
 def print_exit_quality(trades):
-    """Exit-reason × MFE/MAE table — the core 'where do exits leak' read (Phase 0).
+    """Exit-reason × MFE/MAE table — the core 'where do exits leak' read.
 
     capture = avg_r / avg_mfe (fraction of the peak favorable move realized);
     gaveback = share of trades that hit MFE >= 1R but closed below half their peak.

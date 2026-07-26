@@ -72,7 +72,7 @@ class Trade:
     # folded into effective_r as a per-trade R drag scaled by bars_held.
     borrow_annual_rate: float = 0.0
 
-    # ── exit-quality instrumentation (Phase 0; no behavior change) ────────────
+    # ── exit-quality instrumentation ──────────────────────────────────
     # Running intrabar extremes over the held bars, finalized to mfe_r/mae_r at
     # close. R uses the SAME initial-stop denominator as compute_r, so a future
     # dynamic stop never changes these. None until the first update_excursion.
