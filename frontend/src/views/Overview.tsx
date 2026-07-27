@@ -75,7 +75,7 @@ export function Overview() {
         <div className="banner banner--warn" role="status">
           <i className="ti ti-alert-triangle banner__icon" aria-hidden="true" />
           <div className="banner__body">
-            <strong>No baseline run available — these numbers are from an A/B leg.</strong>
+            <strong>No matching baseline — these numbers came from a run with a different config.</strong>
             <div className="banner__note">
               Run #{unmatched.id} ran a different config from the shipped <code>filters.yaml</code>,
               and no recent run matched it, so the figures below describe a different strategy.
@@ -90,8 +90,9 @@ export function Overview() {
             <strong>Showing run #{latestId} — the newest baseline, not the newest run.</strong>
             <div className="banner__note">
               Run #{skipped.id} ({fnum(skipped.total_r, 2)}R) ran a different config from the shipped{" "}
-              <code>filters.yaml</code>, so it measured a different strategy — an A/B leg, not the
-              edge. {mismatchText(skipped.config_mismatch)}
+              <code>filters.yaml</code>, so it did not measure the strategy that ships now — either
+              an experiment arm, or a run that predates a config change.{" "}
+              {mismatchText(skipped.config_mismatch)}
             </div>
           </div>
         </div>

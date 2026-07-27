@@ -345,7 +345,18 @@ export function Backtest() {
                       </td>
                       <td>
                         {r.config_match === false ? (
-                          <span className="tag tag--warn">A/B leg</span>
+                          /* "differs", not "A/B leg". config_match only says the
+                             snapshot disagrees with filters.yaml AS IT STANDS NOW,
+                             so a run that simply predates a config change lands
+                             here too — calling that an A/B leg asserts an intent
+                             the data does not carry. */
+                          <span
+                            className="tag tag--warn"
+                            title={(r.config_mismatch ?? []).join("\n") || undefined}
+                          >
+                            differs
+                            {r.config_mismatch?.length ? ` (${r.config_mismatch.length})` : ""}
+                          </span>
                         ) : r.config_match ? (
                           <span className="mut">matches</span>
                         ) : (
