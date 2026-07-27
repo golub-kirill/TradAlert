@@ -297,11 +297,15 @@ const demoConfig: ConfigResponse & { editable: string[] } = {
     trend: { ma_fast: 50, ma_slow: 200 },
     signals: {
       allow_shorts: false,
+      // Ships on, like the real filters.yaml — the Backtest view reads this to
+      // lock its enable-only switch, so the demo has to carry it too.
+      require_trigger_bar_up: true,
       sector_gate: { enabled: true },
       stop_loss: { min_rr: 2, atr_multiplier: 2.5 },
     },
     execution: { max_hold_days: 25, max_hold_mode: "if_not_profit", breakeven_trigger_r: 1 },
-    regime: { vix_low: 15, vix_high: 28 },
+    regime: { vix_low: 15, vix_high: 28, vix_slope_block: false },
+    chronic_loser_penalty: { enabled: true, lookback_days: 90 },
   },
   settings: {
     macro: { enabled: true },

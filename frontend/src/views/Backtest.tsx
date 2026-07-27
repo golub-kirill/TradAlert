@@ -43,6 +43,49 @@ function fmtVal(v: unknown): string {
   return String(v);
 }
 
+/* The four feature switches are ENABLE-ONLY overrides, not state.
+ *
+ * backtest/run_backtest.py ORs each CLI flag with its filters.yaml key
+ * (`if args.chronic_penalty or _chronic_yaml.get("enabled")`), and there is no
+ * negative form of any of them. So a run can force a feature on, but nothing
+ * the panel sends can turn one off. Rendering them as plain switches defaulted
+ * to false claimed otherwise: chronic_loser_penalty and require_trigger_bar_up
+ * both ship true, so the UI showed "off" for two features every run enabled —
+ * which is how a run logged "Chronic-loser penalty: ENABLED" with the switch
+ * visibly off.
+ *
+ * Seeded from the live config, and locked on when the config already enables
+ * them, so the control can never disagree with what the engine will do.
+ */
+const FEATURE_KEYS = {
+  shorts: ["signals", "allow_shorts"],
+  chronic: ["chronic_loser_penalty", "enabled"],
+  vixSlope: ["regime", "vix_slope_block"],
+  antiGap: ["signals", "require_trigger_bar_up"],
+} as const;
+
+type FeatureKey = keyof typeof FEATURE_KEYS;
+type FeatureFlags = Record<FeatureKey, boolean>;
+
+const NO_FEATURES: FeatureFlags = {
+  shorts: false,
+  chronic: false,
+  vixSlope: false,
+  antiGap: false,
+};
+
+const LOCKED_HINT =
+  "Already on in filters.yaml. The engine ORs this flag with the config, so a single run can turn it on but not off — change it in Settings.";
+
+function readFeatures(filters: Record<string, unknown> | undefined): FeatureFlags {
+  const out = { ...NO_FEATURES };
+  for (const [name, [section, leaf]] of Object.entries(FEATURE_KEYS)) {
+    const s = (filters?.[section] ?? {}) as Record<string, unknown>;
+    out[name as FeatureKey] = s[leaf] === true;
+  }
+  return out;
+}
+
 export function Backtest() {
   const toast = useToast();
   const runsState = useApi(() => getBacktests(12), []);
@@ -58,10 +101,12 @@ export function Backtest() {
   const [be, setBe] = useState(1);
   const [trailOn, setTrailOn] = useState(false);
   const [trail, setTrail] = useState(3);
-  const [shorts, setShorts] = useState(false);
-  const [chronic, setChronic] = useState(false);
-  const [vixSlope, setVixSlope] = useState(false);
-  const [antiGap, setAntiGap] = useState(false);
+  // Current switch positions, and which of them the shipped config already
+  // forces on (those are locked — the engine has no flag to turn them off).
+  const [features, setFeatures] = useState<FeatureFlags>(NO_FEATURES);
+  const [lockedOn, setLockedOn] = useState<FeatureFlags>(NO_FEATURES);
+  const setFeature = (k: FeatureKey) => (v: boolean) =>
+    setFeatures((f) => ({ ...f, [k]: v }));
 
   const [log, setLog] = useState("");
   const [running, setRunning] = useState(false);
@@ -89,6 +134,11 @@ export function Backtest() {
         const beTrig = n(ex.breakeven_trigger_r, 1);
         setBeOn(beTrig > 0);
         if (beTrig > 0) setBe(beTrig);
+        // Feature switches follow the live config rather than a literal, so the
+        // control always shows what the run will actually do.
+        const shipped = readFeatures(cfg.filters as Record<string, unknown>);
+        setLockedOn(shipped);
+        setFeatures(shipped);
       })
       .catch(() => {
         /* keep the shipped-literal fallbacks above */
@@ -104,10 +154,10 @@ export function Backtest() {
       max_hold_days: hold,
       max_hold_mode: holdMode,
       breakeven_trigger_r: beOn ? be : 0,
-      allow_shorts: shorts,
-      chronic_penalty: chronic,
-      vix_slope_gate: vixSlope,
-      anti_gap_entry: antiGap,
+      allow_shorts: features.shorts,
+      chronic_penalty: features.chronic,
+      vix_slope_gate: features.vixSlope,
+      anti_gap_entry: features.antiGap,
       ...(trailOn ? { trail_atr_mult: trail } : {}),
     };
     setRunning(true);
@@ -237,10 +287,23 @@ export function Backtest() {
               format={(v) => v.toFixed(1) + "×"}
             />
           )}
-          <ToggleRow label="Allow short entries" on={shorts} set={setShorts} />
-          <ToggleRow label="Chronic-loser penalty" on={chronic} set={setChronic} />
-          <ToggleRow label="VIX-slope gate" on={vixSlope} set={setVixSlope} />
-          <ToggleRow label="Anti-gap entry" on={antiGap} set={setAntiGap} />
+          {(
+            [
+              ["shorts", "Allow short entries"],
+              ["chronic", "Chronic-loser penalty"],
+              ["vixSlope", "VIX-slope gate"],
+              ["antiGap", "Anti-gap entry"],
+            ] as Array<[FeatureKey, string]>
+          ).map(([key, label]) => (
+            <ToggleRow
+              key={key}
+              label={label}
+              on={features[key]}
+              set={setFeature(key)}
+              disabled={lockedOn[key]}
+              hint={lockedOn[key] ? LOCKED_HINT : undefined}
+            />
+          ))}
         </Card>
       </div>
 
