@@ -35,7 +35,7 @@ function Deck({ view }: { view: ViewDef }) {
           )}
           {/* Keyed so a route change replays the entrance rather than swapping
               content underneath a static frame. */}
-          <div className="route-fade" key={view.key}>
+          <div className="deck__view route-fade" key={view.key}>
             <Body />
           </div>
         </main>

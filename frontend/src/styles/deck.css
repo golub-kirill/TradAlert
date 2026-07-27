@@ -141,6 +141,17 @@
   margin-inline: auto;
 }
 
+/* The route wrapper is a flex CHILD of .deck__body, so the body's gap applies
+   between it and the offline banner — not between the blocks a view renders
+   inside it. It has to carry the same rhythm itself, or every card in every
+   view sits flush against the next one. */
+.deck__view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
 /* ── regime instrument ──────────────────────────────────────────────────── */
 .regime {
   display: inline-flex;

@@ -1,17 +1,22 @@
-import { useMemo, useRef, useState } from "react";
+/* Candlesticks + Bollinger + MA fast/slow + weekly SMA10, with synced Volume,
+ * RSI and MACD panes and a live indicator legend.
+ *
+ * Rendered as real SVG elements. The previous version assembled four SVG
+ * documents as strings and injected them with dangerouslySetInnerHTML, which
+ * put server-provided date labels into markup; React escapes text nodes, so
+ * that whole class of problem is gone along with the string building.
+ */
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Bar } from "../api/types";
 import { fnum } from "../lib/format";
-import { hasFinePointer } from "../lib/motion";
+import { hasFinePointer, rafThrottle } from "../lib/motion";
 
-const VB = 600,
-  CL = 6,
-  CR = 560;
+const VB = 600;
+const CL = 6;
+const CR = 560;
+
 const fin = (v: number | null | undefined): v is number => v != null && !Number.isNaN(v);
-
-/** Axis labels are the only server-provided STRINGS that reach the SVG markup;
- *  everything else interpolated below is a number or a literal var() name. Keep
- *  them to date characters so a malformed row can never carry markup through. */
-const safeLabel = (s: string): string => s.replace(/[^0-9A-Za-z:\-/ ]/g, "");
 
 const SERIES = {
   fast: "var(--series-2)",
@@ -24,13 +29,80 @@ const SERIES = {
   label: "var(--text-muted)",
 };
 
-// Candlestick + Bollinger (upper/mid/lower) + MA fast/slow + weekly SMA10, with
-// synced RSI, MACD and Volume panes, plus a live indicator legend.
+// ── shared primitives ───────────────────────────────────────────────────────
+interface GridLine {
+  y: number;
+  label: string;
+  dashed?: boolean;
+}
+interface Candle {
+  x: number;
+  yHigh: number;
+  yLow: number;
+  yTop: number;
+  height: number;
+  up: boolean;
+}
+interface Column {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  up: boolean;
+}
+interface Overlay {
+  key: string;
+  points: string;
+  stroke: string;
+  width: number;
+  dash?: string;
+}
+
+function AxisLabel({ x, y, anchor, children }: { x: number; y: number; anchor?: "middle" | "start"; children: string }) {
+  return (
+    <text
+      x={x}
+      y={y}
+      textAnchor={anchor}
+      style={{ fill: SERIES.label, fontSize: 10, fontFamily: "var(--font-mono)" }}
+    >
+      {children}
+    </text>
+  );
+}
+
+function PaneTitle({ children }: { children: string }) {
+  return (
+    <text x={CL} y={11} style={{ fill: SERIES.label, fontSize: 10 }}>
+      {children}
+    </text>
+  );
+}
+
 export function PriceChart({ bars }: { bars: Bar[] }) {
-  const cwRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
 
   const m = useMemo(() => buildModel(bars), [bars]);
+  const barCount = m?.n ?? 0;
+
+  // Throttled to one update per frame: a hover step re-renders this component,
+  // and the price pane alone is ~330 elements. Same treatment EquityCurve gets.
+  // Declared before the empty-data return so the hook order never changes.
+  const track = useMemo(
+    () =>
+      rafThrottle((clientX: number) => {
+        const el = wrapRef.current;
+        if (!el || barCount < 2) return;
+        const r = el.getBoundingClientRect();
+        const ratio = (clientX - r.left) / r.width;
+        const i = Math.round((ratio * VB - CL) / ((CR - CL) / (barCount - 1)));
+        setHover(Math.max(0, Math.min(barCount - 1, i)));
+      }),
+    [barCount],
+  );
+  useEffect(() => track.cancel, [track]);
+
   if (!m) {
     return (
       <p className="mut" style={{ fontSize: "var(--fs-data)" }}>
@@ -38,16 +110,11 @@ export function PriceChart({ bars }: { bars: Bar[] }) {
       </p>
     );
   }
-  const { n, dts, cs, lg } = m;
+  const { n, dts, cs, lg, price, volume, rsi, macd } = m;
 
   const onMove = (e: React.MouseEvent) => {
-    const el = cwRef.current;
-    if (!el || !hasFinePointer()) return;
-    const r = el.getBoundingClientRect();
-    const ratio = (e.clientX - r.left) / r.width;
-    let i = Math.round((ratio * VB - CL) / ((CR - CL) / (n - 1)));
-    i = Math.max(0, Math.min(n - 1, i));
-    setHover(i);
+    if (!hasFinePointer()) return;
+    track(e.clientX);
   };
 
   const hoverPx = hover == null ? 0 : ((CL + hover * ((CR - CL) / (n - 1))) / VB) * 100;
@@ -77,15 +144,69 @@ export function PriceChart({ bars }: { bars: Bar[] }) {
 
       <div
         className="chartwrap"
-        ref={cwRef}
+        ref={wrapRef}
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
       >
-        <div dangerouslySetInnerHTML={{ __html: m.candlesSvg }} />
-        <div
-          className={"crosshair" + (hover == null ? "" : " on")}
-          style={{ left: hoverPx + "%" }}
-        />
+        <svg
+          viewBox={`0 0 ${VB} 210`}
+          width="100%"
+          role="img"
+          aria-label={`Daily candlesticks with Bollinger bands and moving averages, ${dts[0]} to ${dts[n - 1]}.`}
+        >
+          {price.grid.map((g) => (
+            <g key={`h${g.y}`}>
+              <line x1={CL} x2={CR} y1={g.y} y2={g.y} stroke={SERIES.grid} strokeWidth={0.5} />
+              <AxisLabel x={CR + 4} y={g.y + 3}>
+                {g.label}
+              </AxisLabel>
+            </g>
+          ))}
+          {price.xTicks.map((t) => (
+            <g key={`v${t.x}`}>
+              <line
+                x1={t.x}
+                x2={t.x}
+                y1={price.top}
+                y2={price.bottom}
+                stroke={SERIES.grid}
+                strokeWidth={0.5}
+                opacity={0.5}
+              />
+              <AxisLabel x={t.x} y={price.bottom + 13} anchor="middle">
+                {t.label}
+              </AxisLabel>
+            </g>
+          ))}
+
+          {price.bbArea && <path d={price.bbArea} fill={SERIES.band} opacity={0.08} />}
+
+          {price.candles.map((k, i) => (
+            <g key={i} fill={k.up ? SERIES.up : SERIES.down} stroke={k.up ? SERIES.up : SERIES.down}>
+              <line x1={k.x} x2={k.x} y1={k.yHigh} y2={k.yLow} strokeWidth={0.8} />
+              <rect
+                x={k.x - price.candleWidth / 2}
+                y={k.yTop}
+                width={price.candleWidth}
+                height={k.height}
+                stroke="none"
+              />
+            </g>
+          ))}
+
+          {price.overlays.map((o) => (
+            <polyline
+              key={o.key}
+              points={o.points}
+              fill="none"
+              stroke={o.stroke}
+              strokeWidth={o.width}
+              strokeDasharray={o.dash}
+            />
+          ))}
+        </svg>
+
+        <div className={"crosshair" + (hover == null ? "" : " on")} style={{ left: hoverPx + "%" }} />
         {c && (
           <div
             className="tip on"
@@ -100,9 +221,81 @@ export function PriceChart({ bars }: { bars: Bar[] }) {
         )}
       </div>
 
-      <div style={{ marginTop: "var(--sp-2)" }} dangerouslySetInnerHTML={{ __html: m.volSvg }} />
-      <div style={{ marginTop: "var(--sp-2)" }} dangerouslySetInnerHTML={{ __html: m.rsiSvg }} />
-      <div style={{ marginTop: "var(--sp-2)" }} dangerouslySetInnerHTML={{ __html: m.macdSvg }} />
+      <svg
+        viewBox={`0 0 ${VB} 56`}
+        width="100%"
+        style={{ marginTop: "var(--sp-2)" }}
+        role="img"
+        aria-label="Traded volume per bar."
+      >
+        {volume.map((b, i) => (
+          <rect
+            key={i}
+            x={b.x}
+            y={b.y}
+            width={b.width}
+            height={b.height}
+            fill={b.up ? SERIES.up : SERIES.down}
+            opacity={0.45}
+          />
+        ))}
+        <PaneTitle>Volume</PaneTitle>
+      </svg>
+
+      <svg
+        viewBox={`0 0 ${VB} 66`}
+        width="100%"
+        style={{ marginTop: "var(--sp-2)" }}
+        role="img"
+        aria-label={`Relative strength index, currently ${fnum(lg.rsi, 0)}.`}
+      >
+        {rsi.grid.map((g) => (
+          <g key={g.label}>
+            <line
+              x1={CL}
+              x2={CR}
+              y1={g.y}
+              y2={g.y}
+              stroke={SERIES.grid}
+              strokeWidth={0.5}
+              strokeDasharray={g.dashed ? "2 3" : undefined}
+            />
+            <text
+              x={CR + 4}
+              y={g.y + 3}
+              style={{ fill: SERIES.label, fontSize: 9, fontFamily: "var(--font-mono)" }}
+            >
+              {g.label}
+            </text>
+          </g>
+        ))}
+        <polyline points={rsi.points} fill="none" stroke={SERIES.fast} strokeWidth={1.2} />
+        <PaneTitle>RSI 14</PaneTitle>
+      </svg>
+
+      <svg
+        viewBox={`0 0 ${VB} 68`}
+        width="100%"
+        style={{ marginTop: "var(--sp-2)" }}
+        role="img"
+        aria-label="MACD 12/26/9 with signal line and histogram."
+      >
+        <line x1={CL} x2={CR} y1={macd.zeroY} y2={macd.zeroY} stroke={SERIES.grid} strokeWidth={0.5} />
+        {macd.hist.map((b, i) => (
+          <rect
+            key={i}
+            x={b.x}
+            y={b.y}
+            width={b.width}
+            height={b.height}
+            fill={b.up ? SERIES.up : SERIES.down}
+            opacity={0.55}
+          />
+        ))}
+        <polyline points={macd.macdPoints} fill="none" stroke={SERIES.fast} strokeWidth={1.2} />
+        <polyline points={macd.signalPoints} fill="none" stroke={SERIES.slow} strokeWidth={1.2} />
+        <PaneTitle>MACD 12 26 9</PaneTitle>
+      </svg>
     </>
   );
 }
@@ -116,22 +309,14 @@ interface Legend {
   rsi: number | null;
   atrPct: number | null;
 }
-interface Model {
-  n: number;
-  dts: string[];
-  cs: number[][];
-  lg: Legend;
-  candlesSvg: string;
-  volSvg: string;
-  rsiSvg: string;
-  macdSvg: string;
-}
 
-function buildModel(bars: Bar[]): Model | null {
+/** Pure geometry: numbers and point strings only, no markup. */
+function buildModel(bars: Bar[]) {
   const n = bars.length;
   if (n < 2) return null;
+
   const cs = bars.map((b) => [b.open ?? 0, b.high ?? 0, b.low ?? 0, b.close ?? 0]);
-  const dts = bars.map((b) => safeLabel(b.date.slice(5)));
+  const dts = bars.map((b) => b.date.slice(5));
   const maf = bars.map((b) => b.ma_fast);
   const mas = bars.map((b) => b.ma_slow);
   const wsma = bars.map((b) => b.weekly_sma10);
@@ -139,113 +324,132 @@ function buildModel(bars: Bar[]): Model | null {
   const bm = bars.map((b) => b.bb_mid);
   const bl = bars.map((b) => b.bb_lower);
   const vol = bars.map((b) => b.volume);
-  const rsi = bars.map((b) => b.rsi);
-  const macd = bars.map((b) => b.macd);
-  const sig = bars.map((b) => b.macd_signal);
-  const hist = bars.map((b) => b.macd_hist);
+  const rsiV = bars.map((b) => b.rsi);
+  const macdV = bars.map((b) => b.macd);
+  const sigV = bars.map((b) => b.macd_signal);
+  const histV = bars.map((b) => b.macd_hist);
 
-  const Tp = 10,
-    B = 184;
+  const top = 10;
+  const bottom = 184;
   const all = cs.flat().concat(bu.filter(fin), bl.filter(fin), wsma.filter(fin));
-  const mn = Math.min(...all),
-    mx = Math.max(...all),
-    pd = (mx - mn) * 0.05,
-    lo = mn - pd,
-    hi = mx + pd;
+  const mn = Math.min(...all);
+  const mx = Math.max(...all);
+  const pad = (mx - mn) * 0.05;
+  const lo = mn - pad;
+  const hi = mx + pad;
+
   const X = (i: number) => CL + i * ((CR - CL) / (n - 1));
-  const cw = ((CR - CL) / n) * 0.6;
-  const Y = (v: number) => Tp + (1 - (v - lo) / (hi - lo || 1)) * (B - Tp);
-  const fpts = (a: (number | null)[]) =>
+  const candleWidth = ((CR - CL) / n) * 0.6;
+  const Y = (v: number) => top + (1 - (v - lo) / (hi - lo || 1)) * (bottom - top);
+
+  const pts = (a: (number | null)[], project: (v: number) => number) =>
     a
-      .map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${Y(v).toFixed(1)}` : null))
+      .map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${project(v).toFixed(1)}` : null))
       .filter(Boolean)
       .join(" ");
-  const ln = (a: (number | null)[], col: string, w: number, dash = "0") =>
-    `<polyline points="${fpts(a)}" style="fill:none;stroke:${col};stroke-width:${w};stroke-dasharray:${dash}"/>`;
 
-  let grid = "",
-    yl = "";
+  const grid: GridLine[] = [];
   for (let k = 0; k <= 4; k++) {
-    const yy = Tp + k * ((B - Tp) / 4),
-      pv = hi - (k / 4) * (hi - lo);
-    grid += `<line x1="${CL}" x2="${CR}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" style="stroke:${SERIES.grid};stroke-width:.5"/>`;
-    yl += `<text x="${CR + 4}" y="${(yy + 3).toFixed(1)}" style="fill:${SERIES.label};font-size:10px;font-family:var(--font-mono)">${pv.toFixed(0)}</text>`;
+    const y = top + k * ((bottom - top) / 4);
+    grid.push({ y: +y.toFixed(1), label: (hi - (k / 4) * (hi - lo)).toFixed(0) });
   }
-  let xl = "";
-  for (let k = 0; k <= 4; k++) {
-    const i = Math.round((k * (n - 1)) / 4);
-    xl += `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${Tp}" y2="${B}" style="stroke:${SERIES.grid};stroke-width:.5;opacity:.5"/><text x="${X(i).toFixed(1)}" y="${(B + 13).toFixed(1)}" text-anchor="middle" style="fill:${SERIES.label};font-size:10px;font-family:var(--font-mono)">${dts[i]}</text>`;
-  }
-  const bbA = fin(bu[0])
-    ? "M" +
-      bu.map((v, i) => `${X(i).toFixed(1)},${Y(v as number).toFixed(1)}`).join(" L") +
-      " L" +
-      bl
-        .map((_, i) => `${X(n - 1 - i).toFixed(1)},${Y(bl[n - 1 - i] as number).toFixed(1)}`)
-        .join(" L") +
-      "Z"
-    : "";
-  let cnd = "";
-  for (let i = 0; i < n; i++) {
-    const [o, h, l, cc] = cs[i],
-      up = cc >= o,
-      col = up ? SERIES.up : SERIES.down,
-      cx = X(i),
-      yt = Y(Math.max(o, cc)),
-      yb = Y(Math.min(o, cc));
-    cnd += `<line x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" y1="${Y(h).toFixed(1)}" y2="${Y(l).toFixed(1)}" style="stroke:${col};stroke-width:.8"/><rect x="${(cx - cw / 2).toFixed(1)}" y="${yt.toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(0.8, yb - yt).toFixed(1)}" style="fill:${col}"/>`;
-  }
-  const candlesSvg = `<svg viewBox="0 0 ${VB} 210" width="100%">${grid}${xl}${bbA ? `<path d="${bbA}" style="fill:${SERIES.band};opacity:.08"/>` : ""}${cnd}${ln(bu, SERIES.band, 0.6)}${ln(bl, SERIES.band, 0.6)}${ln(bm, SERIES.band, 0.7, "2 3")}${ln(mas, SERIES.slow, 1.3)}${ln(maf, SERIES.fast, 1.3)}${ln(wsma, SERIES.wsma, 1.2)}${yl}</svg>`;
 
-  // ── volume pane ──
-  const vT = 8,
-    vB = 46,
-    vMax = Math.max(...vol.filter(fin), 1),
-    VY = (v: number) => vT + (1 - v / vMax) * (vB - vT);
-  let vb = "";
-  for (let i = 0; i < n; i++) {
-    if (!fin(vol[i])) continue;
-    const col = cs[i][3] >= cs[i][0] ? SERIES.up : SERIES.down;
-    const y = VY(vol[i] as number);
-    vb += `<rect x="${(X(i) - cw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(0.6, vB - y).toFixed(1)}" style="fill:${col};opacity:.45"/>`;
-  }
-  const volSvg = `<svg viewBox="0 0 ${VB} 56" width="100%">${vb}<text x="${CL}" y="11" style="fill:${SERIES.label};font-size:10px">Volume</text></svg>`;
+  // Deduped: for a very short series (n=2) the five evenly-spaced picks collapse
+  // onto the same two bars, which would draw stacked ticks and, now that these
+  // are real elements, collide on their React keys.
+  const tickIdx = [...new Set(Array.from({ length: 5 }, (_, k) => Math.round((k * (n - 1)) / 4)))];
+  const xTicks = tickIdx.map((i) => ({ x: +X(i).toFixed(1), label: dts[i] }));
 
-  // ── RSI pane ──
-  const rT = 10,
-    rB = 54,
-    RY = (v: number) => rT + (1 - v / 100) * (rB - rT);
-  let rg = "";
-  [70, 50, 30].forEach((v) => {
-    rg += `<line x1="${CL}" x2="${CR}" y1="${RY(v).toFixed(1)}" y2="${RY(v).toFixed(1)}" style="stroke:${SERIES.grid};stroke-width:.5;stroke-dasharray:${v === 50 ? "0" : "2 3"}"/><text x="${CR + 4}" y="${(RY(v) + 3).toFixed(1)}" style="fill:${SERIES.label};font-size:9px;font-family:var(--font-mono)">${v}</text>`;
+  // Band fill across the bars that actually have both edges. The previous
+  // version keyed off bu[0], which is null for the whole 20-period warmup of
+  // every real series — so the fill silently never drew.
+  const bandIdx = bu
+    .map((v, i) => (fin(v) && fin(bl[i]) ? i : -1))
+    .filter((i) => i >= 0);
+  const bbArea =
+    bandIdx.length > 1
+      ? "M" +
+        bandIdx.map((i) => `${X(i).toFixed(1)},${Y(bu[i] as number).toFixed(1)}`).join(" L") +
+        " L" +
+        [...bandIdx]
+          .reverse()
+          .map((i) => `${X(i).toFixed(1)},${Y(bl[i] as number).toFixed(1)}`)
+          .join(" L") +
+        "Z"
+      : null;
+
+  const candles: Candle[] = cs.map(([o, h, l, cc], i) => {
+    const yTop = Y(Math.max(o, cc));
+    const yBottom = Y(Math.min(o, cc));
+    return {
+      x: +X(i).toFixed(1),
+      yHigh: +Y(h).toFixed(1),
+      yLow: +Y(l).toFixed(1),
+      yTop: +yTop.toFixed(1),
+      height: +Math.max(0.8, yBottom - yTop).toFixed(1),
+      up: cc >= o,
+    };
   });
-  const rfpts = (a: (number | null)[]) =>
-    a
-      .map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${RY(v).toFixed(1)}` : null))
-      .filter(Boolean)
-      .join(" ");
-  const rsiSvg = `<svg viewBox="0 0 ${VB} 66" width="100%">${rg}<polyline points="${rfpts(rsi)}" style="fill:none;stroke:${SERIES.fast};stroke-width:1.2"/><text x="${CL}" y="11" style="fill:${SERIES.label};font-size:10px">RSI 14</text></svg>`;
 
-  // ── MACD pane ──
-  const mA = Math.max(...macd.filter(fin).map(Math.abs), ...sig.filter(fin).map(Math.abs), 0.01),
-    mT = 12,
-    mB = 56,
-    MY = (v: number) => mT + (1 - (v / mA + 1) / 2) * (mB - mT),
-    mw = cw;
-  let mh = "";
+  const overlays: Overlay[] = [
+    { key: "bbU", points: pts(bu, Y), stroke: SERIES.band, width: 0.6 },
+    { key: "bbL", points: pts(bl, Y), stroke: SERIES.band, width: 0.6 },
+    { key: "bbM", points: pts(bm, Y), stroke: SERIES.band, width: 0.7, dash: "2 3" },
+    { key: "maS", points: pts(mas, Y), stroke: SERIES.slow, width: 1.3 },
+    { key: "maF", points: pts(maf, Y), stroke: SERIES.fast, width: 1.3 },
+    { key: "wsma", points: pts(wsma, Y), stroke: SERIES.wsma, width: 1.2 },
+  ].filter((o) => o.points.length > 0);
+
+  // ── volume ──
+  const vTop = 8;
+  const vBottom = 46;
+  const vMax = Math.max(...vol.filter(fin), 1);
+  const volume: Column[] = [];
   for (let i = 0; i < n; i++) {
-    if (!fin(hist[i])) continue;
-    const z = MY(0),
-      y = MY(hist[i] as number),
-      col = (hist[i] as number) >= 0 ? SERIES.up : SERIES.down;
-    mh += `<rect x="${(X(i) - mw / 2).toFixed(1)}" y="${Math.min(z, y).toFixed(1)}" width="${mw.toFixed(1)}" height="${Math.max(0.6, Math.abs(z - y)).toFixed(1)}" style="fill:${col};opacity:.55"/>`;
+    const v = vol[i];
+    if (!fin(v)) continue;
+    const y = vTop + (1 - v / vMax) * (vBottom - vTop);
+    volume.push({
+      x: +(X(i) - candleWidth / 2).toFixed(1),
+      y: +y.toFixed(1),
+      width: +candleWidth.toFixed(1),
+      height: +Math.max(0.6, vBottom - y).toFixed(1),
+      up: cs[i][3] >= cs[i][0],
+    });
   }
-  const mfpts = (a: (number | null)[]) =>
-    a
-      .map((v, i) => (fin(v) ? `${X(i).toFixed(1)},${MY(v).toFixed(1)}` : null))
-      .filter(Boolean)
-      .join(" ");
-  const macdSvg = `<svg viewBox="0 0 ${VB} 68" width="100%"><line x1="${CL}" x2="${CR}" y1="${MY(0).toFixed(1)}" y2="${MY(0).toFixed(1)}" style="stroke:${SERIES.grid};stroke-width:.5"/>${mh}<polyline points="${mfpts(macd)}" style="fill:none;stroke:${SERIES.fast};stroke-width:1.2"/><polyline points="${mfpts(sig)}" style="fill:none;stroke:${SERIES.slow};stroke-width:1.2"/><text x="${CL}" y="11" style="fill:${SERIES.label};font-size:10px">MACD 12 26 9</text></svg>`;
+
+  // ── RSI ──
+  const rTop = 10;
+  const rBottom = 54;
+  const RY = (v: number) => rTop + (1 - v / 100) * (rBottom - rTop);
+  const rsi = {
+    grid: [70, 50, 30].map((v) => ({ y: +RY(v).toFixed(1), label: String(v), dashed: v !== 50 })),
+    points: pts(rsiV, RY),
+  };
+
+  // ── MACD ──
+  const mAbs = Math.max(
+    ...macdV.filter(fin).map(Math.abs),
+    ...sigV.filter(fin).map(Math.abs),
+    0.01,
+  );
+  const mTop = 12;
+  const mBottom = 56;
+  const MY = (v: number) => mTop + (1 - (v / mAbs + 1) / 2) * (mBottom - mTop);
+  const zeroY = +MY(0).toFixed(1);
+  const hist: Column[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = histV[i];
+    if (!fin(v)) continue;
+    const y = MY(v);
+    hist.push({
+      x: +(X(i) - candleWidth / 2).toFixed(1),
+      y: +Math.min(zeroY, y).toFixed(1),
+      width: +candleWidth.toFixed(1),
+      height: +Math.max(0.6, Math.abs(zeroY - y)).toFixed(1),
+      up: v >= 0,
+    });
+  }
 
   const last = bars[n - 1];
   const lg: Legend = {
@@ -258,5 +462,14 @@ function buildModel(bars: Bar[]): Model | null {
     atrPct: last.atr != null && last.close ? (last.atr / last.close) * 100 : null,
   };
 
-  return { n, dts, cs, lg, candlesSvg, volSvg, rsiSvg, macdSvg };
+  return {
+    n,
+    dts,
+    cs,
+    lg,
+    price: { top, bottom, grid, xTicks, bbArea, candles, overlays, candleWidth },
+    volume,
+    rsi,
+    macd: { zeroY, hist, macdPoints: pts(macdV, MY), signalPoints: pts(sigV, MY) },
+  };
 }

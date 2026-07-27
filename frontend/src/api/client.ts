@@ -105,6 +105,9 @@ export const getScannerLatest = () => request<ScannerLatest>("/scanner/latest");
 export const getBacktests = (limit = 20) => request<BacktestRun[]>(`/backtests?limit=${limit}`);
 export const getBacktestTrades = (id: number, limit = 500) =>
   request<BacktestTrade[]>(`/backtests/${id}/trades?limit=${limit}`);
+// No view calls this yet. Kept because this module is a complete typed mirror of
+// the control API: the route, its types and its demo fixture all exist, and a
+// mirror with one method missing just gets re-derived by the next caller.
 export const getEquity = (id: number) => request<EquityCurve>(`/backtests/${id}/equity`);
 export const getMonthly = (id: number) => request<MonthlyPerf>(`/backtests/${id}/monthly`);
 export const getChart = (ticker: string, days = 160) =>
