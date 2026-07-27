@@ -22,8 +22,20 @@ function fiveYearsAgo(): string {
   return d.toISOString().slice(0, 10);
 }
 
-function shortKey(k: string): string {
-  return k.split(".").slice(-1)[0].replaceAll("_", " ");
+// Container segments that carry no meaning on their own, dropped from the head
+// of a dotted key so the label starts at the part that identifies the setting.
+const GENERIC_ROOT = new Set(["filters", "settings", "signals"]);
+
+/** Full dotted path (minus a generic root) rather than just the leaf.
+ *
+ *  The leaf alone is not identifying: filters.yaml has five params ending in
+ *  `enabled` and six ending in `min_hist_delta_atr`, so a run that changed the
+ *  sector gate and a run that changed PEAD both rendered "ENABLED ON (DEF OFF)",
+ *  and a run that changed two of them rendered the same chip twice. */
+function paramLabel(k: string): string {
+  const parts = k.split(".");
+  while (parts.length > 1 && GENERIC_ROOT.has(parts[0])) parts.shift();
+  return parts.join(" · ").replaceAll("_", " ");
 }
 function fmtVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "on" : "off";
@@ -324,10 +336,13 @@ function RunDetail({ run, onClose }: { run: BacktestRun; onClose: () => void }) 
         </p>
         {run.window || params.length ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)" }}>
-            {run.window ? <span className="tag">window · {run.window}</span> : null}
+            {run.window ? <span className="tag tag--param">window · {run.window}</span> : null}
             {params.map((p) => (
-              <span className="tag" key={p.key}>
-                {shortKey(p.key)} {fmtVal(p.value)}{" "}
+              /* title carries the raw dotted key — the label is readable, the
+                 tooltip is exact. */
+              <span className="tag tag--param" key={p.key} title={p.key}>
+                {paramLabel(p.key)}{" "}
+                <b className="tag__val">{fmtVal(p.value)}</b>{" "}
                 <span className="mut">(def {fmtVal(p.default)})</span>
               </span>
             ))}

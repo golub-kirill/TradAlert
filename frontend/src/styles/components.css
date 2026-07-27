@@ -565,6 +565,24 @@ input[type="range"]:focus-visible {
   border-color: rgb(var(--rgb-warn) / 0.25);
 }
 
+/* Key/value chip for a parameter diff. Drops the uppercase and wide tracking of
+   the base tag: these labels are dotted config paths, and "MEAN REVERSION ·
+   SHORT · RSI MIN" at 0.09em is a wall. Mono, mixed case, value emphasised. */
+.tag--param {
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+  padding: var(--sp-1) var(--sp-2);
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+}
+.tag--param .tag__val {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 /* ── table ──────────────────────────────────────────────────────────────── */
 /* `overflow-x: auto` promotes overflow-y to auto as well, so this is a scroll
    container on both axes. That is what makes the sticky header below work — but
