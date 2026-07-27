@@ -73,11 +73,16 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
     # NEW position entered the advisory set; a failed send leaves no delivery
     # record, so the next scan retries automatically.
     cur_caution_set = {tr.ticker.upper() for tr, _k in caution} if caution else set()
+    # Held longs the regime flagged on THIS scan but whose card was suppressed as
+    # a repeat. Carried into the stand-down so a quiet day still reports the
+    # state — suppressing the repeat must not make the review set invisible.
+    n_flagged_suppressed = 0
     if caution and run_id is not None:
         if _is_repeat_advisory(_caution_state(), cur_caution_set):
             logger.info("[telegram] regime caution suppressed — same episode, "
                         "already delivered, no new positions (%d held)",
                         len(cur_caution_set))
+            n_flagged_suppressed = len(cur_caution_set)
             caution = []
     if not selected and not caution and not cfg.send_stand_down:
         return
@@ -94,7 +99,7 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
         caution_sent = asyncio.run(
             _send_all(token, chat_id, cfg, selected, len(results),
                       risk_on, n_open, regime_label, rday, rejections, run_id,
-                      caution))
+                      caution, n_flagged=n_flagged_suppressed))
         # Journal the DELIVERY only after the send returned — an exception above
         # leaves no record, so the next scan re-sends rather than suppressing an
         # episode the reader never saw (at-least-once, never at-most-zero).
@@ -246,7 +251,7 @@ def _caution_message(caution, regime_label):
 # ── async send ───────────────────────────────────────────────────────────────────
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
-                    rejections=None, run_id=None, caution=None):
+                    rejections=None, run_id=None, caution=None, n_flagged=0):
     """Returns True iff the regime caution was actually sent — the caller records
     the delivery only on True, so a failed push is retried next scan rather than
     suppressed as already-seen."""
@@ -262,7 +267,8 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
                 return True
             await nf.send_message(fmt.format_stand_down(
                 rday, n_scanned=n_scanned, regime_label=regime_label,
-                risk_on=risk_on, n_open=n_open, rejections=rejections))
+                risk_on=risk_on, n_open=n_open, rejections=rejections,
+                n_flagged=n_flagged))
             return False
 
         n_long = sum(1 for _, k in selected if k == "long_entry")

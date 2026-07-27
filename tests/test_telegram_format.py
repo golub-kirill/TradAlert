@@ -233,6 +233,21 @@ def test_stand_down_empty_rejections_unchanged():
     assert fmt.format_stand_down(d, n_scanned=10, n_open=2, rejections=None) == base
 
 
+def test_stand_down_reports_suppressed_caution_count():
+    """A deduped regime caution must still leave a trace on the quiet-day card.
+
+    Without it the reader sees "12 open carried" on a BEAR day and nothing about
+    those 12 being flagged, because the caution was suppressed as a repeat.
+    """
+    d = date(2026, 6, 6)
+    p = _plain(fmt.format_stand_down(d, n_scanned=222, n_open=12, n_flagged=12))
+    assert "12 still flagged for review" in p
+    # Absent/zero must leave a normal quiet day byte-identical.
+    base = fmt.format_stand_down(d, n_scanned=222, n_open=12)
+    assert fmt.format_stand_down(d, n_scanned=222, n_open=12, n_flagged=0) == base
+    assert fmt.format_stand_down(d, n_scanned=222, n_open=12, n_flagged=None) == base
+
+
 # ── position card ────────────────────────────────────────────────────────────────
 
 def test_position_card():

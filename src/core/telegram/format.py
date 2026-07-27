@@ -332,13 +332,24 @@ def format_daily_header(run_date: Any, *, n_entries: int = 0, n_exits: int = 0,
 
 def format_stand_down(run_date: Any, *, n_scanned: int = 0, regime_label: str | None = None,
                       risk_on: float | None = None, n_open: int | None = None,
-                      rejections: Sequence[Any] | None = None) -> str:
+                      rejections: Sequence[Any] | None = None,
+                      n_flagged: int | None = None) -> str:
+    """The quiet-day card.
+
+    ``n_flagged``: held longs the regime exit flagged on THIS scan whose caution
+    was suppressed as a repeat of an episode already delivered. Without it the
+    card reports "N open carried" on a non-BULL day and says nothing about those
+    positions being under review — the dedup exists to stop the same card going
+    out 2-3x/day, not to make the state itself invisible.
+    """
     lines = [f"😴 no actionable signals · scanned {n_scanned}"]
     regime = _regime_line(regime_label, risk_on, True)
     if regime:
         lines.append(regime)
     if n_open is not None:
         lines.append(f"💼 {n_open} open carried")
+    if n_flagged:
+        lines.append(f"⚠️ {n_flagged} still flagged for review · caution already sent")
     block_line = _rejections_line(rejections)
     if block_line:
         lines.append(block_line)

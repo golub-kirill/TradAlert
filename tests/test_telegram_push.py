@@ -77,9 +77,11 @@ def test_advisory_sends_caution_when_only_regime_exits(monkeypatch):
     captured = {}
 
     async def fake(token, chat_id, cfg, selected, n_scanned, risk_on, n_open,
-                   regime_label, rday, rejections=None, run_id=None, caution=None):
+                   regime_label, rday, rejections=None, run_id=None, caution=None,
+                   n_flagged=0):
         captured["selected"] = selected
         captured["caution"] = caution
+        captured["n_flagged"] = n_flagged
 
     monkeypatch.setattr(push, "_send_all", fake)
     monkeypatch.setenv("TG_BOT_TOKEN", "tok")
