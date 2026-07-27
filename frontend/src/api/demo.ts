@@ -120,7 +120,14 @@ const demoBacktests: BacktestRun[] = [
     max_drawdown_r: 51.2,
     notes: "vix_slope_gate=on",
     config_match: false,
-    config_mismatch: ["filters.vix_slope_gate", "filters.max_open_risk"],
+    config_mismatch: ["regime.vix_slope_block", "signals.sector_gate.enabled"],
+    // Real dotted keys, matching config_mismatch. Without these the detail
+    // panel claimed "All parameters at the shipped default" on the very run the
+    // table tags as an A/B leg — demo data that contradicts itself.
+    params: [
+      { key: "regime.vix_slope_block", value: true, default: false },
+      { key: "signals.sector_gate.enabled", value: true, default: false },
+    ],
     window: "2018-01-01 → 2025-12-31",
   },
   {
@@ -136,6 +143,7 @@ const demoBacktests: BacktestRun[] = [
     max_drawdown_r: demoHeadline.maxDrawdownR,
     notes: "baseline",
     config_match: true,
+    params: [],
     window: demoHeadline.window,
   },
 ];

@@ -7,7 +7,7 @@ import {
   runBacktest,
   streamJob,
 } from "../api/client";
-import type { BacktestMode, BacktestRun, BacktestRunReq } from "../api/types";
+import type { BacktestMode, BacktestRun, BacktestRunReq, ConfigSection } from "../api/types";
 import { Card, Empty } from "../components/Card";
 import { DateField } from "../components/DateField";
 import { Field, Slider, ToggleRow } from "../components/Field";
@@ -22,20 +22,20 @@ function fiveYearsAgo(): string {
   return d.toISOString().slice(0, 10);
 }
 
-// Container segments that carry no meaning on their own, dropped from the head
-// of a dotted key so the label starts at the part that identifies the setting.
-const GENERIC_ROOT = new Set(["filters", "settings", "signals"]);
-
-/** Full dotted path (minus a generic root) rather than just the leaf.
+/** The whole dotted path, not just the leaf.
  *
  *  The leaf alone is not identifying: filters.yaml has five params ending in
  *  `enabled` and six ending in `min_hist_delta_atr`, so a run that changed the
  *  sector gate and a run that changed PEAD both rendered "ENABLED ON (DEF OFF)",
- *  and a run that changed two of them rendered the same chip twice. */
+ *  and a run that changed two of them rendered the same chip twice.
+ *
+ *  Rendering the full path keeps the label a bijection with the key, so it
+ *  cannot collide by construction. An earlier version stripped "generic" head
+ *  segments to shorten it, which bought a little width in exchange for a
+ *  hand-maintained list of section names that would silently start dropping
+ *  meaningful ones as filters.yaml grows. */
 function paramLabel(k: string): string {
-  const parts = k.split(".");
-  while (parts.length > 1 && GENERIC_ROOT.has(parts[0])) parts.shift();
-  return parts.join(" · ").replaceAll("_", " ");
+  return k.split(".").join(" · ").replaceAll("_", " ");
 }
 function fmtVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "on" : "off";
@@ -57,31 +57,33 @@ function fmtVal(v: unknown): string {
  * Seeded from the live config, and locked on when the config already enables
  * them, so the control can never disagree with what the engine will do.
  */
-const FEATURE_KEYS = {
-  shorts: ["signals", "allow_shorts"],
-  chronic: ["chronic_loser_penalty", "enabled"],
-  vixSlope: ["regime", "vix_slope_block"],
-  antiGap: ["signals", "require_trigger_bar_up"],
-} as const;
+/* Label lives here with the config path so the switch list has ONE source of
+ * truth. Keeping the labels in the JSX instead let the two drift — add a
+ * feature here, forget the render list, and it silently never appears, which
+ * is the same shape of mistake the hardcoded defaults made. */
+const FEATURES = [
+  { key: "shorts", label: "Allow short entries", path: ["signals", "allow_shorts"] },
+  { key: "chronic", label: "Chronic-loser penalty", path: ["chronic_loser_penalty", "enabled"] },
+  { key: "vixSlope", label: "VIX-slope gate", path: ["regime", "vix_slope_block"] },
+  { key: "antiGap", label: "Anti-gap entry", path: ["signals", "require_trigger_bar_up"] },
+] as const;
 
-type FeatureKey = keyof typeof FEATURE_KEYS;
+type FeatureKey = (typeof FEATURES)[number]["key"];
 type FeatureFlags = Record<FeatureKey, boolean>;
 
-const NO_FEATURES: FeatureFlags = {
-  shorts: false,
-  chronic: false,
-  vixSlope: false,
-  antiGap: false,
-};
+const NO_FEATURES: FeatureFlags = Object.fromEntries(
+  FEATURES.map((f) => [f.key, false]),
+) as FeatureFlags;
 
 const LOCKED_HINT =
   "Already on in filters.yaml. The engine ORs this flag with the config, so a single run can turn it on but not off — change it in Settings.";
 
-function readFeatures(filters: Record<string, unknown> | undefined): FeatureFlags {
+function readFeatures(filters: ConfigSection | undefined): FeatureFlags {
   const out = { ...NO_FEATURES };
-  for (const [name, [section, leaf]] of Object.entries(FEATURE_KEYS)) {
+  for (const { key, path } of FEATURES) {
+    const [section, leaf] = path;
     const s = (filters?.[section] ?? {}) as Record<string, unknown>;
-    out[name as FeatureKey] = s[leaf] === true;
+    out[key] = s[leaf] === true;
   }
   return out;
 }
@@ -136,7 +138,7 @@ export function Backtest() {
         if (beTrig > 0) setBe(beTrig);
         // Feature switches follow the live config rather than a literal, so the
         // control always shows what the run will actually do.
-        const shipped = readFeatures(cfg.filters as Record<string, unknown>);
+        const shipped = readFeatures(cfg.filters);
         setLockedOn(shipped);
         setFeatures(shipped);
       })
@@ -287,14 +289,7 @@ export function Backtest() {
               format={(v) => v.toFixed(1) + "×"}
             />
           )}
-          {(
-            [
-              ["shorts", "Allow short entries"],
-              ["chronic", "Chronic-loser penalty"],
-              ["vixSlope", "VIX-slope gate"],
-              ["antiGap", "Anti-gap entry"],
-            ] as Array<[FeatureKey, string]>
-          ).map(([key, label]) => (
+          {FEATURES.map(({ key, label }) => (
             <ToggleRow
               key={key}
               label={label}
