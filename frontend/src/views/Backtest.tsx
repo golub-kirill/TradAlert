@@ -56,11 +56,12 @@ function fmtVal(v: unknown): string {
  *
  * Seeded from the live config, and locked on when the config already enables
  * them, so the control can never disagree with what the engine will do.
+ *
+ * Key, label and config path live together so the list has ONE source of truth:
+ * splitting the labels into the JSX let the two drift, and a feature added to
+ * one but not the other would silently never render — the same shape of mistake
+ * the hardcoded defaults made.
  */
-/* Label lives here with the config path so the switch list has ONE source of
- * truth. Keeping the labels in the JSX instead let the two drift — add a
- * feature here, forget the render list, and it silently never appears, which
- * is the same shape of mistake the hardcoded defaults made. */
 const FEATURES = [
   { key: "shorts", label: "Allow short entries", path: ["signals", "allow_shorts"] },
   { key: "chronic", label: "Chronic-loser penalty", path: ["chronic_loser_penalty", "enabled"] },

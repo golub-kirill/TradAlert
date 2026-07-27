@@ -118,7 +118,7 @@ const demoBacktests: BacktestRun[] = [
     profit_factor: 1.28,
     win_rate: 0.39,
     max_drawdown_r: 51.2,
-    notes: "vix_slope_gate=on",
+    notes: "vix_slope_block=on; sector_gate=on",
     config_match: false,
     config_mismatch: ["regime.vix_slope_block", "signals.sector_gate.enabled"],
     // Real dotted keys, matching config_mismatch. Without these the detail
