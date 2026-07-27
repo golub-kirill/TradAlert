@@ -333,7 +333,8 @@ def format_daily_header(run_date: Any, *, n_entries: int = 0, n_exits: int = 0,
 def format_stand_down(run_date: Any, *, n_scanned: int = 0, regime_label: str | None = None,
                       risk_on: float | None = None, n_open: int | None = None,
                       rejections: Sequence[Any] | None = None,
-                      n_flagged: int | None = None) -> str:
+                      n_flagged: int | None = None,
+                      n_passed: int | None = None) -> str:
     """The quiet-day card.
 
     ``n_flagged``: held longs the regime exit flagged on THIS scan whose caution
@@ -341,8 +342,17 @@ def format_stand_down(run_date: Any, *, n_scanned: int = 0, regime_label: str | 
     card reports "N open carried" on a non-BULL day and says nothing about those
     positions being under review — the dedup exists to stop the same card going
     out 2-3x/day, not to make the state itself invisible.
+
+    ``n_passed``: tickers that cleared the hard filters. This separates the two
+    very different reasons a day is quiet — "almost nothing got through the
+    filters" vs "everything got through and no setup triggered" — which the
+    "Top blocks" line alone cannot express: on 2026-07-27 it led with five ATR
+    gates that accounted for 10 names out of 222, while the actual reason was
+    that 212 cleared and none of them triggered.
     """
     lines = [f"😴 no actionable signals · scanned {n_scanned}"]
+    if n_passed is not None:
+        lines.append(f"🎯 {n_passed} cleared filters · 0 setups triggered")
     regime = _regime_line(regime_label, risk_on, True)
     if regime:
         lines.append(regime)

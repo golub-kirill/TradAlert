@@ -233,6 +233,26 @@ def test_stand_down_empty_rejections_unchanged():
     assert fmt.format_stand_down(d, n_scanned=10, n_open=2, rejections=None) == base
 
 
+def test_stand_down_separates_filter_block_from_no_setup():
+    """The funnel line must distinguish the two reasons a day is quiet.
+
+    "Top blocks" alone cannot: on 2026-07-27 it led with five ATR gates covering
+    10 names out of 222, while the real reason was 212 clearing and none of them
+    triggering a setup.
+    """
+    d = date(2026, 6, 6)
+    quiet = _plain(fmt.format_stand_down(d, n_scanned=222, n_passed=212))
+    assert "212 cleared filters" in quiet and "0 setups triggered" in quiet
+    # The other shape — filters ARE the constraint — reads differently.
+    gated = _plain(fmt.format_stand_down(d, n_scanned=222, n_passed=3))
+    assert "3 cleared filters" in gated
+    # Zero is a real reading (everything blocked), so it must still render.
+    assert "0 cleared filters" in _plain(fmt.format_stand_down(d, n_scanned=222, n_passed=0))
+    # Absent leaves the card byte-identical for callers that don't supply it.
+    assert fmt.format_stand_down(d, n_scanned=222, n_passed=None) == fmt.format_stand_down(
+        d, n_scanned=222)
+
+
 def test_stand_down_reports_suppressed_caution_count():
     """A deduped regime caution must still leave a trace on the quiet-day card.
 

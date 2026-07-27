@@ -94,12 +94,16 @@ def send_alerts(results, settings, *, macro_state=None, run_date=None, stand_dow
     rday = run_date or date.today()
 
     rejections = (stand_down or {}).get("rejection_gates") or None
+    # Same definition main.py journals as scan_runs.scan_passed. Missing/odd rows
+    # count as not-passed rather than raising — a stat line must not break a push.
+    n_passed = sum(1 for r in results
+                   if getattr(getattr(r, "scan", None), "passed", False))
 
     try:
         caution_sent = asyncio.run(
             _send_all(token, chat_id, cfg, selected, len(results),
                       risk_on, n_open, regime_label, rday, rejections, run_id,
-                      caution, n_flagged=n_flagged_suppressed))
+                      caution, n_flagged=n_flagged_suppressed, n_passed=n_passed))
         # Journal the DELIVERY only after the send returned — an exception above
         # leaves no record, so the next scan re-sends rather than suppressing an
         # episode the reader never saw (at-least-once, never at-most-zero).
@@ -251,7 +255,7 @@ def _caution_message(caution, regime_label):
 # ── async send ───────────────────────────────────────────────────────────────────
 
 async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, regime_label, rday,
-                    rejections=None, run_id=None, caution=None, n_flagged=0):
+                    rejections=None, run_id=None, caution=None, n_flagged=0, n_passed=None):
     """Returns True iff the regime caution was actually sent — the caller records
     the delivery only on True, so a failed push is retried next scan rather than
     suppressed as already-seen."""
@@ -268,7 +272,7 @@ async def _send_all(token, chat_id, cfg, selected, n_scanned, risk_on, n_open, r
             await nf.send_message(fmt.format_stand_down(
                 rday, n_scanned=n_scanned, regime_label=regime_label,
                 risk_on=risk_on, n_open=n_open, rejections=rejections,
-                n_flagged=n_flagged))
+                n_flagged=n_flagged, n_passed=n_passed))
             return False
 
         n_long = sum(1 for _, k in selected if k == "long_entry")
