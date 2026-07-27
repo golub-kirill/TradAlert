@@ -93,6 +93,13 @@ if (_DIST / "index.html").exists():
     if (_DIST / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
 
+    # The shell must be revalidated on every load. Vite emits content-hashed
+    # asset names and clears the directory on rebuild, so a cached index.html
+    # points at a bundle that no longer exists — the panel then serves a stale
+    # shell whose script 404s, which looks like "I rebuilt and it broke". Asset
+    # URLs are content-addressed, so those stay cacheable.
+    _NO_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str):
         """Serve the SPA, falling back to index.html for client-side routes.
@@ -104,8 +111,10 @@ if (_DIST / "index.html").exists():
             candidate = (_DIST / full_path).resolve()
             # Refuse anything that escapes dist — full_path is attacker-controlled.
             if candidate.is_file() and candidate.is_relative_to(_DIST.resolve()):
-                return FileResponse(candidate)
-        return FileResponse(_DIST / "index.html")
+                # index.html can also be requested by name, not just as a fallback.
+                headers = _NO_CACHE if candidate.name == "index.html" else None
+                return FileResponse(candidate, headers=headers)
+        return FileResponse(_DIST / "index.html", headers=_NO_CACHE)
 else:
     @app.get("/", include_in_schema=False)
     def index():
