@@ -38,6 +38,10 @@ function paramLabel(k: string): string {
   return k.split(".").join(" · ").replaceAll("_", " ");
 }
 function fmtVal(v: unknown): string {
+  // Either side can be absent: the diff is a union, so a key the run carries
+  // alone has no default, and one it dropped (a knob the CLI disabled) has no
+  // value. "unset" says that; String() would print "null".
+  if (v === null || v === undefined) return "unset";
   if (typeof v === "boolean") return v ? "on" : "off";
   if (Array.isArray(v)) return v.join(", ");
   return String(v);

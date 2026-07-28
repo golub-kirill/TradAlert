@@ -135,138 +135,12 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    exec_cfg = base_cfg.get("execution", {})
-    base_port = {
-        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size
-        # positions); risk-adjusted optimum (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
-        "earnings_aware": True,  # must match load_universe(earnings_aware=True);
-        # run_all() calls _prepare() which respects this flag
-        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
-        "commission_r": exec_cfg.get("commission_r", 0.005),
-        "close_open_at_eod": True,
-    }
-
-    # Chronic-loser penalty: ON when the YAML switch is set (ADOPTED 2026-07-17,
-    # D-011) or forced via --chronic-penalty. Pass the raw config dict through
-    # base_port; each sweep worker builds its own TickerHealth so per-run ledgers
-    # stay isolated. Both off → key absent, PortfolioConfig.ticker_health=None.
-    _chronic_yaml = base_cfg.get("chronic_loser_penalty", {}) or {}
-    if args.chronic_penalty or _chronic_yaml.get("enabled"):
-        chronic_cfg = {**_chronic_yaml, "enabled": True}
-        base_port["chronic_loser_cfg"] = chronic_cfg
-        print(f"  ▸ Chronic-loser penalty: ENABLED  "
-              f"(lookback={chronic_cfg.get('lookback_days', 90)}d, "
-              f"scale={chronic_cfg.get('scale', {2: 0.5, 3: 0.25})})")
-
-    # VIX slope gate (--vix-slope-gate). Mutates base_cfg["regime"] directly
-    # because the FilterEngine reads regime.vix_slope_block at signal time.
-    if args.vix_slope_gate:
-        rcfg = base_cfg.setdefault("regime", {})
-        rcfg["vix_slope_block"] = True
-        lookback = int(rcfg.get("vix_slope_lookback_days", 5))
-        print(f"  ▸ VIX slope gate: ENABLED  (lookback={lookback}d, "
-              f"blocks fresh momentum entries when VIX has risen over the window)")
-
-    # Anti-gap entry confirmation (--anti-gap-entry). Mutates base_cfg["signals"]
-    # so FilterEngine picks it up via cfg.get("signals", {}).get(...).
-    if args.anti_gap_entry:
-        scfg = base_cfg.setdefault("signals", {})
-        scfg["require_trigger_bar_up"] = True
-        print(f"  ▸ Anti-gap entry: ENABLED  "
-              f"(blocks T+1 entry when trigger bar closed below its open)")
-
-    # Short trading (--allow-shorts). Mutates base_cfg["signals"] so the
-    # FilterEngine emits short entries in BEAR regimes. Off by default → the
-    # long-only baseline replays bit-identically.
-    if args.allow_shorts:
-        scfg = base_cfg.setdefault("signals", {})
-        scfg["allow_shorts"] = True
-        print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
-              "short entries fire in BEAR regimes)")
-
-    # Time-based max-hold exit (--max-hold-days): force-close a held trade at the
-    # bar's CLOSE once held N trading bars. Off by default (key absent) so the
-    # baseline replays bit-identically. Default from execution.max_hold_days in
-    # filters.yaml; the CLI flag overrides it.
-    mh_days = exec_cfg.get("max_hold_days")
-    mh_mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
-    if args.max_hold_days is not None:
-        mh_days = args.max_hold_days
-    if args.max_hold_mode is not None:
-        mh_mode = args.max_hold_mode.replace("-", "_")
-    if mh_days is not None:
-        base_port["max_hold_days"] = int(mh_days)
-        base_port["max_hold_mode"] = mh_mode
-        print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
-              f"held trades close at the swing horizon — baseline is OFF)")
-
-    # ATR trailing stop. Off by default → baseline identical.
-    if args.trail_atr_mult is not None:
-        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
-        if args.trail_activate_r is not None:
-            base_port["trail_activate_r"] = float(args.trail_activate_r)
-        print(f"  ▸ ATR trailing stop: ENABLED  (mult={args.trail_atr_mult:g}"
-              + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
-              + "; ratchets the stop in the trade's favor — baseline is OFF)")
-
-    # Breakeven stop. `execution.breakeven_trigger_r` in filters.yaml supplies the
-    # shipped default (DESIGN §4 D-004); the CLI flag overrides it, and 0 disables.
-    be_trigger = exec_cfg.get("breakeven_trigger_r")
-    be_buffer = exec_cfg.get("breakeven_buffer_atr")
-    be_source = "filters.yaml" if be_trigger else None
-    if args.breakeven_trigger_r is not None:
-        be_trigger = args.breakeven_trigger_r
-        be_source = "CLI"
-    if args.breakeven_buffer_atr is not None:
-        be_buffer = args.breakeven_buffer_atr
-    if be_trigger:  # 0/absent → off
-        base_port["breakeven_trigger_r"] = float(be_trigger)
-        if be_buffer:
-            base_port["breakeven_buffer_atr"] = float(be_buffer)
-        print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{float(be_trigger):g}R"
-              + (f", buffer={float(be_buffer):g}×ATR" if be_buffer else "")
-              + f"; moves stop to breakeven, upside uncapped — {be_source})")
-    elif args.breakeven_trigger_r is not None:
-        print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
-
-    # Exit-side slippage: symmetric 0.002 is the headline convention (ADOPTED
-    # 2026-07-19, D-008a — YAML execution.exit_slippage_pct); the CLI flag
-    # overrides (0 disables). Applies to stop/engine_exit/time_stop/open_eod
-    # fills, never targets.
-    x_slip = exec_cfg.get("exit_slippage_pct")
-    if args.exit_slippage_pct is not None:
-        x_slip = args.exit_slippage_pct
-    if x_slip:  # 0/absent → off
-        base_port["exit_slippage_pct"] = float(x_slip)
-        print(f"  ▸ Exit slippage: ENABLED  ({float(x_slip):.4f} on market-type exit "
-              f"fills; target limit fills stay exact — baseline is OFF)")
-    elif args.exit_slippage_pct is not None:
-        print("  ▸ Exit slippage: DISABLED (CLI override 0)")
-
-    # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
-    # above); the flag overrides it for tuning this one-number risk lever.
-    if args.max_open_risk is not None:
-        base_port["max_open_risk"] = float(args.max_open_risk)
-        print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
-              f"(size_mult units; default 5.0)")
-
-    # Correlation-aware open-risk budget (--correlation-cap). Off by default →
-    # baseline bit-identical (budget uses the raw sum of open size_mult). When on,
-    # correlated concurrent positions share a budget slot: the cap is charged
-    # against the correlation-adjusted effective risk sqrt(wᵀCw).
-    if args.correlation_cap:
-        base_port["correlation_cap"] = True
-        if args.correlation_lookback is not None:
-            base_port["correlation_lookback_days"] = int(args.correlation_lookback)
-        if args.correlation_min_overlap is not None:
-            base_port["correlation_min_overlap"] = int(args.correlation_min_overlap)
-        if args.correlation_floor is not None:
-            base_port["correlation_floor"] = float(args.correlation_floor)
-        print(f"  ▸ Correlation cap: ENABLED  "
-              f"(lookback={base_port.get('correlation_lookback_days', 60)}d, "
-              f"min_overlap={base_port.get('correlation_min_overlap', 40)}, "
-              f"floor={base_port.get('correlation_floor', 0.0):g}; correlated "
-              f"concurrent names share a budget slot — baseline is OFF)")
+    # Built twice: once with the CLI flags applied (what runs), once with every
+    # flag neutralised (what a no-flag run on this filters.yaml would do). The
+    # journal diffs the pair to record which knobs the operator actually moved.
+    pristine_cfg = copy.deepcopy(base_cfg)
+    base_port = _build_port_cfg(base_cfg, args)
+    default_port = _build_port_cfg(pristine_cfg, _neutral_args(args), echo=False)
 
     engine = SweepEngine(
         universe=uni,
@@ -348,7 +222,8 @@ def main() -> None:
 
         # ── SQL journaling (ON by default — policy; --no-journal to skip) ──
         if not args.no_journal:
-            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni)
+            _journal_baseline(pt, trades, base_cfg, start_date, end_date, uni,
+                              port_cfg=base_port, default_port_cfg=default_port)
         else:
             print("  ▸ Journaling: OFF (--no-journal) — this run leaves no DB record")
 
@@ -453,6 +328,7 @@ def main() -> None:
                 report.baseline, report.baseline.trades,
                 base_cfg, start_date, end_date, uni,
                 notes=f"sweep baseline ({len(report.points)} variants run)",
+                port_cfg=base_port, default_port_cfg=default_port,
             )
 
         if not args.no_csv:
@@ -663,6 +539,222 @@ def _setup_logging(level: str) -> None:
         logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
 
+def _build_port_cfg(base_cfg: dict, args, *, echo: bool = True) -> dict:
+    """Resolve the PortfolioConfig kwargs from filters.yaml + the CLI flags.
+
+    Mutates ``base_cfg`` for the three switches the FilterEngine reads at signal
+    time (regime.vix_slope_block, signals.require_trigger_bar_up,
+    signals.allow_shorts); everything else is portfolio-side and lands in the
+    returned dict. ``echo=False`` silences the operator summary — used for the
+    no-flag reference build, which must not print a second set of banners.
+    """
+    exec_cfg = base_cfg.get("execution", {})
+    base_port = {
+        "max_open_risk": 5.0,  # open-risk budget in size_mult units (~5 full-size
+        # positions); risk-adjusted optimum (Sharpe 0.58 @ 5.0 vs 0.55 @ 6.0)
+        "earnings_aware": True,  # must match load_universe(earnings_aware=True);
+        # run_all() calls _prepare() which respects this flag
+        "entry_slippage_pct": exec_cfg.get("entry_slippage_pct", 0.002),
+        "commission_r": exec_cfg.get("commission_r", 0.005),
+        "close_open_at_eod": True,
+    }
+
+    # Chronic-loser penalty: ON when the YAML switch is set (ADOPTED 2026-07-17,
+    # D-011) or forced via --chronic-penalty. Pass the raw config dict through
+    # base_port; each sweep worker builds its own TickerHealth so per-run ledgers
+    # stay isolated. Both off → key absent, PortfolioConfig.ticker_health=None.
+    _chronic_yaml = base_cfg.get("chronic_loser_penalty", {}) or {}
+    if args.chronic_penalty or _chronic_yaml.get("enabled"):
+        chronic_cfg = {**_chronic_yaml, "enabled": True}
+        base_port["chronic_loser_cfg"] = chronic_cfg
+        if echo:
+            print(f"  ▸ Chronic-loser penalty: ENABLED  "
+                  f"(lookback={chronic_cfg.get('lookback_days', 90)}d, "
+                  f"scale={chronic_cfg.get('scale', {2: 0.5, 3: 0.25})})")
+
+    # VIX slope gate (--vix-slope-gate). Mutates base_cfg["regime"] directly
+    # because the FilterEngine reads regime.vix_slope_block at signal time.
+    if args.vix_slope_gate:
+        rcfg = base_cfg.setdefault("regime", {})
+        rcfg["vix_slope_block"] = True
+        lookback = int(rcfg.get("vix_slope_lookback_days", 5))
+        if echo:
+            print(f"  ▸ VIX slope gate: ENABLED  (lookback={lookback}d, "
+                  f"blocks fresh momentum entries when VIX has risen over the window)")
+
+    # Anti-gap entry confirmation (--anti-gap-entry). Mutates base_cfg["signals"]
+    # so FilterEngine picks it up via cfg.get("signals", {}).get(...).
+    if args.anti_gap_entry:
+        scfg = base_cfg.setdefault("signals", {})
+        scfg["require_trigger_bar_up"] = True
+        if echo:
+            print(f"  ▸ Anti-gap entry: ENABLED  "
+                  f"(blocks T+1 entry when trigger bar closed below its open)")
+
+    # Short trading (--allow-shorts). Mutates base_cfg["signals"] so the
+    # FilterEngine emits short entries in BEAR regimes. Off by default → the
+    # long-only baseline replays bit-identically.
+    if args.allow_shorts:
+        scfg = base_cfg.setdefault("signals", {})
+        scfg["allow_shorts"] = True
+        if echo:
+            print("  ▸ Short trading: ENABLED  (signals.allow_shorts=true; "
+                  "short entries fire in BEAR regimes)")
+
+    # Time-based max-hold exit (--max-hold-days): force-close a held trade at the
+    # bar's CLOSE once held N trading bars. Off by default (key absent) so the
+    # baseline replays bit-identically. Default from execution.max_hold_days in
+    # filters.yaml; the CLI flag overrides it.
+    mh_days = exec_cfg.get("max_hold_days")
+    mh_mode = str(exec_cfg.get("max_hold_mode", "hard")).replace("-", "_")
+    if args.max_hold_days is not None:
+        mh_days = args.max_hold_days
+    if args.max_hold_mode is not None:
+        mh_mode = args.max_hold_mode.replace("-", "_")
+    if mh_days is not None:
+        base_port["max_hold_days"] = int(mh_days)
+        base_port["max_hold_mode"] = mh_mode
+        if echo:
+            print(f"  ▸ Max-hold exit: ENABLED  ({int(mh_days)} bars, mode={mh_mode}; "
+                  f"held trades close at the swing horizon — baseline is OFF)")
+
+    # ATR trailing stop. Off by default → baseline identical.
+    if args.trail_atr_mult is not None:
+        base_port["trail_atr_mult"] = float(args.trail_atr_mult)
+        if args.trail_activate_r is not None:
+            base_port["trail_activate_r"] = float(args.trail_activate_r)
+        if echo:
+            print(f"  ▸ ATR trailing stop: ENABLED  (mult={args.trail_atr_mult:g}"
+                  + (f", activate≥{args.trail_activate_r:g}R" if args.trail_activate_r is not None else "")
+                  + "; ratchets the stop in the trade's favor — baseline is OFF)")
+
+    # Breakeven stop. `execution.breakeven_trigger_r` in filters.yaml supplies the
+    # shipped default (DESIGN §4 D-004); the CLI flag overrides it, and 0 disables.
+    be_trigger = exec_cfg.get("breakeven_trigger_r")
+    be_buffer = exec_cfg.get("breakeven_buffer_atr")
+    be_source = "filters.yaml" if be_trigger else None
+    if args.breakeven_trigger_r is not None:
+        be_trigger = args.breakeven_trigger_r
+        be_source = "CLI"
+    if args.breakeven_buffer_atr is not None:
+        be_buffer = args.breakeven_buffer_atr
+    if be_trigger:  # 0/absent → off
+        base_port["breakeven_trigger_r"] = float(be_trigger)
+        if be_buffer:
+            base_port["breakeven_buffer_atr"] = float(be_buffer)
+        if echo:
+            print(f"  ▸ Breakeven stop: ENABLED  (trigger≥{float(be_trigger):g}R"
+                  + (f", buffer={float(be_buffer):g}×ATR" if be_buffer else "")
+                  + f"; moves stop to breakeven, upside uncapped — {be_source})")
+    elif args.breakeven_trigger_r is not None and echo:
+        print("  ▸ Breakeven stop: DISABLED (CLI override 0)")
+
+    # Exit-side slippage: symmetric 0.002 is the headline convention (ADOPTED
+    # 2026-07-19, D-008a — YAML execution.exit_slippage_pct); the CLI flag
+    # overrides (0 disables). Applies to stop/engine_exit/time_stop/open_eod
+    # fills, never targets.
+    x_slip = exec_cfg.get("exit_slippage_pct")
+    if args.exit_slippage_pct is not None:
+        x_slip = args.exit_slippage_pct
+    if x_slip:  # 0/absent → off
+        base_port["exit_slippage_pct"] = float(x_slip)
+        if echo:
+            print(f"  ▸ Exit slippage: ENABLED  ({float(x_slip):.4f} on market-type exit "
+                  f"fills; target limit fills stay exact — baseline is OFF)")
+    elif args.exit_slippage_pct is not None and echo:
+        print("  ▸ Exit slippage: DISABLED (CLI override 0)")
+
+    # Portfolio open-risk budget (--max-open-risk). Default 5.0 (set in base_port
+    # above); the flag overrides it for tuning this one-number risk lever.
+    if args.max_open_risk is not None:
+        base_port["max_open_risk"] = float(args.max_open_risk)
+        if echo:
+            print(f"  ▸ Open-risk budget: {float(args.max_open_risk):.1f} "
+                  f"(size_mult units; default 5.0)")
+
+    # Correlation-aware open-risk budget (--correlation-cap). Off by default →
+    # baseline bit-identical (budget uses the raw sum of open size_mult). When on,
+    # correlated concurrent positions share a budget slot: the cap is charged
+    # against the correlation-adjusted effective risk sqrt(wᵀCw).
+    if args.correlation_cap:
+        base_port["correlation_cap"] = True
+        if args.correlation_lookback is not None:
+            base_port["correlation_lookback_days"] = int(args.correlation_lookback)
+        if args.correlation_min_overlap is not None:
+            base_port["correlation_min_overlap"] = int(args.correlation_min_overlap)
+        if args.correlation_floor is not None:
+            base_port["correlation_floor"] = float(args.correlation_floor)
+        if echo:
+            print(f"  ▸ Correlation cap: ENABLED  "
+                  f"(lookback={base_port.get('correlation_lookback_days', 60)}d, "
+                  f"min_overlap={base_port.get('correlation_min_overlap', 40)}, "
+                  f"floor={base_port.get('correlation_floor', 0.0):g}; correlated "
+                  f"concurrent names share a budget slot — baseline is OFF)")
+
+    return base_port
+
+
+def _neutral_args(args) -> argparse.Namespace:
+    """``args`` with every option unset — the no-flag run of the same config.
+
+    Blanket None rather than a list of knobs to clear, which holds only while
+    every port-relevant switch reads None as unset: an ``is not None`` guard or
+    a ``store_true``. A flag declared ``store_false``, or given a non-None
+    ``default=``, needs that default here or ``default_port`` is built from a
+    run that could not happen — ``test_run_params_journal`` pins the invariant.
+    """
+    return argparse.Namespace(**{k: None for k in vars(args)})
+
+
+# Portfolio knobs that also have a home in filters.yaml. The journal writes the
+# EFFECTIVE value back to that home, so a snapshot can never assert a value the
+# run did not use. Knobs with no home go to `portfolio_overrides` instead.
+_PORT_YAML_HOME: dict[str, tuple[str, str]] = {
+    "entry_slippage_pct": ("execution", "entry_slippage_pct"),
+    "exit_slippage_pct": ("execution", "exit_slippage_pct"),
+    "commission_r": ("execution", "commission_r"),
+    "max_hold_days": ("execution", "max_hold_days"),
+    "max_hold_mode": ("execution", "max_hold_mode"),
+    "breakeven_trigger_r": ("execution", "breakeven_trigger_r"),
+    "breakeven_buffer_atr": ("execution", "breakeven_buffer_atr"),
+}
+
+
+def _config_snapshot(base_cfg: dict, port_cfg: dict, default_port: dict) -> dict:
+    """filters.yaml as the run actually resolved it, portfolio overrides included.
+
+    Portfolio knobs reach the engine through PortfolioConfig, not the YAML tree,
+    so a plain copy of base_cfg records the SHIPPED value for a knob the CLI
+    moved — the snapshot then reads as a baseline. Mapped knobs are written back
+    to their YAML home (absent from port_cfg = the run turned it off, so the key
+    is dropped); homeless ones land under `portfolio_overrides`, and only when
+    they differ from a no-flag run, so an untouched run snapshots exactly as it
+    did before and stays comparable with the existing journal.
+
+    `port_cfg`/`default_port` are required, not optional: an empty port_cfg is
+    indistinguishable from "the run used none of the mapped knobs" and would
+    strip the whole execution block.
+    """
+    snap = copy.deepcopy(base_cfg)
+    for key, (section, leaf) in _PORT_YAML_HOME.items():
+        if not isinstance(snap.get(section, {}), dict):
+            continue          # malformed config: journal it as-is, never crash
+        if key in port_cfg:
+            snap.setdefault(section, {})[leaf] = port_cfg[key]
+        elif section in snap:
+            snap[section].pop(leaf, None)
+
+    # False, not None, for a knob the run dropped: config_mismatch reads the
+    # snapshot against a shipped config that has no `portfolio_overrides` at
+    # all, so a null would compare equal to "absent" and vanish.
+    moved = {k: port_cfg.get(k, False)
+             for k in sorted(set(port_cfg) | set(default_port))
+             if k not in _PORT_YAML_HOME and port_cfg.get(k) != default_port.get(k)}
+    if moved:
+        snap["portfolio_overrides"] = moved
+    return snap
+
+
 def _journal_baseline(
         pt,
         trades,
@@ -670,6 +762,8 @@ def _journal_baseline(
         start_date,
         end_date,
         uni,
+        port_cfg: dict,
+        default_port_cfg: dict,
         notes: str | None = None,
 ) -> None:
     """
@@ -680,13 +774,21 @@ def _journal_baseline(
     env vars (same as the live scanner).
 
     Schema: data/backtest_schema.sql (run once before first use).
+
+    Parameters
+    ----------
+    base_cfg         : filters.yaml as the run resolved it (CLI switches applied).
+    port_cfg         : the run's effective PortfolioConfig kwargs. REQUIRED —
+                       defaulting it would strip the mapped execution keys from
+                       the snapshot and mark the run as diverging from shipped.
+    default_port_cfg : the same, rebuilt with every CLI flag neutralised; the
+                       pair is what identifies the knobs the operator moved.
     """
     try:
-        import copy
         from backtest.db import save_backtest_run, save_backtest_trades
 
         # Attach CLI options so re-readers know the exact run context.
-        cfg_snapshot = copy.deepcopy(base_cfg)
+        cfg_snapshot = _config_snapshot(base_cfg, port_cfg, default_port_cfg)
         cfg_snapshot["_meta"] = {
             "start_date": str(start_date) if start_date else None,
             "end_date": str(end_date) if end_date else None,
