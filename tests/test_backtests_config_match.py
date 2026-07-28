@@ -39,7 +39,6 @@ def rows(monkeypatch):
     ]
     monkeypatch.setattr(bt, "query", lambda *a, **k: [dict(r) for r in fake])
     monkeypatch.setattr("backtest.db._shipped_filters", lambda: shipped)
-    monkeypatch.setattr(bt, "load_yaml", lambda name: {})
     return fake
 
 
@@ -68,14 +67,15 @@ def test_unknown_snapshot_stays_eligible(monkeypatch):
          "trades_count": 10, "total_r": 1.0, "expectancy_r": 0.1,
          "profit_factor": 1.0, "win_rate": 0.5, "max_drawdown_r": 1.0,
          "notes": None, "config_json": None}])
-    monkeypatch.setattr(bt, "load_yaml", lambda name: {})
+    monkeypatch.setattr("backtest.db._shipped_filters", lambda: {})
     [row] = bt.backtests(limit=1)
     assert row["config_match"] is None and row["config_mismatch"] == []
 
 
 def test_shipped_config_is_read_once_not_per_row(monkeypatch, rows):
     """It parses filters.yaml; doing it per row put ~20 parses on the landing
-    view's hot path."""
+    view's hot path. Covers BOTH consumers — config_mismatch and the params
+    diff, which had its own per-row parse until they were made to share this."""
     calls = {"n": 0}
 
     def _counting():

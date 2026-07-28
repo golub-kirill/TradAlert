@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.deps import TICKER_RE, load_yaml, query
+from api.deps import TICKER_RE, query
 from api.jobs import get as job_get, launch, python_exe, status as job_status
 
 router = APIRouter(tags=["backtests"])
@@ -36,19 +36,16 @@ _MODES = {
 }
 
 
-def _flatten(d: dict, prefix: str = "") -> dict:
-    out: dict = {}
-    for k, v in (d or {}).items():
-        key = f"{prefix}{k}"
-        if isinstance(v, dict):
-            out.update(_flatten(v, key + "."))
-        else:
-            out[key] = v
-    return out
+def _config_diff(config_json: str | None, shipped: dict | None = None):
+    """Params a run differed from the shipped filters.yaml, plus its date window.
 
+    ``shipped`` is the FLATTENED shipped config. Callers in a loop pass it in so
+    filters.yaml is parsed once per request; omitting it reads filters.yaml.
+    Flattening comes from backtest.db so this diff and config_mismatch can never
+    key the same snapshot two different ways.
+    """
+    from backtest.db import _flatten, _shipped_filters
 
-def _config_diff(config_json: str | None):
-    """Params a run differed from the shipped filters.yaml, plus its date window."""
     if not config_json:
         return [], None
     try:
@@ -57,11 +54,15 @@ def _config_diff(config_json: str | None):
         return [], None
     meta = cfg.pop("_meta", {}) or {}
     flat_run = _flatten(cfg)
-    flat_def = _flatten(load_yaml("filters.yaml"))
+    flat_def = shipped if shipped is not None else (_shipped_filters() or {})
+    # Union, not a walk of the defaults: the knobs most worth showing (open-risk
+    # budget, ATR trail, correlation cap) reach the engine through PortfolioConfig
+    # and have no filters.yaml entry, so keys the run carries alone are exactly
+    # the CLI overrides — iterating the defaults hid every one of them.
     diff = []
-    for k, dv in flat_def.items():
-        rv = flat_run.get(k)
-        if rv is not None and rv != dv:
+    for k in sorted(set(flat_run) | set(flat_def)):
+        rv, dv = flat_run.get(k), flat_def.get(k)
+        if rv != dv:
             diff.append({"key": k, "value": rv, "default": dv})
     window = None
     if meta.get("start_date") or meta.get("end_date"):
@@ -86,7 +87,7 @@ def backtests(limit: int = 20):
     shipped = _shipped_filters()          # parse filters.yaml ONCE, not per row
     for r in rows:
         raw = r.pop("config_json", None)
-        diff, window = _config_diff(raw)
+        diff, window = _config_diff(raw, shipped)
         r["params"] = diff
         r["window"] = window
         mismatch = config_mismatch(raw, shipped)
