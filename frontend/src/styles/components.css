@@ -1,5 +1,5 @@
 /* Shared components — every one carries default / hover / active / focus-visible
-   / disabled. See DESIGN.md §4. Focus rings are never removed. */
+   / disabled. See WEB-DESIGN.md §4. Focus rings are never removed. */
 
 /* ── buttons ────────────────────────────────────────────────────────────── */
 .btn {
@@ -133,7 +133,7 @@
   }
 }
 
-/* Touch targets reach 44px on coarse pointers only (DESIGN.md §9). Keyed to
+/* Touch targets reach 44px on coarse pointers only (WEB-DESIGN.md §9). Keyed to
    input modality rather than a breakpoint: the deck is a dense instrument on a
    mouse, and a narrow window on a laptop still has a precise pointer, so
    inflating every control there would cost rows without buying anything. */

@@ -1,5 +1,5 @@
 /* Shaped placeholders that match the geometry of what is loading. The panel
- * never renders the word "Loading…" (DESIGN.md §4.11). */
+ * never renders the word "Loading…" (WEB-DESIGN.md §4.11). */
 
 export function SkeletonText({ lines = 3, width = "100%" }: { lines?: number; width?: string }) {
   return (

@@ -1,6 +1,6 @@
 /* The L2 effect hooks. Each one degrades to a static end-state under
  * prefers-reduced-motion rather than simply not running — nothing may be left
- * invisible or mid-transform. See DESIGN.md §7. */
+ * invisible or mid-transform. See WEB-DESIGN.md §7. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { easeOutCubic, hasFinePointer, prefersReducedMotion, rafThrottle } from "../lib/motion";

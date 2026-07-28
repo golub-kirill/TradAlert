@@ -1,7 +1,7 @@
 /* Shared motion primitives. Every effect built on these must have a complete
- * static path when the user asks for reduced motion — see DESIGN.md §7. */
+ * static path when the user asks for reduced motion — see WEB-DESIGN.md §7. */
 
-import type { CSSProperties } from "react";
+import type {CSSProperties} from "react";
 
 /** Custom properties in a style prop. CSSProperties has no index signature, so
  *  the cast is the documented way to pass CSS variables through React. */

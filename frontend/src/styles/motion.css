@@ -1,4 +1,4 @@
-/* L2 motion layer — see DESIGN.md §7.
+/* L2 motion layer — see WEB-DESIGN.md §7.
    No animation library, no WebGL, no scroll-jacking: CSS keyframes plus one
    IntersectionObserver and one rAF pointer loop. */
 

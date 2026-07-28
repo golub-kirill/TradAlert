@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { useCountUp } from "../hooks/useMotion";
+import type {ReactNode} from "react";
+import {useCountUp} from "../hooks/useMotion";
 
 export type Tone = "" | "pos" | "neg" | "warn";
 
@@ -21,7 +21,7 @@ export function Stat({ label, value, tone = "", hint }: StatItem) {
 }
 
 /** Compact strip of figures inside a bento tile — never a page-wide row of
- *  equal boxes (DESIGN.md §5). */
+ *  equal boxes (WEB-DESIGN.md §5). */
 export function StatStrip({ items }: { items: StatItem[] }) {
   return (
     <div className="statstrip">

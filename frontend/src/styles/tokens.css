@@ -1,4 +1,4 @@
-/* Terminal Luxe design tokens — see DESIGN.md §2, §3, §5, §6, §7.
+/* Terminal Luxe design tokens — see WEB-DESIGN.md §2, §3, §5, §6, §7.
    Every colour is an RGB triple so components can take it at partial alpha via
    rgb(var(--rgb-x) / a). Components must never carry a literal hex. */
 

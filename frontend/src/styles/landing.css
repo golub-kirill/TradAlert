@@ -1,4 +1,4 @@
-/* Public landing page. See DESIGN.md §5, §9 and Appendix B. */
+/* Public landing page. See WEB-DESIGN.md §5, §9 and Appendix B. */
 
 .lp {
   --lp-gutter: var(--sp-5);

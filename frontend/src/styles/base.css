@@ -1,4 +1,4 @@
-/* Reset, document defaults and shared utilities. See DESIGN.md §3, §5. */
+/* Reset, document defaults and shared utilities. See WEB-DESIGN.md §3, §5. */
 
 *,
 *::before,
@@ -27,7 +27,7 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-tap-highlight-color: transparent;
   /* Decorative layers may bleed to the viewport edge, but the page itself must
-     never scroll sideways (DESIGN.md §9). See the note on html above for why
+     never scroll sideways (WEB-DESIGN.md §9). See the note on html above for why
      this is `clip` and not `hidden`. */
   overflow-x: clip;
 }

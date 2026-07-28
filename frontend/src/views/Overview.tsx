@@ -1,14 +1,14 @@
-import { useMemo } from "react";
-import { Card, Empty } from "../components/Card";
-import { EquityCurve, type CurvePoint } from "../components/EquityCurve";
-import { CountUp, StatStrip } from "../components/Stat";
-import { SkeletonBlock, SkeletonStats } from "../components/Skeleton";
-import { MonthlyBars } from "../components/PerformanceChart";
-import { useApi } from "../hooks/useApi";
-import { useSpotlight } from "../hooks/useMotion";
-import { Link } from "../lib/router";
-import { getBacktests, getMonthly, getPositions, getScannerLatest } from "../api/client";
-import { fnum, pct, rstr, signClass } from "../lib/format";
+import {useMemo} from "react";
+import {Card, Empty} from "../components/Card";
+import {type CurvePoint, EquityCurve} from "../components/EquityCurve";
+import {CountUp, StatStrip} from "../components/Stat";
+import {SkeletonBlock, SkeletonStats} from "../components/Skeleton";
+import {MonthlyBars} from "../components/PerformanceChart";
+import {useApi} from "../hooks/useApi";
+import {useSpotlight} from "../hooks/useMotion";
+import {Link} from "../lib/router";
+import {getBacktests, getMonthly, getPositions, getScannerLatest} from "../api/client";
+import {fnum, pct, rstr, signClass} from "../lib/format";
 
 const MISMATCH_SHOWN = 3;
 
@@ -98,7 +98,7 @@ export function Overview() {
         </div>
       ) : null}
 
-      {/* One figure leads; everything else supports it (DESIGN.md §5). */}
+        {/* One figure leads; everything else supports it (WEB-DESIGN.md §5). */}
       <section className="hero-band card--spot" ref={heroRef}>
         <div className="hero-band__figure">
           <div className="hero-band__eyebrow eyebrow">
